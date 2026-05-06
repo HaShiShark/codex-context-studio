@@ -1,0 +1,95 @@
+{
+  "name": "hash-context-codex-lab",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local context proxy and workbench companion for Codex.",
+  "author": "",
+  "main": "electron/context-window.cjs",
+  "scripts": {
+    "start": "npm run start:backend",
+    "start:backend": "if exist .venv\\Scripts\\python.exe (.venv\\Scripts\\python.exe web_server.py) else (python web_server.py)",
+    "proxy": "if exist .venv\\Scripts\\python.exe (.venv\\Scripts\\python.exe proxy_server.py) else (python proxy_server.py)",
+    "codex": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/codex-with-context.ps1",
+    "ctx:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/codex-ctx-proxy.ps1 install",
+    "ctx:proxy:on": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/codex-ctx-proxy.ps1 on",
+    "ctx:proxy:off": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/codex-ctx-proxy.ps1 off",
+    "ctx:proxy:status": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/codex-ctx-proxy.ps1 status",
+    "ctx:proxy:uninstall": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/codex-ctx-proxy.ps1 uninstall",
+    "ctx:desktop:probe": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/codex-desktop-proxy.ps1 probe",
+    "ctx:desktop:on": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/codex-desktop-proxy.ps1 on",
+    "ctx:desktop:off": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/codex-desktop-proxy.ps1 off",
+    "ctx:desktop:status": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/codex-desktop-proxy.ps1 status",
+    "ctx:desktop:repair": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/codex-desktop-proxy.ps1 repair",
+    "context": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/show-context-window.ps1",
+    "window": "electron electron/context-window.cjs",
+    "electron:dev": "npm run window",
+    "dev:all": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev-all.ps1",
+    "dev": "vite --config react_app/vite.config.ts",
+    "dev:react": "vite --config react_app/vite.config.ts",
+    "typecheck": "tsc -p react_app/tsconfig.json --noEmit",
+    "test:compact-proxy": "python scripts/test_compact_proxy.py",
+    "build": "npm run build:react",
+    "build:react": "vite build --config react_app/vite.config.ts",
+    "build:python": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-python.ps1",
+    "preview:react": "vite preview --config react_app/vite.config.ts",
+    "pack:win": "npm run build:react && npm run build:python && electron-builder --win --dir",
+    "dist:win": "npm run build:react && npm run build:python && electron-builder --win nsis"
+  },
+  "dependencies": {
+    "highlight.js": "^11.11.1",
+    "js-tiktoken": "^1.0.21",
+    "mermaid": "^11.12.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-markdown": "^10.1.0",
+    "rehype-raw": "^7.0.0",
+    "rehype-sanitize": "^6.0.0",
+    "rehype-slug": "^6.0.0",
+    "remark-gfm": "^4.0.1",
+    "remark-github-blockquote-alert": "^2.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@vitejs/plugin-react": "^5.1.0",
+    "electron": "^37.10.3",
+    "electron-builder": "^26.8.1",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.12"
+  },
+  "build": {
+    "appId": "dev.codex-context.proxy",
+    "productName": "Codex Context Proxy",
+    "asar": false,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*",
+      "web_server.py",
+      "main.py",
+      "hash.html",
+      "requirements.txt",
+      "RELEASE.md",
+      ".env.example",
+      ".venv/**/*",
+      "static/**/*",
+      "react_app/dist/**/*",
+      "python_dist/**/*",
+      "scripts/**/*",
+      "simple_agent/**/*",
+      "agent_runtime/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "signAndEditExecutable": false,
+      "forceCodeSigning": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "include": "build/installer.nsh"
+    }
+  }
+}

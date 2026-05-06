@@ -1,0 +1,108 @@
+.context-map-scroll-shell {
+  overflow-anchor: none;
+}
+
+.context-map-list-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-anchor: none;
+}
+
+.context-node-row {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  column-gap: 10px;
+  align-items: center;
+  overflow-anchor: none;
+}
+
+.context-node-row.expanded {
+  align-items: center;
+}
+
+.context-node-row.without-gutter {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.context-node-gutter {
+  all: unset;
+  box-sizing: border-box;
+  align-self: center;
+  justify-self: center;
+  width: 28px;
+  min-height: 28px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition:
+    color 160ms ease,
+    background-color 160ms ease,
+    transform 160ms ease;
+}
+
+.context-node-row.expanded .context-node-gutter {
+  align-self: center;
+  margin-top: 0;
+}
+
+.context-node-gutter:hover,
+.context-node-gutter:focus-visible {
+  color: var(--text-primary);
+  background: var(--item-hover);
+}
+
+.context-node-gutter:active {
+  transform: scale(0.96);
+}
+
+.context-node-gutter.locked {
+  cursor: default;
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.context-node-row.locked .context-map-item {
+  opacity: 0.72;
+}
+
+.context-map-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.context-map-expanded-shell {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition:
+    grid-template-rows 220ms ease,
+    opacity 180ms ease,
+    transform 220ms ease;
+}
+
+.context-map-expanded-shell.open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.context-map-expanded-shell > .context-map-expanded-content {
+  overflow: hidden;
+}
+
+.context-map-expanded-shell:not(.open) {
+  pointer-events: none;
+}
+
+.context-map-expanded-shell:not(.open) .context-map-expanded-content {
+  visibility: hidden;
+}

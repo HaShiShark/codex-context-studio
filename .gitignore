@@ -1,0 +1,15 @@
+node_modules/
+release/
+python_dist/
+.venv/
+.build-venv/
+.tmp-pyinstaller*/
+.tmp-tests/
+.pytest_cache/
+__pycache__/
+*.pyc
+logs/
+data/
+data-gym-cache/
+react_app/dist/
+tmp*/
