@@ -2,6 +2,11 @@ name: Build macOS
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Optional existing release tag to attach artifacts to'
+        required: false
+        type: string
   push:
     tags:
       - 'v*'
@@ -59,7 +64,7 @@ jobs:
 
   release:
     name: Attach artifacts to GitHub release
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
     needs: build-macos
     runs-on: ubuntu-latest
     steps:
@@ -73,6 +78,7 @@ jobs:
       - name: Attach artifacts to GitHub release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
           files: |
             release-artifacts/*.dmg
             release-artifacts/*.zip
