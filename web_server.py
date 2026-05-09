@@ -19,6 +19,7 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote, urlparse, urlunparse
 
+from codex_context import is_conversation_record
 from dotenv import load_dotenv
 
 try:
@@ -3441,6 +3442,10 @@ def transcript_has_instruction_prefix(records: list[dict[str, Any]]) -> bool:
     )
 
 
+def transcript_has_conversation_records(records: list[dict[str, Any]]) -> bool:
+    return any(is_conversation_record(record) for record in records)
+
+
 def provider_message_record(item: dict[str, Any]) -> dict[str, Any] | None:
     role = sanitize_text(item.get("role") or "").strip()
     if role not in CONTEXT_INPUT_MESSAGE_ROLES:
@@ -3514,7 +3519,7 @@ def latest_proxy_instruction_prefix_records() -> list[dict[str, Any]]:
 def codex_local_session_transcript(session_id: str) -> list[dict[str, Any]]:
     session_file = find_codex_local_session_file(session_id)
     if session_file is None:
-        return latest_proxy_instruction_prefix_records()
+        return []
 
     records: list[dict[str, Any]] = []
     try:
@@ -3550,6 +3555,9 @@ def codex_local_session_transcript(session_id: str) -> list[dict[str, Any]]:
                 "providerItems": [{"type": "message", "role": role, "content": text}],
             }
         )
+
+    if not records:
+        return []
 
     if not transcript_has_instruction_prefix(records):
         records = [*latest_proxy_instruction_prefix_records(), *records]
@@ -7302,7 +7310,7 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
                 if not session_id:
                     raise ValueError("session_id is required")
                 transcript = codex_local_session_transcript(session_id)
-                if not transcript:
+                if not transcript or not transcript_has_conversation_records(transcript):
                     self._send_json(
                         {
                             "error": "Codex local session was not found or has no transcript",

@@ -28,6 +28,16 @@ USER_PROMPT = "list the root files"
 PRE_TOOL_TEXT = "I will inspect the root directory."
 FINAL_TEXT = "The root contains README.md and proxy_server.py."
 TOOL_CALL_ID = "call_root_ls"
+DEVELOPER_INSTRUCTIONS = "developer instructions"
+ENVIRONMENT_CONTEXT = "<environment_context><cwd>/repo</cwd></environment_context>"
+
+
+def record(role: str, text: str) -> dict[str, Any]:
+    return proxy_server.transcript_record(role, text, [proxy_server.provider_message(role, text)])
+
+
+def provider_texts(records: list[dict[str, Any]]) -> list[str]:
+    return [str(record.get("text") or "") for record in records]
 
 
 class MockCompactUpstream(BaseHTTPRequestHandler):
@@ -339,6 +349,114 @@ def test_request_without_override_preserves_codex_body() -> None:
         request_log = store.sessions[SESSION_ID].request_log
         assert request_log[-1]["kind"] == "mirror_passthrough"
         assert request_log[-1]["forwarded_body"] == original_body
+
+
+def test_clean_transcript_preserves_repeated_input_context_records() -> None:
+    input_mapped_transcript = [
+        record("developer", DEVELOPER_INSTRUCTIONS),
+        record("user", ENVIRONMENT_CONTEXT),
+        record("user", "first real question"),
+        record("assistant", "first answer"),
+        record("developer", DEVELOPER_INSTRUCTIONS),
+        record("user", ENVIRONMENT_CONTEXT),
+        record("user", "second real question"),
+    ]
+
+    cleaned = proxy_server.clean_transcript(input_mapped_transcript)
+
+    assert provider_texts(cleaned) == [
+        DEVELOPER_INSTRUCTIONS,
+        ENVIRONMENT_CONTEXT,
+        "first real question",
+        "first answer",
+        DEVELOPER_INSTRUCTIONS,
+        ENVIRONMENT_CONTEXT,
+        "second real question",
+    ]
+
+
+def test_control_intercept_preserves_existing_transcript_when_input_is_prefix_only() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        store = proxy_server.ProxyStore(Path(temp_dir) / "proxy_state.json")
+        existing = proxy_server.clean_transcript(
+            [
+                record("developer", DEVELOPER_INSTRUCTIONS),
+                record("user", ENVIRONMENT_CONTEXT),
+                record("user", "first real question"),
+                record("assistant", "first answer"),
+            ]
+        )
+        store.sessions[SESSION_ID] = proxy_server.ProxySession(
+            id=SESSION_ID,
+            title="Codex fake",
+            transcript=existing,
+            status="mirror",
+        )
+        body = {
+            "input": [
+                proxy_server.provider_message("developer", DEVELOPER_INSTRUCTIONS),
+                proxy_server.provider_message("user", ENVIRONMENT_CONTEXT),
+                proxy_server.provider_message("user", "ctx"),
+            ]
+        }
+
+        store.record_control_intercept(SESSION_ID, body, {"x-codex-session-id": SESSION_ID}, "ctx")
+
+        session = store.get_session(SESSION_ID)
+        assert session is not None
+        assert provider_texts(session["transcript"]) == provider_texts(existing)
+        assert store.sessions[SESSION_ID].request_log[-1]["kind"] == "context_control_intercept"
+
+
+def test_codex_local_session_sync_does_not_fallback_to_prefix_only_transcript() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        previous_sessions_dir = web_server.CODEX_LOCAL_SESSIONS_DIR
+        previous_proxy_state_file = web_server.PROXY_STATE_FILE
+        try:
+            temp_path = Path(temp_dir)
+            web_server.CODEX_LOCAL_SESSIONS_DIR = temp_path / "missing-sessions"
+            web_server.PROXY_STATE_FILE = temp_path / "proxy_state.json"
+            web_server.PROXY_STATE_FILE.write_text(
+                json.dumps(
+                    {
+                        "active_session_id": SESSION_ID,
+                        "sessions": [
+                            {
+                                "id": SESSION_ID,
+                                "updated_at": "2026-05-09T00:00:00Z",
+                                "request_log": [
+                                    {
+                                        "body": {
+                                            "input": [
+                                                proxy_server.provider_message("developer", DEVELOPER_INSTRUCTIONS),
+                                                proxy_server.provider_message("user", ENVIRONMENT_CONTEXT),
+                                            ]
+                                        }
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            assert web_server.latest_proxy_instruction_prefix_records()
+            assert web_server.codex_local_session_transcript(SESSION_ID) == []
+        finally:
+            web_server.CODEX_LOCAL_SESSIONS_DIR = previous_sessions_dir
+            web_server.PROXY_STATE_FILE = previous_proxy_state_file
+
+
+def test_prefix_only_codex_local_session_is_not_conversation() -> None:
+    transcript = web_server.normalize_transcript(
+        [
+            record("developer", DEVELOPER_INSTRUCTIONS),
+            record("user", ENVIRONMENT_CONTEXT),
+        ]
+    )
+
+    assert not web_server.transcript_has_conversation_records(transcript)
 
 
 def test_local_compact_without_override_preserves_codex_body() -> None:

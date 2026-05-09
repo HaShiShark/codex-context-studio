@@ -18,6 +18,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from codex_context import (
+    conversation_record_count,
+    is_context_control_command_text,
+    is_contextual_user_text,
+)
+
 
 HOST = os.environ.get("HASH_CONTEXT_PROXY_HOST", "127.0.0.1")
 PORT = int(os.environ.get("HASH_CONTEXT_PROXY_PORT", "8787"))
@@ -36,7 +42,6 @@ CODEX_PROXY_PROVIDER_ID = "codex-proxy"
 CODEX_PROXY_BASE_URL = f"http://{HOST}:{PORT}/v1"
 INTERNAL_CONTEXT_HEADER = "x-hash-context-internal"
 INTERNAL_CONTEXT_VALUE = "context-workbench"
-CONTEXT_CONTROL_COMMANDS = {"ctx", "/ctx", "context", "/context"}
 CONTEXT_CONTROL_NOTICE_TEXT = "Hash Context: opened workbench."
 CONTROL_PORT = int(os.environ.get("HASH_CONTEXT_CONTROL_PORT", "8790"))
 LOCAL_COMPACT_PROMPT_PREFIX = "You are performing a CONTEXT CHECKPOINT COMPACTION."
@@ -505,10 +510,6 @@ def input_items_to_transcript(input_items: Any) -> list[dict[str, Any]]:
 
     flush_assistant()
     return records
-
-
-def is_context_control_command_text(text: str) -> bool:
-    return str(text or "").strip().lower() in CONTEXT_CONTROL_COMMANDS
 
 
 def context_control_command_from_input(input_items: Any) -> str:
@@ -1115,19 +1116,6 @@ def is_local_compact_summary_text(text: str) -> bool:
     return str(text or "").startswith(f"{LOCAL_COMPACT_SUMMARY_PREFIX}\n\n")
 
 
-def is_contextual_user_text(text: str) -> bool:
-    trimmed = str(text or "").lstrip()
-    lowered = trimmed.lower()
-    return (
-        trimmed.startswith("# AGENTS.md instructions for ")
-        or lowered.startswith("<environment_context>")
-        or lowered.startswith("<skills>")
-        or lowered.startswith("<user_shell_command>")
-        or lowered.startswith("<turn_aborted>")
-        or lowered.startswith("<subagent_notification>")
-    )
-
-
 def is_initial_context_prefix_record(record: dict[str, Any]) -> bool:
     role = str(record.get("role") or "").strip()
     if role in {"system", "developer"}:
@@ -1159,6 +1147,13 @@ def with_fresh_initial_context_prefix(
     prefix, _source_body = split_initial_context_prefix(source_transcript)
     _stale_prefix, body = split_initial_context_prefix(transcript)
     return clean_transcript([*prefix, *body])
+
+
+def should_replace_transcript_from_control_intercept(
+    existing_transcript: list[dict[str, Any]],
+    candidate_transcript: list[dict[str, Any]],
+) -> bool:
+    return conversation_record_count(candidate_transcript) >= conversation_record_count(existing_transcript)
 
 
 def local_compact_source_from_transcript(transcript: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
@@ -1410,8 +1405,12 @@ class ProxyStore:
             if session is None:
                 session = ProxySession(id=session_id, title=f"Codex {session_id[:8]}")
                 self.sessions[session_id] = session
-            source_transcript = strip_context_edit_notice_records(input_items_to_transcript(body.get("input")))
-            session.transcript = clean_transcript(source_transcript)
+            source_transcript = clean_transcript(
+                strip_context_edit_notice_records(input_items_to_transcript(body.get("input")))
+            )
+            existing_transcript = clean_transcript(session.transcript)
+            if should_replace_transcript_from_control_intercept(existing_transcript, source_transcript):
+                session.transcript = source_transcript
             session.pending_transcript = None
             session.local_compact_source_transcript = None
             session.status = "override" if session.edited_transcript is not None else "mirror"
