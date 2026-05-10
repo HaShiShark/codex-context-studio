@@ -1,4 +1,4 @@
-name: Build macOS
+name: Build Release Assets
 
 on:
   workflow_dispatch:
@@ -62,24 +62,69 @@ jobs:
             release/*.zip
             release/*.blockmap
 
+  build-windows:
+    name: Windows package
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build Windows installer
+        run: npm run dist:win
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-context-proxy-windows
+          path: |
+            release/*.exe
+            release/*.blockmap
+            release/*.yml
+
   release:
     name: Attach artifacts to GitHub release
     if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
-    needs: build-macos
+    needs:
+      - build-macos
+      - build-windows
     runs-on: ubuntu-latest
     steps:
-      - name: Download macOS artifacts
+      - name: Download release artifacts
         uses: actions/download-artifact@v4
         with:
           path: release-artifacts
-          pattern: codex-context-proxy-macos-*
+          pattern: codex-context-proxy-*
           merge-multiple: true
 
       - name: Attach artifacts to GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+          body: |
+            Updates:
+            - Fix compact summary duplication.
+            - Improve manual and automatic compact prompts.
+            - Improve auto compact detection during running assistant turns.
           files: |
             release-artifacts/*.dmg
             release-artifacts/*.zip
+            release-artifacts/*.exe
             release-artifacts/*.blockmap
+            release-artifacts/*.yml
