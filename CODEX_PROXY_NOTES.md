@@ -12,7 +12,7 @@ npm run codex
 
 ```powershell
 codex `
-  -c "model_providers.hash-context.name=OpenAI" `
+  -c "model_providers.hash-context.name=Hash Context" `
   -c "model_providers.hash-context.base_url=http://127.0.0.1:8787/v1" `
   -c "model_providers.hash-context.requires_openai_auth=true" `
   -c "model_providers.hash-context.wire_api=responses" `
@@ -33,7 +33,7 @@ codex `
 ## Proxy API
 
 - `POST /v1/responses`: Codex-compatible Responses SSE entry.
-- `POST /v1/responses/compact`: Codex remote compact entry; the proxy swaps in its canonical transcript before forwarding.
+- `POST /v1/responses/compact`: Codex remote compact entry; the proxy swaps in its canonical transcript before forwarding when this path is used.
 - `GET /v1/models`: minimal Codex compatibility response.
 - `GET /api/proxy/sessions`: list captured sessions.
 - `GET /api/proxy/sessions/:id`: read transcript, running status, override status.
@@ -52,16 +52,16 @@ codex `
 
 - `mirror`: no local edit; proxy stores and transparently forwards.
 - `running`: current turn is generating; UI is read-only.
-- `compacting`: Codex requested remote compaction; UI is read-only until the compact output is installed.
+- `compacting`: Codex requested remote compaction or sent a local compact prompt; UI is read-only until the compact result is installed.
 - `override`: user applied an edited transcript; later requests use the edited transcript.
 - `error`: request failed; partial transcript and error details are kept for inspection.
 
 ## Key Constraints
 
-- MVP supports OpenAI Responses HTTP SSE and Responses compact.
+- MVP supports OpenAI Responses HTTP SSE, Responses compact, and current Codex local compact prompt interception.
 - `supports_websockets=false`.
 - Codex may send local proxy requests with `Content-Encoding: zstd`; the proxy decodes those bodies before JSON parsing and forwards plain JSON upstream.
 - Edited context affects the next request, not the currently running request.
-- Override requests remove `previous_response_id`.
+- Override requests remove `previous_response_id` defensively when the field is present.
 - API key auth goes to `https://api.openai.com/v1`.
 - ChatGPT auth goes to `https://chatgpt.com/backend-api/codex`.

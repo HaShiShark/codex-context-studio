@@ -1,14 +1,17 @@
 ﻿from __future__ import annotations
 
 import base64
+import copy
 import json
 import mimetypes
 import os
 import re
+import sqlite3
 import threading
 import time
 import uuid
 from collections.abc import Callable
+from contextlib import closing
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -219,6 +222,7 @@ class AppState:
         self.projects: list[ProjectState] = []
         self.chat_session_ids: list[str] = []
         self.sessions: dict[str, SessionState] = {}
+        self._persisted_session_payloads: dict[str, dict[str, Any]] = {}
         self._load_state()
 
     def refresh_settings(self, settings: Settings) -> None:
@@ -948,6 +952,106 @@ class AppState:
             "project_id": session.project_id,
         }
 
+    def _safe_session_path_part(self, session_id: str) -> str:
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", sanitize_text(session_id).strip()).strip(".-")
+        return safe or uuid.uuid4().hex
+
+    def _session_storage_dir(self, session_id: str) -> Path:
+        return STATE_DIR / "web_sessions" / self._safe_session_path_part(session_id)
+
+    def _session_state_path(self, session_id: str, name: str) -> Path:
+        return self._session_storage_dir(session_id) / name
+
+    def _load_session_payload(self, session_id: str) -> dict[str, Any]:
+        transcript = read_jsonl_state_file(self._session_state_path(session_id, "transcript.jsonl"), [])
+        workbench_history = read_jsonl_state_file(self._session_state_path(session_id, "workbench.jsonl"), [])
+        revisions = read_jsonl_state_file(self._session_state_path(session_id, "revisions.jsonl"), [])
+        restore_path = self._session_state_path(session_id, "restore.json")
+        pending_restore: dict[str, object] | None = None
+        if restore_path.exists():
+            try:
+                raw_restore = json.loads(restore_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                raw_restore = None
+            pending_restore = raw_restore if isinstance(raw_restore, dict) else None
+        return {
+            "transcript": normalize_transcript(transcript),
+            "context_workbench_history": normalize_context_chat_history(workbench_history),
+            "context_revisions": revisions if isinstance(revisions, list) else [],
+            "pending_context_restore": pending_restore,
+        }
+
+    def _append_session_list_delta(
+        self,
+        path: Path,
+        previous: list[Any],
+        current: list[Any],
+    ) -> None:
+        previous_safe = sanitize_value(previous)
+        current_safe = sanitize_value(current)
+        if previous_safe == current_safe:
+            return
+        if (
+            isinstance(previous_safe, list)
+            and isinstance(current_safe, list)
+            and len(current_safe) >= len(previous_safe)
+            and current_safe[: len(previous_safe)] == previous_safe
+        ):
+            appended = current_safe[len(previous_safe) :]
+            if appended:
+                append_jsonl_state_event(
+                    path,
+                    {"type": "append", "created_at": utc_timestamp(), "records": appended},
+                )
+            return
+        append_jsonl_state_event(
+            path,
+            {"type": "set", "created_at": utc_timestamp(), "records": current_safe},
+        )
+
+    def _persist_session_payload(self, session: SessionState) -> None:
+        previous = self._persisted_session_payloads.get(
+            session.session_id,
+            {
+                "transcript": [],
+                "context_workbench_history": [],
+                "context_revisions": [],
+                "pending_context_restore": None,
+            },
+        )
+        current = {
+            "transcript": sanitize_value(session.transcript),
+            "context_workbench_history": sanitize_value(session.context_workbench_history),
+            "context_revisions": sanitize_value(session.context_revisions),
+            "pending_context_restore": sanitize_value(session.pending_context_restore),
+        }
+        self._append_session_list_delta(
+            self._session_state_path(session.session_id, "transcript.jsonl"),
+            previous.get("transcript", []),
+            current["transcript"],
+        )
+        self._append_session_list_delta(
+            self._session_state_path(session.session_id, "workbench.jsonl"),
+            previous.get("context_workbench_history", []),
+            current["context_workbench_history"],
+        )
+        self._append_session_list_delta(
+            self._session_state_path(session.session_id, "revisions.jsonl"),
+            previous.get("context_revisions", []),
+            current["context_revisions"],
+        )
+        if previous.get("pending_context_restore") != current["pending_context_restore"]:
+            restore_path = self._session_state_path(session.session_id, "restore.json")
+            restore_path.parent.mkdir(parents=True, exist_ok=True)
+            if current["pending_context_restore"] is None:
+                restore_path.write_text("null", encoding="utf-8")
+            else:
+                restore_path.write_text(
+                    json.dumps(current["pending_context_restore"], ensure_ascii=False, separators=(",", ":")),
+                    encoding="utf-8",
+                )
+        self._persisted_session_payloads[session.session_id] = copy.deepcopy(current)
+
     def _load_state(self) -> None:
         raw_state: dict[str, Any] = {}
         if STATE_FILE.exists():
@@ -996,20 +1100,20 @@ class AppState:
                     continue
                 scope = self._normalize_scope(item.get("scope"))
                 project_id = sanitize_text(item.get("project_id") or "").strip() or None
-                raw_transcript = item.get("transcript")
-                transcript = raw_transcript if isinstance(raw_transcript, list) else []
+                session_payload = self._load_session_payload(safe_session_id)
                 session = SessionState(
                     session_id=safe_session_id,
                     title=sanitize_text(item.get("title") or NEW_SESSION_TITLE).strip() or NEW_SESSION_TITLE,
                     scope=scope,
                     project_id=project_id if scope == "project" else None,
                     agent=None,
-                    transcript=transcript,
-                    context_workbench_history=normalize_context_chat_history(item.get("context_workbench_history")),
-                    context_revisions=item.get("context_revisions") if isinstance(item.get("context_revisions"), list) else [],
-                    pending_context_restore=item.get("pending_context_restore") if isinstance(item.get("pending_context_restore"), dict) else None,
+                    transcript=session_payload["transcript"],
+                    context_workbench_history=session_payload["context_workbench_history"],
+                    context_revisions=session_payload["context_revisions"],
+                    pending_context_restore=session_payload["pending_context_restore"],
                     agent_hydrated=False,
                 )
+                self._persisted_session_payloads[safe_session_id] = copy.deepcopy(session_payload)
                 self.sessions[safe_session_id] = session
 
         raw_chat_session_ids = raw_state.get("chat_session_ids", [])
@@ -1087,6 +1191,8 @@ class AppState:
 
     def _save_state_locked(self) -> None:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
+        for session in self.sessions.values():
+            self._persist_session_payload(session)
         payload = {
             "projects": [
                 {
@@ -1104,10 +1210,7 @@ class AppState:
                     "title": session.title,
                     "scope": session.scope,
                     "project_id": session.project_id,
-                    "transcript": sanitize_value(session.transcript),
-                    "context_workbench_history": sanitize_value(session.context_workbench_history),
-                    "context_revisions": sanitize_value(session.context_revisions),
-                    "pending_context_restore": sanitize_value(session.pending_context_restore),
+                    "session_dir": self._session_storage_dir(session_id).relative_to(STATE_DIR).as_posix(),
                 }
                 for session_id, session in self.sessions.items()
             },
@@ -2320,6 +2423,13 @@ def utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
+def append_jsonl_state_event(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(sanitize_value(payload), ensure_ascii=False, separators=(",", ":")))
+        handle.write("\n")
+
+
 def get_token_encoding() -> Any | None:
     global _TOKEN_ENCODING, _TOKEN_ENCODING_LOAD_FAILED
 
@@ -2337,19 +2447,45 @@ def get_token_encoding() -> Any | None:
     return _TOKEN_ENCODING
 
 
+@dataclass(slots=True)
+class _TokenCacheEntry:
+    value: int
+
+_TOKEN_CACHE: dict[int, _TokenCacheEntry] = {}
+_TOKEN_CACHE_MAX = 4096
+
+
+def _token_cache_key(text: str) -> int:
+    return hash(text)
+
+
 def estimate_token_count(text: str) -> int:
     safe_text = sanitize_text(text)
     if not safe_text.strip():
         return 0
 
+    cache_key = _token_cache_key(safe_text)
+    cached = _TOKEN_CACHE.get(cache_key)
+    if cached is not None:
+        return cached.value
+
     encoding = get_token_encoding()
     if encoding is not None:
         try:
-            return len(encoding.encode(safe_text))
+            result = len(encoding.encode(safe_text))
         except Exception:
-            pass
+            result = _estimate_token_count_fallback(safe_text)
+    else:
+        result = _estimate_token_count_fallback(safe_text)
 
-    compact = safe_text.strip()
+    if len(_TOKEN_CACHE) >= _TOKEN_CACHE_MAX:
+        _TOKEN_CACHE.clear()
+    _TOKEN_CACHE[cache_key] = _TokenCacheEntry(result)
+    return result
+
+
+def _estimate_token_count_fallback(text: str) -> int:
+    compact = text.strip()
     ascii_tokens = re.findall(r"[A-Za-z0-9_]+", compact)
     non_ascii_chars = [char for char in compact if not char.isspace() and not char.isascii()]
     return max(1, len(ascii_tokens) + len(non_ascii_chars))
@@ -3270,37 +3406,181 @@ def build_tool_event_from_provider_items(
     }
 
 
-def context_detail_block(block: dict[str, object], block_number: int) -> dict[str, object]:
-    safe_block = sanitize_value(block)
-    if sanitize_text(safe_block.get("kind") or "").strip() != "tool":
-        return {
-            "block_number": block_number,
-            **safe_block,
-        }
+def context_node_item_ref(node_number: int, item_number: int) -> str:
+    return f"node:{node_number}:item:{item_number}"
 
-    tool_event = safe_block.get("tool_event")
-    if not isinstance(tool_event, dict):
-        return {
-            "block_number": block_number,
-            **safe_block,
-        }
 
-    slim_tool_event = {
-        "name": sanitize_text(tool_event.get("name") or ""),
-        "call_id": sanitize_text(tool_event.get("call_id") or ""),
-        "arguments": sanitize_value(tool_event.get("arguments")),
-        "output_preview": sanitize_text(tool_event.get("output_preview") or ""),
-        "display_title": sanitize_text(tool_event.get("display_title") or ""),
-        "display_detail": sanitize_text(tool_event.get("display_detail") or ""),
-        "display_result": sanitize_text(tool_event.get("display_result") or ""),
-        "status": sanitize_text(tool_event.get("status") or ""),
-    }
+def context_block_ref(block_number: int, field: str = "") -> str:
+    suffix = f".{field}" if field else ""
+    return f"block:{block_number}{suffix}"
+
+
+def context_model_block_base(block_number: int, kind: str) -> dict[str, object]:
     return {
         "block_number": block_number,
-        "kind": "tool",
-        "tool_event": slim_tool_event,
-        "full_output_source": "provider_items tool output item with the same call_id",
+        "block_ref": context_block_ref(block_number),
+        "kind": kind,
     }
+
+
+def append_context_model_text_block(
+    blocks: list[dict[str, object]],
+    *,
+    node_number: int,
+    item: dict[str, Any],
+    item_number: int,
+    kind: str,
+    content: str,
+) -> None:
+    block_number = len(blocks) + 1
+    safe_content = sanitize_text(content)
+    block = context_model_block_base(block_number, kind)
+    block.update(
+        {
+            "content_ref": context_block_ref(block_number, "content"),
+            "content": safe_content,
+            "item_number": item_number,
+            "item_ref": context_node_item_ref(node_number, item_number),
+            "item_type": provider_item_type(item) or "unknown",
+            "token_estimate": estimate_token_count(safe_content),
+            "text_chars": len(safe_content),
+        }
+    )
+    role = sanitize_text(item.get("role") or "").strip()
+    if role:
+        block["role"] = role
+    blocks.append(block)
+
+
+def context_model_blocks_from_provider_items(
+    provider_items: list[dict[str, Any]],
+    *,
+    node_number: int,
+) -> list[dict[str, object]]:
+    blocks: list[dict[str, object]] = []
+    consumed_output_indexes: set[int] = set()
+    output_indexes_by_call_id: dict[str, list[int]] = {}
+
+    for index, item in enumerate(provider_items):
+        if provider_item_type(item) not in CODEX_TOOL_OUTPUT_ITEM_TYPES:
+            continue
+        call_id = provider_item_call_id(item)
+        if call_id:
+            output_indexes_by_call_id.setdefault(call_id, []).append(index)
+
+    for index, item in enumerate(provider_items):
+        item_type = provider_item_type(item)
+        item_number = index + 1
+        if item_type == "message":
+            append_context_model_text_block(
+                blocks,
+                node_number=node_number,
+                item=item,
+                item_number=item_number,
+                kind="text",
+                content=extract_text_from_provider_message_content(item.get("content")),
+            )
+            continue
+
+        if item_type in {"compaction", "compaction_summary"}:
+            append_context_model_text_block(
+                blocks,
+                node_number=node_number,
+                item=item,
+                item_number=item_number,
+                kind="compaction",
+                content=visible_text_from_compaction_provider_item(item),
+            )
+            continue
+
+        if item_type == "reasoning":
+            append_context_model_text_block(
+                blocks,
+                node_number=node_number,
+                item=item,
+                item_number=item_number,
+                kind="reasoning",
+                content=provider_payload_text(item.get("summary") or item.get("content") or item.get("text")),
+            )
+            continue
+
+        if item_type in CODEX_TOOL_CALL_ITEM_TYPES:
+            output_item: dict[str, Any] | None = None
+            output_index: int | None = None
+            allowed_output_types = CODEX_TOOL_OUTPUT_TYPES_BY_CALL_TYPE.get(item_type, set())
+            call_id = provider_item_call_id(item)
+            for candidate_index in output_indexes_by_call_id.get(call_id, []):
+                if candidate_index in consumed_output_indexes:
+                    continue
+                candidate_output = provider_items[candidate_index]
+                if allowed_output_types and provider_item_type(candidate_output) not in allowed_output_types:
+                    continue
+                output_item = candidate_output
+                output_index = candidate_index
+                consumed_output_indexes.add(candidate_index)
+                break
+
+            block_number = len(blocks) + 1
+            arguments = provider_payload_text(tool_call_arguments_value(item))
+            output = tool_output_text_from_provider_item(output_item or item)
+            block = context_model_block_base(block_number, "tool")
+            block.update(
+                {
+                    "name": tool_display_title_from_provider_item(item),
+                    "tool_type": item_type,
+                    "call_id": call_id,
+                    "call_item_number": item_number,
+                    "call_item_ref": context_node_item_ref(node_number, item_number),
+                    "arguments_ref": context_block_ref(block_number, "arguments"),
+                    "arguments": arguments,
+                    "argument_token_estimate": estimate_token_count(arguments),
+                    "argument_chars": len(arguments),
+                }
+            )
+            if output_item is not None and output_index is not None:
+                output_item_number = output_index + 1
+                block.update(
+                    {
+                        "output_item_number": output_item_number,
+                        "output_item_ref": context_node_item_ref(node_number, output_item_number),
+                        "output_item_type": provider_item_type(output_item) or "unknown",
+                        "output_ref": context_block_ref(block_number, "output"),
+                        "output": output,
+                        "output_token_estimate": estimate_token_count(output),
+                        "output_chars": len(output),
+                    }
+                )
+            elif item_type in CODEX_STANDALONE_TOOL_CALL_ITEM_TYPES and output:
+                block.update(
+                    {
+                        "output_ref": context_block_ref(block_number, "output"),
+                        "output": output,
+                        "output_token_estimate": estimate_token_count(output),
+                        "output_chars": len(output),
+                    }
+                )
+            blocks.append(block)
+            continue
+
+        if item_type in CODEX_TOOL_OUTPUT_ITEM_TYPES and index not in consumed_output_indexes:
+            output = tool_output_text_from_provider_item(item)
+            block_number = len(blocks) + 1
+            block = context_model_block_base(block_number, "tool_output")
+            block.update(
+                {
+                    "call_id": provider_item_call_id(item),
+                    "output_item_number": item_number,
+                    "output_item_ref": context_node_item_ref(node_number, item_number),
+                    "output_item_type": item_type,
+                    "output_ref": context_block_ref(block_number, "output"),
+                    "output": output,
+                    "output_token_estimate": estimate_token_count(output),
+                    "output_chars": len(output),
+                }
+            )
+            blocks.append(block)
+
+    return blocks
 
 
 def compile_record_from_provider_items(
@@ -3418,6 +3698,7 @@ def compile_record_from_provider_items(
 def context_record_details_payload(record: dict[str, object], *, node_number: int) -> dict[str, object]:
     overview = context_record_overview(record, node_number=node_number)
     provider_items = normalize_provider_items(record.get("providerItems"))
+    model_blocks = context_model_blocks_from_provider_items(provider_items, node_number=node_number)
     return {
         "node_number": node_number,
         "role": overview["role"],
@@ -3425,18 +3706,10 @@ def context_record_details_payload(record: dict[str, object], *, node_number: in
         "tool_token_estimate": overview["tool_token_estimate"],
         "tool_usage": overview["tool_usage"],
         "preview": overview["preview"],
-        "item_count": len(provider_items),
-        "text": sanitize_text(record.get("text") or ""),
+        "block_count": len(model_blocks),
+        "content_source": "blocks",
         "attachments": sanitize_value(normalize_attachment_records(record.get("attachments"))),
-        "blocks": [
-            context_detail_block(block, block_number)
-            for block_number, block in enumerate(normalize_message_blocks(record.get("blocks")), start=1)
-        ],
-        "provider_items": provider_items,
-        "items": [
-            provider_item_detail(item, item_number)
-            for item_number, item in enumerate(provider_items, start=1)
-        ],
+        "blocks": model_blocks,
     }
 
 
@@ -3459,7 +3732,7 @@ def build_context_workspace_snapshot(
         "- 系统/开发者指令和默认环境说明属于内部前缀，不在本快照中展示，也不能被选择或编辑。",
         "- 非 assistant 节点直接给全文，assistant 节点默认只给上下文地图折叠态同款首句预览，预览后面的内容你并不可见。",
         "- 压缩 assistant 节点前必须先调用 get_context_node_details 获取完整节点内容；不要用首句预览编写压缩摘要。",
-        "- 如果你需要定位或编辑 provider item，先用明确的 Node # 调用 get_context_node_details，再根据返回的 item # 继续操作。",
+        "- 如果你需要定位或编辑 content item，先用明确的 Node # 调用 get_context_node_details，再根据返回的 item # 继续操作。",
         "",
         "## 节点概览",
     ]
@@ -3561,18 +3834,87 @@ def provider_message_record(item: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def latest_proxy_instruction_prefix_records() -> list[dict[str, Any]]:
+def proxy_state_sqlite_file() -> Path:
+    return PROXY_STATE_FILE.with_suffix(".sqlite3")
+
+
+def read_jsonl_state_file(path: Path, default: Any) -> Any:
+    state = sanitize_value(default)
+    if not path.exists():
+        return state
     try:
-        data = json.loads(PROXY_STATE_FILE.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return []
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return state
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        event_type = sanitize_text(event.get("type") or "").strip()
+        if event_type == "clear":
+            state = None
+        elif event_type == "set":
+            state = sanitize_value(event.get("records") if isinstance(event.get("records"), list) else [])
+        elif event_type == "append":
+            records = event.get("records")
+            if isinstance(state, list) and isinstance(records, list):
+                state = [*state, *sanitize_value(records)]
+            elif isinstance(records, list):
+                state = sanitize_value(records)
+    return sanitize_value(default) if state is None and default is not None else state
 
-    raw_sessions = data.get("sessions") if isinstance(data, dict) else None
-    if not isinstance(raw_sessions, list):
-        return []
 
-    active_session_id = sanitize_text(data.get("active_session_id") or "").strip()
-    sessions = [session for session in raw_sessions if isinstance(session, dict)]
+def latest_proxy_sessions_from_sqlite() -> tuple[str, list[dict[str, Any]]] | None:
+    sqlite_file = proxy_state_sqlite_file()
+    if not sqlite_file.exists():
+        return None
+    try:
+        with closing(sqlite3.connect(sqlite_file)) as conn:
+            active_row = conn.execute("SELECT value FROM meta WHERE key = 'active_session_id'").fetchone()
+            active_session_id = sanitize_text(active_row[0] if active_row else "").strip()
+            rows = conn.execute(
+                """
+                SELECT id, updated_at, session_dir
+                FROM sessions
+                ORDER BY updated_at DESC
+                """
+            ).fetchall()
+    except sqlite3.Error:
+        return None
+
+    sessions: list[dict[str, Any]] = []
+    sqlite_parent = sqlite_file.parent
+    for session_id, updated_at, session_dir in rows:
+        safe_session_id = sanitize_text(session_id or "").strip()
+        if not safe_session_id:
+            continue
+        request_log: list[dict[str, Any]] = []
+        safe_session_dir = sanitize_text(session_dir or "").strip()
+        if safe_session_dir:
+            raw_log = read_jsonl_state_file(sqlite_parent / safe_session_dir / "request_log.jsonl", [])
+            if isinstance(raw_log, list):
+                request_log = [item for item in raw_log if isinstance(item, dict)]
+        sessions.append(
+            {
+                "id": safe_session_id,
+                "updated_at": sanitize_text(updated_at or ""),
+                "request_log": request_log,
+            }
+        )
+    return active_session_id, sessions
+
+
+def latest_proxy_instruction_prefix_records() -> list[dict[str, Any]]:
+    sqlite_payload = latest_proxy_sessions_from_sqlite()
+    if sqlite_payload is None:
+        return []
+    active_session_id, sessions = sqlite_payload
+
     sessions.sort(
         key=lambda session: (
             sanitize_text(session.get("id") or "").strip() == active_session_id,
@@ -4143,18 +4485,14 @@ class ContextWorkbenchDraft:
         return normalize_provider_items(node.record.get("providerItems"))
 
     def _resolve_item_detail(self, node: ContextWorkbenchDraftNode, item_number: int) -> dict[str, object]:
-        items = self.node_details([node])[0].get("items")
-        if not isinstance(items, list):
-            raise ValueError("node detail items are unavailable")
-        if item_number < 1 or item_number > len(items):
+        provider_items = self._provider_items_for_node(node)
+        if item_number < 1 or item_number > len(provider_items):
             raise ValueError(f"item #{item_number} does not exist in {node.label}")
-        item = items[item_number - 1]
-        if not isinstance(item, dict):
-            raise ValueError(f"item #{item_number} could not be resolved in {node.label}")
-        return item
+        item = provider_items[item_number - 1]
+        return provider_item_detail(item, item_number)
 
     def _item_ref(self, node: ContextWorkbenchDraftNode, item_number: int) -> str:
-        return f"node:{int(node.source_node_number or 0)}:item:{item_number}"
+        return context_node_item_ref(int(node.source_node_number or 0), item_number)
 
     def _parse_item_ref(self, raw_ref: Any) -> tuple[int, int] | None:
         safe_ref = sanitize_text(raw_ref or "").strip().lower()
@@ -4815,7 +5153,7 @@ class ContextWorkbenchDraft:
         original_provider_item = provider_items[item_number - 1]
         normalized_replacement = normalize_provider_items([replacement_item])
         if len(normalized_replacement) != 1:
-            raise ValueError("replacement_item must normalize into exactly one provider item")
+            raise ValueError("replacement_item must normalize into exactly one content item")
         validate_context_replacement_identity(original_provider_item, normalized_replacement[0])
         provider_items[item_number - 1] = normalized_replacement[0]
         validate_context_provider_items(provider_items)
@@ -4952,19 +5290,19 @@ class ContextWorkbenchToolRegistry:
             {
                 "id": "get_context_node_details",
                 "label": "Node Details",
-                "description": "Expand one or more nodes into full blocks and provider items before editing them.",
+                "description": "Expand one or more nodes into full editable blocks before editing them.",
                 "status": "available",
             },
             {
                 "id": "find_context_items",
                 "label": "Find Items",
-                "description": "Find provider items by node, item, type, role, text, or tool filters.",
+                "description": "Find content items by node, item, type, role, text, or tool filters.",
                 "status": "available",
             },
             {
                 "id": "edit_context_items",
                 "label": "Edit Items",
-                "description": "Batch delete, replace, or compress provider items selected by filters.",
+                "description": "Batch delete, replace, or compress content items selected by filters.",
                 "status": "available",
             },
             {
@@ -4988,7 +5326,7 @@ class ContextWorkbenchToolRegistry:
             {
                 "id": "replace_context_item",
                 "label": "Replace Item",
-                "description": "Replace one item inside a single node with a new provider item.",
+                "description": "Replace one item inside a single node with a new content item.",
                 "status": "available",
             },
             {
@@ -5181,7 +5519,7 @@ class ContextWorkbenchToolRegistry:
                     {
                         "payload_kind": "node_detail_list",
                         "selected_node_numbers": list(self.draft.selected_node_numbers),
-                        "items": details,
+                        "nodes": details,
                         "cached_node_numbers": cached_node_numbers,
                         "cached_message": (
                             f"Node #{cached_label} details were already returned earlier in this same workbench turn. "
@@ -5201,7 +5539,7 @@ class ContextWorkbenchToolRegistry:
         return ContextWorkbenchToolDefinition(
             name="get_context_node_details",
             label="Node Details",
-            description="Expand one or more nodes into full blocks and provider items before editing them.",
+            description="Expand one or more nodes into full editable blocks before editing them.",
             parameters={
                 "type": "object",
                 "properties": {
@@ -5235,7 +5573,7 @@ class ContextWorkbenchToolRegistry:
                 "item_refs": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Optional exact item refs returned by find_context_items, e.g. node:2:item:4.",
+                    "description": "Optional exact item refs returned by get_context_node_details or find_context_items, e.g. node:2:item:4.",
                 },
                 "item_types": {
                     "type": "array",
@@ -5243,7 +5581,7 @@ class ContextWorkbenchToolRegistry:
                         "type": "string",
                         "enum": sorted(CONTEXT_EDITABLE_PROVIDER_ITEM_TYPES),
                     },
-                    "description": "Optional provider item types to match.",
+                    "description": "Optional content item types to match.",
                 },
                 "roles": {
                     "type": "array",
@@ -5255,11 +5593,11 @@ class ContextWorkbenchToolRegistry:
                 },
                 "tool_output_only": {
                     "type": "boolean",
-                    "description": "When true, match only tool output provider items.",
+                    "description": "When true, match only tool output content items.",
                 },
                 "tool_call_only": {
                     "type": "boolean",
-                    "description": "When true, match only tool call provider items.",
+                    "description": "When true, match only tool call content items.",
                 },
                 "text_contains": {
                     "type": "string",
@@ -5316,7 +5654,7 @@ class ContextWorkbenchToolRegistry:
             name="find_context_items",
             label="Find Items",
             description=(
-                "Search editable provider items by node, item ref, type, role, tool-call/tool-output kind, or text substring. "
+                "Search editable content items by node, item ref, type, role, tool-call/tool-output kind, or text substring. "
                 "Returns lightweight previews and metadata only; use this before get_context_node_details for bulk edits."
             ),
             parameters={
@@ -5354,7 +5692,7 @@ class ContextWorkbenchToolRegistry:
             name="edit_context_items",
             label="Edit Items",
             description=(
-                "Batch edit provider items selected by find-style filters. "
+                "Batch edit content items selected by find-style filters. "
                 "Use replace_content or compress_content to rewrite only the editable content while preserving type/call_id; "
                 "use delete to remove selected items, with tool call/output pairs removed atomically so Codex input stays valid."
             ),
@@ -5597,7 +5935,7 @@ class ContextWorkbenchToolRegistry:
                 return self._item_resolution_execution(
                     node=node,
                     item_number=item_number,
-                    message="replacement_item must be an object that matches one editable provider item.",
+                    message="replacement_item must be an object that matches one editable content item.",
                 )
 
             result = self.draft.replace_item(
@@ -5617,7 +5955,7 @@ class ContextWorkbenchToolRegistry:
         return ContextWorkbenchToolDefinition(
             name="replace_context_item",
             label="Replace Item",
-            description="Replace one item inside a single node with a new provider item.",
+            description="Replace one item inside a single node with a new content item.",
             parameters={
                 "type": "object",
                 "properties": {
@@ -6062,8 +6400,8 @@ def build_context_chat_runtime(
             "",
             "- get_context_node_details(node_numbers)",
             "  展开一个或多个节点的完整详情。",
-            "  返回 node_detail_list，包括节点 text、blocks、provider_items，以及可编辑的 item # 视图。",
-            "  用于读取 assistant 节点全文、工具调用、工具输出，或准备做精细 item 级编辑。",
+            "  返回 node_detail_list.nodes，完整内容只在每个 node 的 blocks 内出现一次；文本块用 content，工具块用 arguments/output。"
+            "  block 上会给 item_number/item_ref，精细编辑时用这些引用回写当前 transcript。",
             "",
             "- compress_context_nodes(node_numbers, summary_markdown, title?, style?)",
             "  用一个摘要节点替换一个或多个完整节点。",
@@ -6079,7 +6417,7 @@ def build_context_chat_runtime(
             "- replace_context_item(node_numbers, item_number, replacement_item, reason?)",
             "- compress_context_item(node_numbers, item_number, compressed_content, style?)",
             "  这些是精细 item 级编辑工具。",
-            "  只在用户明确要求处理某个 provider item、某段 assistant 文本、某个工具调用或某个工具输出时使用。",
+            "  只在用户明确要求处理某个 content item、某段 assistant 文本、某个工具调用或某个工具输出时使用。",
             "  一般先 get_context_node_details，确认 item # 后再调用。",
             "  默认不要把模糊的压缩/删除请求理解成 item 级编辑。",
             "",
@@ -6099,7 +6437,7 @@ def build_context_chat_runtime(
             "- 用户说“压缩有关前端的讨论”“删掉关于某主题的部分”：先根据快照定位相关节点；能判断就直接处理，范围不明确才简短确认。",
             "- 用户说“压缩这个 assistant 节点”“压缩工具输出很多的那轮”：先 get_context_node_details，再基于完整内容写 summary_markdown。",
             "- 用户说“只删某个工具输出 / 改某个工具调用 / 保留节点但缩短某个 item”：走 item 级工具。",
-            "- 模糊请求默认按节点级或主题级的大方向处理，不要过早拆到 provider item。",
+            "- 模糊请求默认按节点级或主题级的大方向处理，不要过早拆到 content item。",
             "- 选择最少、最直接的工具路径。不要重复展开同一个节点，不要反复确认显而易见的范围，不要啰嗦解释内部流程。",
             "- 如果工具返回 target_resolution 或 item_resolution，说明目标不明确；根据返回信息重新明确 node_numbers 或 item #，必要时再问用户。",
             "- 只要本轮做过编辑，结束前先 confirm_working_snapshot，再 set_context_revision_summary，最后用用户的语言简短说明结果。",
@@ -7266,17 +7604,15 @@ def proxy_state_contains_session(session_id: str) -> bool:
     safe_session_id = sanitize_text(session_id or "").strip()
     if not safe_session_id:
         return False
+    sqlite_file = proxy_state_sqlite_file()
+    if not sqlite_file.exists():
+        return False
     try:
-        raw_state = json.loads(PROXY_STATE_FILE.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        with closing(sqlite3.connect(sqlite_file)) as conn:
+            row = conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (safe_session_id,)).fetchone()
+    except sqlite3.Error:
         return False
-    sessions = raw_state.get("sessions")
-    if not isinstance(sessions, list):
-        return False
-    return any(
-        isinstance(item, dict) and sanitize_text(item.get("id") or "").strip() == safe_session_id
-        for item in sessions
-    )
+    return row is not None
 
 
 def codex_proxy_session_exists(session_id: str) -> bool:

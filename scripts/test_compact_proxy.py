@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import http.client
 import json
+import sqlite3
 import sys
 import tempfile
 import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -405,10 +407,89 @@ def test_proxy_usage_summary_records_and_resets_by_session() -> None:
         assert "active_transcript" not in listed_session
         assert "raw_transcript" not in listed_session
 
+        with closing(sqlite3.connect(Path(temp_dir) / "proxy_state.sqlite3")) as conn:
+            event_count = conn.execute(
+                "SELECT COUNT(*) FROM usage_events WHERE session_id = ?",
+                (SESSION_ID,),
+            ).fetchone()[0]
+            summary_row = conn.execute(
+                "SELECT summary_json FROM usage_summaries WHERE session_id = ?",
+                (SESSION_ID,),
+            ).fetchone()
+        assert event_count == 2
+        assert summary_row is not None
+        assert json.loads(summary_row[0])["request_count"] == 2
+
+        reloaded_store = proxy_server.ProxyStore(Path(temp_dir) / "proxy_state.json")
+        reloaded_summary = reloaded_store.session_usage(SESSION_ID)["summary"]
+        assert reloaded_summary["request_count"] == 2
+        assert reloaded_summary["input_tokens"] == 110
+
         reset = store.reset_usage(SESSION_ID)
         assert reset["cleared_count"] == 2
         assert reset["summary"]["request_count"] == 0
         assert store.session_usage(SESSION_ID)["summary"]["request_count"] == 0
+
+
+def test_proxy_store_can_save_only_one_session() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        store = proxy_server.ProxyStore(Path(temp_dir) / "proxy_state.json")
+        store.sessions["session-one"] = proxy_server.ProxySession(
+            id="session-one",
+            title="One",
+            transcript=[record("user", "one")],
+        )
+        store.sessions["session-two"] = proxy_server.ProxySession(
+            id="session-two",
+            title="Two",
+            transcript=[record("user", "two")],
+        )
+        store.save()
+
+        original_save_session = store._save_session_to_db
+        saved_session_ids: list[str] = []
+
+        def spy_save_session(conn: sqlite3.Connection, session: proxy_server.ProxySession) -> None:
+            saved_session_ids.append(session.id)
+            original_save_session(conn, session)
+
+        store._save_session_to_db = spy_save_session  # type: ignore[method-assign]
+        store.sessions["session-one"].title = "One changed"
+        store.save("session-one")
+
+        assert saved_session_ids == ["session-one"]
+
+
+def test_proxy_usage_update_does_not_rewrite_session_payload() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        store = proxy_server.ProxyStore(Path(temp_dir) / "proxy_state.json")
+        store.sessions[SESSION_ID] = proxy_server.ProxySession(
+            id=SESSION_ID,
+            title="Codex fake",
+            transcript=[record("user", "hello")],
+        )
+        store.save()
+
+        def fail_session_payload_save(conn: sqlite3.Connection, session: proxy_server.ProxySession) -> None:
+            raise AssertionError("usage-only updates must not save full session payload")
+
+        store._save_session_to_db = fail_session_payload_save  # type: ignore[method-assign]
+        store.record_usage(SESSION_ID, "main", "gpt-test", {"input_tokens": 7, "output_tokens": 3})
+
+        with closing(sqlite3.connect(Path(temp_dir) / "proxy_state.sqlite3")) as conn:
+            event_count = conn.execute(
+                "SELECT COUNT(*) FROM usage_events WHERE session_id = ?",
+                (SESSION_ID,),
+            ).fetchone()[0]
+            summary = json.loads(
+                conn.execute(
+                    "SELECT summary_json FROM usage_summaries WHERE session_id = ?",
+                    (SESSION_ID,),
+                ).fetchone()[0]
+            )
+        assert event_count == 1
+        assert summary["request_count"] == 1
+        assert summary["input_tokens"] == 7
 
 
 def test_proxy_usage_routes_record_main_and_context_workbench() -> None:
@@ -1438,6 +1519,211 @@ def test_context_workbench_finds_tool_outputs_lightly() -> None:
     assert len(execution.output_text) < 3000
 
 
+def test_override_merge_does_not_reappend_existing_latest_turn_tail() -> None:
+    edited = [
+        record("assistant", "ready"),
+        record("user", "compressed T01-T03"),
+        record("user", "T04 task"),
+        record("assistant", "T04 answer"),
+    ]
+    mirrored = [
+        record("assistant", "ready"),
+        record("user", "T01 task"),
+        record("assistant", "T01 answer"),
+        record("user", "T02 task"),
+        record("assistant", "T02 answer"),
+    ]
+    source = [
+        *mirrored,
+        record("user", "T04 task"),
+        record("assistant", "T04 answer"),
+    ]
+
+    merged = proxy_server.merge_override_transcript(edited, mirrored, source)
+
+    assert provider_texts(merged) == provider_texts(edited)
+
+
+
+def test_override_merge_updates_latest_assistant_without_readding_user_turn() -> None:
+    call_item = {
+        "type": "function_call",
+        "call_id": TOOL_CALL_ID,
+        "name": "shell_command",
+        "arguments": json.dumps({"command": "Get-ChildItem web_server.py"}),
+    }
+    output_item = {
+        "type": "function_call_output",
+        "call_id": TOOL_CALL_ID,
+        "output": "web_server.py 3006 lines",
+    }
+    raw_before_assistant = [
+        record("developer", "instructions"),
+        record("user", "original project listing request"),
+        record("assistant", "very long project listing"),
+        record("user", "web_sever能继续拆吗"),
+    ]
+    edited = [
+        record("developer", "instructions"),
+        record("user", "compressed project listing"),
+        record("user", "web_sever能继续拆吗"),
+        record("assistant", "我先看一下 web_server.py 的体量和职责边界"),
+    ]
+    mirrored = [
+        *raw_before_assistant,
+        record("assistant", "我先看一下 web_server.py 的体量和职责边界"),
+    ]
+    source = [
+        *raw_before_assistant,
+        proxy_server.transcript_record(
+            "assistant",
+            "我先看一下 web_server.py 的体量和职责边界",
+            [
+                proxy_server.provider_message("assistant", "我先看一下 web_server.py 的体量和职责边界"),
+                call_item,
+                output_item,
+            ],
+        ),
+    ]
+
+    merged = proxy_server.merge_override_transcript(edited, mirrored, source)
+
+    assert provider_texts(merged) == [
+        "instructions",
+        "compressed project listing",
+        "web_sever能继续拆吗",
+        "我先看一下 web_server.py 的体量和职责边界",
+    ]
+    assert provider_texts(merged).count("web_sever能继续拆吗") == 1
+    assert any(
+        item.get("type") == "function_call_output"
+        and item.get("output") == "web_server.py 3006 lines"
+        for item in merged[-1].get("providerItems", [])
+    )
+
+
+
+def test_override_base_advances_so_source_tail_is_merged_once() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        store = proxy_server.ProxyStore(Path(temp_dir) / "proxy_state.json")
+        raw_base = [
+            record("assistant", "ready"),
+            record("user", "T01 task"),
+            record("assistant", "T01 answer"),
+            record("user", "T02 task"),
+            record("assistant", "T02 answer"),
+        ]
+        edited_base = [
+            record("assistant", "ready"),
+            record("user", "compressed T01-T02"),
+        ]
+        store.sessions[SESSION_ID] = proxy_server.ProxySession(
+            id=SESSION_ID,
+            title="Codex fake",
+            transcript=proxy_server.clean_transcript(raw_base),
+        )
+        store.override(SESSION_ID, edited_base)
+
+        first_source = [*raw_base, record("user", "T04 task")]
+        first_body = {"input": proxy_server.transcript_to_input_items(first_source)}
+        store.begin_request(SESSION_ID, first_body, {"x-codex-session-id": SESSION_ID})
+        session = store.sessions[SESSION_ID]
+
+        assert provider_texts(session.edited_transcript or []) == [
+            "ready",
+            "compressed T01-T02",
+            "T04 task",
+        ]
+        assert provider_texts(session.override_base_transcript or []) == provider_texts(first_source)
+
+        store.begin_request(SESSION_ID, first_body, {"x-codex-session-id": SESSION_ID})
+        assert provider_texts(store.sessions[SESSION_ID].edited_transcript or []) == [
+            "ready",
+            "compressed T01-T02",
+            "T04 task",
+        ]
+
+        store.complete_response(
+            SESSION_ID,
+            [proxy_server.provider_message("assistant", "T04 answer")],
+            "T04 answer",
+        )
+        completed = store.sessions[SESSION_ID]
+        assert provider_texts(completed.edited_transcript or []) == [
+            "ready",
+            "compressed T01-T02",
+            "T04 task",
+            "T04 answer",
+        ]
+        assert provider_texts(completed.override_base_transcript or []) == [
+            *provider_texts(first_source),
+            "T04 answer",
+        ]
+
+        next_source = [*first_source, record("assistant", "T04 answer"), record("user", "T05 task")]
+        next_body = {"input": proxy_server.transcript_to_input_items(next_source)}
+        store.begin_request(SESSION_ID, next_body, {"x-codex-session-id": SESSION_ID})
+
+        assert provider_texts(store.sessions[SESSION_ID].edited_transcript or []) == [
+            "ready",
+            "compressed T01-T02",
+            "T04 task",
+            "T04 answer",
+            "T05 task",
+        ]
+
+
+
+def test_context_node_details_return_editable_blocks_without_provider_payload() -> None:
+    long_output = "tool-output-" + "X" * 4000
+    transcript = web_server.normalize_transcript(
+        [
+            {
+                "role": "assistant",
+                "text": "done",
+                "attachments": [],
+                "toolEvents": [],
+                "blocks": [],
+                "providerItems": [
+                    {
+                        "type": "function_call",
+                        "call_id": TOOL_CALL_ID,
+                        "name": "shell_command",
+                        "arguments": json.dumps({"command": "Get-ChildItem"}),
+                    },
+                    {
+                        "type": "function_call_output",
+                        "call_id": TOOL_CALL_ID,
+                        "output": long_output,
+                    },
+                    {"type": "message", "role": "assistant", "content": "done"},
+                ],
+            }
+        ]
+    )
+
+    detail = web_server.context_record_details_payload(transcript[0], node_number=1)
+    encoded = json.dumps(detail, ensure_ascii=False)
+
+    assert "text" not in detail
+    assert "provider_items" not in detail
+    assert "items" not in detail
+    assert detail["content_source"] == "blocks"
+    assert encoded.count(long_output) == 1
+    tool_block = detail["blocks"][0]
+    text_block = detail["blocks"][1]
+    assert tool_block["kind"] == "tool"
+    assert tool_block["call_item_ref"] == "node:1:item:1"
+    assert tool_block["output_item_ref"] == "node:1:item:2"
+    assert tool_block["arguments_ref"] == "block:1.arguments"
+    assert tool_block["output_ref"] == "block:1.output"
+    assert tool_block["output"] == long_output
+    assert text_block["kind"] == "text"
+    assert text_block["content_ref"] == "block:2.content"
+    assert text_block["item_ref"] == "node:1:item:3"
+    assert text_block["content"] == "done"
+
+
 def test_context_workbench_batch_replaces_tool_outputs_compactly() -> None:
     old_output_one = "A" * 4000
     old_output_two = "B" * 3000
@@ -1703,9 +1989,11 @@ def test_override_tool_output_requests_are_passed_through() -> None:
         assert tool_event["raw_output"] == "2026-05-05 23:23:59 +08:00"
         assert tool_event["display_result"] == "2026-05-05 23:23:59 +08:00"
         assert tool_event["display_detail"] == "Get-Date"
-        stored = json.loads((Path(temp_dir) / "proxy_state.json").read_text(encoding="utf-8"))
-        session = next(item for item in stored["sessions"] if item["id"] == SESSION_ID)
-        assert session["request_log"][-1]["kind"] == "override_tool_output_rewrite"
+        request_log = proxy_server.load_jsonl_state(
+            store._session_dir(store.sessions[SESSION_ID]) / "request_log.jsonl",
+            [],
+        )
+        assert request_log[-1]["kind"] == "override_tool_output_rewrite"
 
 
 def test_proxy_override_deleted_tools_are_not_reintroduced_by_next_request() -> None:
@@ -2366,6 +2654,8 @@ def main() -> None:
     test_compact_override_reinjects_fresh_initial_context()
     test_request_without_override_preserves_codex_body()
     test_proxy_usage_summary_records_and_resets_by_session()
+    test_proxy_store_can_save_only_one_session()
+    test_proxy_usage_update_does_not_rewrite_session_payload()
     test_proxy_usage_routes_record_main_and_context_workbench()
     test_sse_completed_response_captures_usage_payload()
     test_local_compact_without_override_replaces_manual_prompt()
@@ -2383,6 +2673,10 @@ def main() -> None:
     test_codex_response_item_types_roundtrip()
     test_shell_tool_output_display_metadata_is_reconstructed()
     test_web_normalize_rebuilds_tool_display_from_provider_items()
+    test_override_merge_does_not_reappend_existing_latest_turn_tail()
+    test_override_merge_updates_latest_assistant_without_readding_user_turn()
+    test_override_base_advances_so_source_tail_is_merged_once()
+    test_context_node_details_return_editable_blocks_without_provider_payload()
     test_context_workbench_compresses_tool_output_without_duplicate_tool()
     test_context_workbench_rejects_tool_output_call_id_drift()
     test_context_workbench_deletes_multiple_tool_items_atomically()
@@ -2411,10 +2705,10 @@ def main() -> None:
 
     with tempfile.TemporaryDirectory() as temp_dir:
         upstream = start_server(MockModelsUpstream)
-        proxy = start_server(proxy_server.Handler)
         proxy_server.CHATGPT_UPSTREAM_BASE_URL = f"http://127.0.0.1:{upstream.server_port}/backend-api/codex"
         proxy_server.OPENAI_UPSTREAM_BASE_URL = f"http://127.0.0.1:{upstream.server_port}/v1"
         proxy_server.STORE = proxy_server.ProxyStore(Path(temp_dir) / "proxy_state.json")
+        proxy = start_server(proxy_server.Handler)
         with proxy_server._UPSTREAM_AUTH_LOCK:
             proxy_server._UPSTREAM_AUTH_HEADERS.clear()
         proxy_server.remember_upstream_auth(

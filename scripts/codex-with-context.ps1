@@ -14,6 +14,138 @@ if (-not $controlPort) {
 $loopbackHost = if ($env:HASH_CONTEXT_HOST) { $env:HASH_CONTEXT_HOST } else { "localhost" }
 $serviceProbeHost = if ($loopbackHost -eq "localhost") { "127.0.0.1" } else { $loopbackHost }
 
+$topBeginManaged = "# BEGIN HASH_CONTEXT_DESKTOP_TOP"
+$topEndManaged = "# END HASH_CONTEXT_DESKTOP_TOP"
+$providerBeginManaged = "# BEGIN HASH_CONTEXT_DESKTOP_PROVIDER"
+$providerEndManaged = "# END HASH_CONTEXT_DESKTOP_PROVIDER"
+
+function Get-CodexUpstreamInfo {
+  $configPath = if ($env:HASH_CONTEXT_DESKTOP_CONFIG) { $env:HASH_CONTEXT_DESKTOP_CONFIG } else { Join-Path $env:USERPROFILE ".codex\config.toml" }
+
+  if (-not (Test-Path $configPath)) {
+    Write-Host "[hash-context] Codex config not found: $configPath" -ForegroundColor Red
+    Write-Host "[hash-context] Please run 'codex' first to login (codex login) or configure a third-party API provider." -ForegroundColor Red
+    throw "Codex config file not found."
+  }
+
+  $content = Get-Content -Raw -Path $configPath -ErrorAction Stop
+
+  $escapedTopBegin = [regex]::Escape($topBeginManaged)
+  $escapedTopEnd = [regex]::Escape($topEndManaged)
+  $escapedProviderBegin = [regex]::Escape($providerBeginManaged)
+  $escapedProviderEnd = [regex]::Escape($providerEndManaged)
+  $content = [regex]::Replace($content, "(?ms)\r?\n?$escapedTopBegin\r?\n.*?\r?\n$escapedTopEnd\r?\n?", "`r`n")
+  $content = [regex]::Replace($content, "(?ms)\r?\n?$escapedProviderBegin\r?\n.*?\r?\n$escapedProviderEnd\r?\n?", "`r`n")
+
+  if (-not $content.Trim()) {
+    Write-Host "[hash-context] Codex config is empty." -ForegroundColor Red
+    Write-Host "[hash-context] Please run 'codex' first to login (codex login) or configure a third-party API provider." -ForegroundColor Red
+    throw "Codex config file is empty."
+  }
+
+  $modelProvider = "openai"
+  $mpMatch = [regex]::Match($content, '^\s*model_provider\s*=\s*"([^"]+)"', [System.Text.RegularExpressions.RegexOptions]::Multiline)
+  if ($mpMatch.Success) { $modelProvider = $mpMatch.Groups[1].Value }
+
+  $openaiBaseUrl = ""
+  $obuMatch = [regex]::Match($content, '^\s*openai_base_url\s*=\s*"([^"]+)"', [System.Text.RegularExpressions.RegexOptions]::Multiline)
+  if ($obuMatch.Success) { $openaiBaseUrl = $obuMatch.Groups[1].Value }
+
+  $effectiveBaseUrl = ""
+  $providerApiKey = ""
+  $providerEnvKey = ""
+  $providerBearerToken = ""
+
+  if ($openaiBaseUrl) { $effectiveBaseUrl = $openaiBaseUrl }
+
+  if ($modelProvider -ne "openai") {
+    $escapedId = [regex]::Escape($modelProvider)
+    $sectionPattern = "\[model_providers\.$escapedId\][\s\S]*?(?=\[\s*model_providers\.|\z)"
+    $sectionMatch = [regex]::Match($content, $sectionPattern)
+    if (-not $sectionMatch.Success) {
+      throw "Provider section [model_providers.$modelProvider] not found."
+    }
+    $sectionText = $sectionMatch.Value
+    if ($sectionText -match 'base_url\s*=\s*"([^"]+)"') { $effectiveBaseUrl = $Matches[1] }
+    if ($sectionText -match 'api_key\s*=\s*"([^"]+)"') { $providerApiKey = $Matches[1] }
+    if ($sectionText -match 'env_key\s*=\s*"([^"]+)"') { $providerEnvKey = $Matches[1] }
+    if ($sectionText -match 'experimental_bearer_token\s*=\s*"([^"]+)"') { $providerBearerToken = $Matches[1] }
+  }
+
+  if (-not $effectiveBaseUrl) { $effectiveBaseUrl = "https://api.openai.com/v1" }
+  $effectiveBaseUrl = $effectiveBaseUrl.TrimEnd("/")
+  $isOfficialOpenAI = ($effectiveBaseUrl -match "api\.openai\.com/v1$")
+
+  $upstreamKind = ""
+  $effectiveApiKey = ""
+  $errorMessage = ""
+
+  if ($isOfficialOpenAI) {
+    $authPath = Join-Path $env:USERPROFILE ".codex\auth.json"
+    $hasSubscription = $false
+    if (Test-Path $authPath) {
+      try {
+        $auth = Get-Content -Raw -Path $authPath | ConvertFrom-Json
+        if ($auth -and $auth.tokens -and $auth.tokens.access_token -and $auth.tokens.account_id) { $hasSubscription = $true }
+      } catch {}
+    }
+
+    $hasApiKey = $false
+    if ($providerEnvKey) {
+      $envValue = [Environment]::GetEnvironmentVariable($providerEnvKey, "User")
+      if (-not $envValue) { $envValue = [Environment]::GetEnvironmentVariable($providerEnvKey, "Process") }
+      if ($envValue) { $hasApiKey = $true; $effectiveApiKey = $envValue }
+    }
+    if (-not $hasApiKey -and $providerApiKey) { $hasApiKey = $true; $effectiveApiKey = $providerApiKey }
+    if (-not $hasApiKey) {
+      $openaiKey = [Environment]::GetEnvironmentVariable("OPENAI_API_KEY", "User")
+      if (-not $openaiKey) { $openaiKey = [Environment]::GetEnvironmentVariable("OPENAI_API_KEY", "Process") }
+      if ($openaiKey) { $hasApiKey = $true; $effectiveApiKey = $openaiKey }
+    }
+    if (-not $hasApiKey -and $auth -and $auth.OPENAI_API_KEY) {
+      $hasApiKey = $true; $effectiveApiKey = [string] $auth.OPENAI_API_KEY
+    }
+
+    if ($hasSubscription) { $upstreamKind = "subscription" }
+    elseif ($hasApiKey) { $upstreamKind = "api_key" }
+    else { $errorMessage = "No authentication found. Please login via 'codex login' or set OPENAI_API_KEY." }
+  } else {
+    if ($providerApiKey) { $effectiveApiKey = $providerApiKey }
+    elseif ($providerBearerToken) { $effectiveApiKey = $providerBearerToken }
+    elseif ($providerEnvKey) {
+      $envValue = [Environment]::GetEnvironmentVariable($providerEnvKey, "User")
+      if (-not $envValue) { $envValue = [Environment]::GetEnvironmentVariable($providerEnvKey, "Process") }
+      if ($envValue) { $effectiveApiKey = $envValue }
+    }
+
+    if (-not $effectiveApiKey) {
+      $authPath = Join-Path $env:USERPROFILE ".codex\auth.json"
+      if (Test-Path $authPath) {
+        try {
+          $auth = Get-Content -Raw -Path $authPath | ConvertFrom-Json
+          if ($auth -and $auth.OPENAI_API_KEY) { $effectiveApiKey = [string] $auth.OPENAI_API_KEY }
+        } catch {}
+      }
+    }
+    if (-not $effectiveApiKey) {
+      $openaiKey = [Environment]::GetEnvironmentVariable("OPENAI_API_KEY", "User")
+      if (-not $openaiKey) { $openaiKey = [Environment]::GetEnvironmentVariable("OPENAI_API_KEY", "Process") }
+      if ($openaiKey) { $effectiveApiKey = $openaiKey }
+    }
+
+    if (-not $effectiveApiKey) {
+      $errorMessage = "Third-party provider '$modelProvider' is missing API key. Please set api_key, env_key, or experimental_bearer_token in [model_providers.$modelProvider], or set OPENAI_API_KEY in auth.json or environment."
+    } else { $upstreamKind = "third_party" }
+  }
+
+  if (-not $upstreamKind) {
+    Write-Host "[hash-context] $errorMessage" -ForegroundColor Red
+    throw $errorMessage
+  }
+
+  return @{ kind = $upstreamKind; effective_base_url = $effectiveBaseUrl; api_key = $effectiveApiKey; provider_id = $modelProvider }
+}
+
 function Stop-ProjectProcessOnPort {
   param(
     [int] $Port
@@ -69,19 +201,26 @@ function Start-ContextWindow {
     -PassThru
 }
 
+$upstreamInfo = Get-CodexUpstreamInfo
+$requiresAuth = if ($upstreamInfo.kind -eq "third_party") { "false" } else { "true" }
+
 $hookCommand = (Join-Path $root "scripts\codex-context-hook.cmd").Replace("\", "/")
 $hookConfig = "hooks.UserPromptSubmit=[{matcher='*',hooks=[{type='command',command='$hookCommand',timeout=10,statusMessage='HashContext'}]}]"
 
 $configArgs = @(
   "-c", "model_providers.hash-context.name=Hash Context",
   "-c", "model_providers.hash-context.base_url=http://${loopbackHost}:$proxyPort/v1",
-  "-c", "model_providers.hash-context.requires_openai_auth=true",
+  "-c", "model_providers.hash-context.requires_openai_auth=$requiresAuth",
   "-c", "model_providers.hash-context.wire_api=responses",
   "-c", "model_providers.hash-context.supports_websockets=false",
   "-c", "model_provider=hash-context",
   "-c", "features.hooks=true",
   "-c", $hookConfig
 )
+
+if ($upstreamInfo.kind -eq "third_party") {
+  $configArgs += @("-c", "model_context_window=200000")
+}
 
 $autoCompactTokenLimit = $env:HASH_CONTEXT_AUTO_COMPACT_TOKEN_LIMIT
 if ($autoCompactTokenLimit) {
@@ -233,8 +372,14 @@ Stop-ProjectProcessOnPort -Port ([int] $controlPort)
 Write-Host "[hash-context] starting local services and hidden context window..." -ForegroundColor Cyan
 $previousStartHidden = $env:HASH_CONTEXT_START_HIDDEN
 $previousControlPort = $env:HASH_CONTEXT_CONTROL_PORT
+$previousForceUrl = $env:HASH_CONTEXT_FORCE_UPSTREAM_BASE_URL
+$previousForceKey = $env:HASH_CONTEXT_FORCE_UPSTREAM_API_KEY
 $env:HASH_CONTEXT_START_HIDDEN = "1"
 $env:HASH_CONTEXT_CONTROL_PORT = $controlPort
+if ($upstreamInfo.kind -eq "third_party") {
+  $env:HASH_CONTEXT_FORCE_UPSTREAM_BASE_URL = $upstreamInfo.effective_base_url
+  $env:HASH_CONTEXT_FORCE_UPSTREAM_API_KEY = $upstreamInfo.api_key
+}
 $usesPackagedWindow = [bool](Get-PackagedWindowExe)
 $windowProcess = Start-ContextWindow
 if ($null -eq $previousStartHidden) {
@@ -260,6 +405,9 @@ Wait-HttpOk -Name "window-control" -Url "http://${loopbackHost}:$controlPort/hea
 
 Write-Host "[hash-context] starting Codex through local proxy..." -ForegroundColor Cyan
 Write-Host "[hash-context] base_url=http://${loopbackHost}:$proxyPort/v1"
+if ($upstreamInfo.kind -eq "third_party") {
+  Write-Host "[hash-context] upstream: $($upstreamInfo.effective_base_url) (third-party)" -ForegroundColor Cyan
+}
 Write-Host "[hash-context] type context or ctx inside Codex to open the workbench"
 Write-Host "[hash-context] if Codex says hooks need review, run /hooks and approve HashContext once"
 Write-Host "[hash-context] logs: $($root.Path)\logs\electron-window.log"
@@ -274,6 +422,16 @@ try {
 } finally {
   if ($windowProcess -and -not $windowProcess.HasExited) {
     & taskkill /pid $windowProcess.Id /t /f | Out-Null
+  }
+  if ($null -eq $previousForceUrl) {
+    Remove-Item Env:\HASH_CONTEXT_FORCE_UPSTREAM_BASE_URL -ErrorAction SilentlyContinue
+  } else {
+    $env:HASH_CONTEXT_FORCE_UPSTREAM_BASE_URL = $previousForceUrl
+  }
+  if ($null -eq $previousForceKey) {
+    Remove-Item Env:\HASH_CONTEXT_FORCE_UPSTREAM_API_KEY -ErrorAction SilentlyContinue
+  } else {
+    $env:HASH_CONTEXT_FORCE_UPSTREAM_API_KEY = $previousForceKey
   }
 }
 

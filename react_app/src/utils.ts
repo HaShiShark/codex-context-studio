@@ -11,19 +11,50 @@ import type {
   TranscriptRecord,
 } from './types';
 
-const encoding = getEncoding('cl100k_base');
+let encoding: ReturnType<typeof getEncoding> | null = null;
+
+function getEncoder() {
+  if (encoding) {
+    return encoding;
+  }
+  try {
+    encoding = getEncoding('cl100k_base');
+  } catch {
+    encoding = null;
+  }
+  return encoding;
+}
+
+const _tokenResults = new Map<string, number>();
+const _TOKEN_CACHE_LIMIT = 4096;
 
 export function countTokens(text: string): number {
   if (!text) {
     return 0;
   }
 
-  try {
-    return encoding.encode(text).length;
-  } catch (error) {
-    console.error('Token calculation error:', error);
-    return 0;
+  const cached = _tokenResults.get(text);
+  if (cached !== undefined) {
+    return cached;
   }
+
+  const encoder = getEncoder();
+  let result = 0;
+  if (encoder) {
+    try {
+      result = encoder.encode(text).length;
+    } catch {
+      result = Math.ceil(text.length / 3.5);
+    }
+  } else {
+    result = Math.ceil(text.length / 3.5);
+  }
+
+  if (_tokenResults.size >= _TOKEN_CACHE_LIMIT) {
+    _tokenResults.clear();
+  }
+  _tokenResults.set(text, result);
+  return result;
 }
 
 const FALLBACK_REASONING_LABELS: Record<string, string> = {

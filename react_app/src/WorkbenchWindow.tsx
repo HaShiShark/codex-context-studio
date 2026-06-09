@@ -27,11 +27,11 @@ import type {
 import { normalizeConversation, normalizeReasoningOptions } from './utils';
 
 const DEMO_SESSION_ID = 'hash-context-preview';
-const LIVE_REFRESH_IDLE_MS = 1600;
-const LIVE_REFRESH_RUNNING_MS = 800;
-const PENDING_CONTEXT_REFRESH_MS = 200;
-const PENDING_CONTEXT_REFRESH_MAX_MS = 5000;
-const LOCAL_EDIT_GRACE_MS = 1500;
+const LIVE_REFRESH_IDLE_MS = 4000;
+const LIVE_REFRESH_RUNNING_MS = 1500;
+const PENDING_CONTEXT_REFRESH_MS = 400;
+const PENDING_CONTEXT_REFRESH_MAX_MS = 8000;
+const LOCAL_EDIT_GRACE_MS = 2000;
 const MIN_WORKBENCH_WINDOW_WIDTH = 760;
 const MIN_WORKBENCH_WINDOW_HEIGHT = 520;
 

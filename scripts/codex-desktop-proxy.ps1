@@ -10,17 +10,11 @@ $codexHome = Join-Path $env:USERPROFILE ".codex"
 $configPath = if ($env:HASH_CONTEXT_DESKTOP_CONFIG) { $env:HASH_CONTEXT_DESKTOP_CONFIG } else { Join-Path $codexHome "config.toml" }
 $stateDir = if ($env:HASH_CONTEXT_DESKTOP_STATE_DIR) { $env:HASH_CONTEXT_DESKTOP_STATE_DIR } else { Join-Path $env:USERPROFILE ".hash-context-codex" }
 $statePath = Join-Path $stateDir "codex-desktop-proxy.json"
-$backupDir = Join-Path $stateDir "backups"
 $proxyPort = if ($env:HASH_CONTEXT_PROXY_PORT) { $env:HASH_CONTEXT_PROXY_PORT } else { "8787" }
 $controlPort = if ($env:HASH_CONTEXT_CONTROL_PORT) { $env:HASH_CONTEXT_CONTROL_PORT } else { "8790" }
 $loopbackHost = if ($env:HASH_CONTEXT_HOST) { $env:HASH_CONTEXT_HOST } else { "localhost" }
 $serviceProbeHost = if ($loopbackHost -eq "localhost") { "127.0.0.1" } else { $loopbackHost }
 $desktopDataDir = if ($env:HASH_CONTEXT_DESKTOP_DATA_DIR) { $env:HASH_CONTEXT_DESKTOP_DATA_DIR } else { Join-Path $env:APPDATA "hash-context-codex-lab\data" }
-
-$topBegin = "# BEGIN HASH_CONTEXT_DESKTOP_TOP"
-$topEnd = "# END HASH_CONTEXT_DESKTOP_TOP"
-$providerBegin = "# BEGIN HASH_CONTEXT_DESKTOP_PROVIDER"
-$providerEnd = "# END HASH_CONTEXT_DESKTOP_PROVIDER"
 
 function Read-DesktopState {
   if (-not (Test-Path $statePath)) {
@@ -87,17 +81,6 @@ function Get-ProxySnapshot {
   }
 }
 
-function Remove-ManagedBlocks {
-  param([string] $Text)
-  $escapedTopBegin = [regex]::Escape($topBegin)
-  $escapedTopEnd = [regex]::Escape($topEnd)
-  $escapedProviderBegin = [regex]::Escape($providerBegin)
-  $escapedProviderEnd = [regex]::Escape($providerEnd)
-  $Text = [regex]::Replace($Text, "(?ms)\r?\n?$escapedTopBegin\r?\n.*?\r?\n$escapedTopEnd\r?\n?", "`r`n")
-  $Text = [regex]::Replace($Text, "(?ms)\r?\n?$escapedProviderBegin\r?\n.*?\r?\n$escapedProviderEnd\r?\n?", "`r`n")
-  return $Text.TrimEnd() + "`r`n"
-}
-
 function Repair-ProjectTables {
   param([string] $Text)
 
@@ -146,65 +129,262 @@ function ConvertTo-TomlBasicString {
   return '"' + $Value.Replace("\", "\\").Replace('"', '\"') + '"'
 }
 
-function Get-TopBlock {
-  $hookPath = (Join-Path $projectRoot.Path "scripts\codex-context-hook.cmd").Replace("\", "/")
-  $hookCommand = ConvertTo-TomlBasicString $hookPath
-  return @"
-$topBegin
-model_provider = "hash-context"
-features.hooks = true
-hooks.UserPromptSubmit = [{ matcher = "*", hooks = [{ type = "command", command = $hookCommand, timeout = 10, statusMessage = "HashContext" }] }]
-$topEnd
-"@
-}
+function Test-CodexUpstreamInfo {
+  param([string] $ConfigPath)
 
-function Get-ProviderBlock {
-  return @"
-$providerBegin
-[model_providers.hash-context]
-name = "Hash Context"
-base_url = "http://${loopbackHost}:$proxyPort/v1"
-requires_openai_auth = true
-wire_api = "responses"
-supports_websockets = false
-$providerEnd
-"@
+  if (-not (Test-Path $ConfigPath)) {
+    Write-Host "[hash-context] Codex config not found: $ConfigPath" -ForegroundColor Red
+    Write-Host "[hash-context] Please run 'codex' first to login (codex login) or configure a third-party API provider." -ForegroundColor Red
+    throw "Codex config file not found."
+  }
+
+  $content = Get-Content -Raw -Path $ConfigPath -ErrorAction Stop
+  if (-not $content.Trim()) {
+    Write-Host "[hash-context] Codex config is empty: $ConfigPath" -ForegroundColor Red
+    Write-Host "[hash-context] Please run 'codex' first to login (codex login) or configure a third-party API provider." -ForegroundColor Red
+    throw "Codex config file is empty."
+  }
+
+  $modelProvider = "openai"
+  $mpMatch = [regex]::Match($content, '^\s*model_provider\s*=\s*"([^"]+)"', [System.Text.RegularExpressions.RegexOptions]::Multiline)
+  if ($mpMatch.Success) {
+    $modelProvider = $mpMatch.Groups[1].Value
+  }
+
+  $openaiBaseUrl = ""
+  $obuMatch = [regex]::Match($content, '^\s*openai_base_url\s*=\s*"([^"]+)"', [System.Text.RegularExpressions.RegexOptions]::Multiline)
+  if ($obuMatch.Success) {
+    $openaiBaseUrl = $obuMatch.Groups[1].Value
+  }
+
+  $effectiveBaseUrl = ""
+  $providerName = ""
+  $providerApiKey = ""
+  $providerEnvKey = ""
+  $providerBearerToken = ""
+  $providerWireApi = ""
+  $providerRequiresAuth = ""
+
+  if ($openaiBaseUrl) {
+    $effectiveBaseUrl = $openaiBaseUrl
+  }
+
+  if ($modelProvider -ne "openai") {
+    $escapedId = [regex]::Escape($modelProvider)
+    $sectionPattern = "\[model_providers\.$escapedId\][\s\S]*?(?=\[\s*model_providers\.|\z)"
+    $sectionMatch = [regex]::Match($content, $sectionPattern)
+    if (-not $sectionMatch.Success) {
+      Write-Host "[hash-context] model_provider '$modelProvider' has no [model_providers.$modelProvider] section." -ForegroundColor Red
+      Write-Host "[hash-context] Please configure [model_providers.$modelProvider] in your config or switch to a valid provider." -ForegroundColor Red
+      throw "Provider section [model_providers.$modelProvider] not found."
+    }
+
+    $sectionText = $sectionMatch.Value
+    if ($sectionText -match 'base_url\s*=\s*"([^"]+)"') {
+      $effectiveBaseUrl = $Matches[1]
+    }
+    if ($sectionText -match 'name\s*=\s*"([^"]*)"') {
+      $providerName = $Matches[1]
+    }
+    if ($sectionText -match 'api_key\s*=\s*"([^"]+)"') {
+      $providerApiKey = $Matches[1]
+    }
+    if ($sectionText -match 'env_key\s*=\s*"([^"]+)"') {
+      $providerEnvKey = $Matches[1]
+    }
+    if ($sectionText -match 'experimental_bearer_token\s*=\s*"([^"]+)"') {
+      $providerBearerToken = $Matches[1]
+    }
+    if ($sectionText -match 'wire_api\s*=\s*"([^"]+)"') {
+      $providerWireApi = $Matches[1]
+    }
+    if ($sectionText -match 'requires_openai_auth\s*=\s*(true|false)') {
+      $providerRequiresAuth = $Matches[1]
+    }
+  }
+
+  if (-not $effectiveBaseUrl) {
+    $effectiveBaseUrl = "https://api.openai.com/v1"
+  }
+
+  $effectiveBaseUrl = $effectiveBaseUrl.TrimEnd("/")
+  $isOfficialOpenAI = ($effectiveBaseUrl -match "api\.openai\.com/v1$")
+
+  $upstreamKind = ""
+  $effectiveApiKey = ""
+  $errorMessage = ""
+
+  if ($isOfficialOpenAI) {
+    $authPath = Join-Path $env:USERPROFILE ".codex\auth.json"
+    $hasSubscription = $false
+    if (Test-Path $authPath) {
+      try {
+        $auth = Get-Content -Raw -Path $authPath | ConvertFrom-Json
+        if ($auth -and $auth.tokens) {
+          $accessToken = if ($auth.tokens.access_token) { [string] $auth.tokens.access_token } else { "" }
+          $accountId = if ($auth.tokens.account_id) { [string] $auth.tokens.account_id } else { "" }
+          if ($accessToken -and $accountId) {
+            $hasSubscription = $true
+          }
+        }
+      } catch {}
+    }
+
+    $hasApiKey = $false
+    if ($providerEnvKey) {
+      $envValue = [Environment]::GetEnvironmentVariable($providerEnvKey, "User")
+      if (-not $envValue) { $envValue = [Environment]::GetEnvironmentVariable($providerEnvKey, "Process") }
+      if ($envValue) {
+        $hasApiKey = $true
+        $effectiveApiKey = $envValue
+      }
+    }
+    if (-not $hasApiKey -and $providerApiKey) {
+      $hasApiKey = $true
+      $effectiveApiKey = $providerApiKey
+    }
+    if (-not $hasApiKey) {
+      $openaiKey = [Environment]::GetEnvironmentVariable("OPENAI_API_KEY", "User")
+      if (-not $openaiKey) { $openaiKey = [Environment]::GetEnvironmentVariable("OPENAI_API_KEY", "Process") }
+      if ($openaiKey) {
+        $hasApiKey = $true
+        $effectiveApiKey = $openaiKey
+      }
+    }
+    if (-not $hasApiKey -and $auth -and $auth.OPENAI_API_KEY) {
+      $hasApiKey = $true
+      $effectiveApiKey = [string] $auth.OPENAI_API_KEY
+    }
+
+    if ($hasSubscription) {
+      $upstreamKind = "subscription"
+    } elseif ($hasApiKey) {
+      $upstreamKind = "api_key"
+    } else {
+      $errorMessage = "No authentication found. Please login via 'codex login' or set OPENAI_API_KEY."
+    }
+  } else {
+    if ($providerApiKey) {
+      $effectiveApiKey = $providerApiKey
+    } elseif ($providerBearerToken) {
+      $effectiveApiKey = $providerBearerToken
+    } elseif ($providerEnvKey) {
+      $envValue = [Environment]::GetEnvironmentVariable($providerEnvKey, "User")
+      if (-not $envValue) { $envValue = [Environment]::GetEnvironmentVariable($providerEnvKey, "Process") }
+      if ($envValue) {
+        $effectiveApiKey = $envValue
+      }
+    }
+
+    if (-not $effectiveApiKey) {
+      $authPath = Join-Path $env:USERPROFILE ".codex\auth.json"
+      if (Test-Path $authPath) {
+        try {
+          $auth = Get-Content -Raw -Path $authPath | ConvertFrom-Json
+          if ($auth -and $auth.OPENAI_API_KEY) {
+            $effectiveApiKey = [string] $auth.OPENAI_API_KEY
+          }
+        } catch {}
+      }
+    }
+    if (-not $effectiveApiKey) {
+      $openaiKey = [Environment]::GetEnvironmentVariable("OPENAI_API_KEY", "User")
+      if (-not $openaiKey) { $openaiKey = [Environment]::GetEnvironmentVariable("OPENAI_API_KEY", "Process") }
+      if ($openaiKey) { $effectiveApiKey = $openaiKey }
+    }
+
+    if (-not $effectiveApiKey) {
+      $errorMessage = "Third-party provider '$modelProvider' is missing API key. Please set api_key, env_key, or experimental_bearer_token in [model_providers.$modelProvider], or set OPENAI_API_KEY in auth.json or environment."
+    } else {
+      $upstreamKind = "third_party"
+    }
+  }
+
+  if (-not $upstreamKind) {
+    Write-Host "[hash-context] $errorMessage" -ForegroundColor Red
+    throw $errorMessage
+  }
+
+  return @{
+    kind = $upstreamKind
+    effective_base_url = $effectiveBaseUrl
+    api_key = $effectiveApiKey
+    provider_id = $modelProvider
+    provider_name = $providerName
+    provider_wire_api = $providerWireApi
+    provider_requires_auth = $providerRequiresAuth
+    provider_env_key = $providerEnvKey
+    provider_api_key = $providerApiKey
+    provider_bearer_token = $providerBearerToken
+  }
 }
 
 function Set-DesktopConfigEnabled {
-  param([string] $Mode)
+  param(
+    [string] $Mode,
+    [bool] $RequiresOpenAiAuth = $true,
+    [hashtable] $UpstreamInfo = $null
+  )
 
   New-Item -ItemType Directory -Force -Path (Split-Path -Parent $configPath) | Out-Null
-  New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
+  New-Item -ItemType Directory -Force -Path $stateDir | Out-Null
 
   $hadConfig = Test-Path $configPath
-  $originalText = if ($hadConfig) { Get-Content -Raw -Path $configPath } else { "" }
-  $backupPath = Join-Path $backupDir ("config.toml." + (Get-Date -Format "yyyyMMdd-HHmmss") + ".bak")
-  if ($hadConfig) {
-    Copy-Item -Path $configPath -Destination $backupPath -Force
+  $text = if ($hadConfig) {
+    Repair-ProjectTables -Text (Get-Content -Raw -Path $configPath)
   } else {
-    Set-Content -Path $backupPath -Value "" -Encoding UTF8
+    ""
   }
 
-  $text = Repair-ProjectTables -Text (Remove-ManagedBlocks -Text $originalText)
-  $topBlock = Get-TopBlock
-  $providerBlock = Get-ProviderBlock
-  $firstTable = [regex]::Match($text, "(?m)^\s*\[")
-  if ($firstTable.Success) {
-    $text = $text.Insert($firstTable.Index, $topBlock + "`r`n")
-  } else {
-    $text = $topBlock + "`r`n" + $text
+  $originalProvider = ""
+  $mpMatch = [regex]::Match($text, '^\s*model_provider\s*=\s*"([^"]+)"', [System.Text.RegularExpressions.RegexOptions]::Multiline)
+  if ($mpMatch.Success) {
+    $originalProvider = $mpMatch.Groups[1].Value
   }
-  $text = $text.TrimEnd() + "`r`n`r`n" + $providerBlock + "`r`n"
+
+  $text = $text -replace '(?m)^\s*model_provider\s*=\s*"[^"]*"\s*\r?\n?', ''
+
+  $hookPath = (Join-Path $projectRoot.Path "scripts\codex-context-hook.cmd").Replace("\", "/")
+  $hookCommand = ConvertTo-TomlBasicString $hookPath
+
+  if ($text -notmatch '(?ms)\bhooks\s*=\s*true') {
+    if ($text -match '(?m)^\[features\]') {
+      $text = $text -replace '(?m)(^\[features\]\r?\n)', "`$1hooks = true`r`n"
+    } else {
+      $text = "[features]`r`nhooks = true`r`n`r`n" + $text
+    }
+  }
+
+  $requiresAuth = if ($RequiresOpenAiAuth) { "true" } else { "false" }
+  $contextWindowLine = ""
+  if (-not $RequiresOpenAiAuth) {
+    $contextWindowLine = "model_context_window = 200000`r`n"
+  }
+
+  $providerBlock = @"
+[model_providers.hash-context]
+name = "Hash Context"
+base_url = "http://${loopbackHost}:$proxyPort/v1"
+requires_openai_auth = $requiresAuth
+wire_api = "responses"
+supports_websockets = false
+"@
+
+  $hookBlock = @"
+hooks.UserPromptSubmit = [{ matcher = "*", hooks = [{ type = "command", command = $hookCommand, timeout = 10, statusMessage = "HashContext" }] }]
+"@
+
+  $text = $text.TrimEnd()
+  $header = "model_provider = `"hash-context`"`r`n" + $contextWindowLine + $hookBlock + "`r`n"
+  $text = $header + $text.TrimEnd() + "`r`n`r`n" + $providerBlock + "`r`n"
   Set-Content -Path $configPath -Value $text -Encoding UTF8
 
   $snapshot = Get-ProxySnapshot
-  Save-DesktopState @{
-    version = 1
+  $stateData = @{
+    version = 2
     enabled = $true
     mode = $Mode
     config_path = $configPath
-    backup_path = $backupPath
     had_config = $hadConfig
     service_pid = 0
     project_root = $projectRoot.Path
@@ -214,20 +394,49 @@ function Set-DesktopConfigEnabled {
     session_count_before = $snapshot.session_count
     proxy_log_length_before = $snapshot.proxy_log_length
     updated_at = (Get-Date).ToUniversalTime().ToString("o")
+    original_provider = $originalProvider
+    upstream_kind = if ($UpstreamInfo) { [string] $UpstreamInfo.kind } else { "" }
+    upstream_base_url = if ($UpstreamInfo) { [string] $UpstreamInfo.effective_base_url } else { "" }
+    upstream_api_key = if ($UpstreamInfo) { [string] $UpstreamInfo.api_key } else { "" }
+    upstream_provider_id = if ($UpstreamInfo) { [string] $UpstreamInfo.provider_id } else { "" }
   }
+  Save-DesktopState $stateData
 }
 
 function Restore-DesktopConfig {
-  $hadConfig = Test-Path $configPath
-  if (-not $hadConfig) {
+  $state = Read-DesktopState
+  if (-not $state) {
+    Write-Host "[hash-context] no proxy state to restore" -ForegroundColor DarkYellow
     return
   }
-  $text = Get-Content -Raw -Path $configPath
-  $text = Repair-ProjectTables -Text (Remove-ManagedBlocks -Text $text)
+
+  if (-not (Test-Path $configPath)) {
+    Write-Host "[hash-context] config missing, nothing to restore"
+    return
+  }
+
+  $text = Repair-ProjectTables -Text (Get-Content -Raw -Path $configPath)
+
+  # Remove what we injected
+  if ($state.upstream_kind -eq "third_party") {
+    $text = $text -replace '\r?\nmodel_context_window\s*=\s*\d+', ''
+  }
+  $text = $text -replace '\r?\n\s*hooks\.UserPromptSubmit\s*=\s*.*', ''
+  $text = [regex]::Replace($text, '\r?\n\s*\r?\n\[model_providers\.hash-context\]\r?\n[\s\S]*?(?=\r?\n\[|\z)', '')
+  $text = $text -replace '(?m)^\s*model_provider\s*=\s*"hash-context"\s*\r?\n?', ''
+
+  $text = $text.Trim()
+  if ($text -and $text -notmatch '(?m)^\s*model_provider\s*=') {
+    $providerId = if ($state.original_provider) { [string] $state.original_provider } else { "openai" }
+    $text = "model_provider = `"$providerId`"`r`n`r`n" + $text
+  }
+
   if ($text.Trim()) {
-    Set-Content -Path $configPath -Value $text -Encoding UTF8
+    Set-Content -Path $configPath -Value ($text.TrimEnd() + "`r`n") -Encoding UTF8
+    Write-Host "[hash-context] restored config"
   } else {
-    Remove-Item -Path $configPath -Force
+    Remove-Item -Path $configPath -Force -ErrorAction SilentlyContinue
+    Write-Host "[hash-context] removed empty config"
   }
 }
 
@@ -237,7 +446,6 @@ function Repair-DesktopConfig {
     return
   }
 
-  New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
   $originalText = Get-Content -Raw -Path $configPath
   $repairedText = Repair-ProjectTables -Text $originalText
   $normalizedOriginal = $originalText.TrimEnd() + "`r`n"
@@ -247,11 +455,8 @@ function Repair-DesktopConfig {
     return
   }
 
-  $backupPath = Join-Path $backupDir ("config.toml.repair." + (Get-Date -Format "yyyyMMdd-HHmmss") + ".bak")
-  Copy-Item -Path $configPath -Destination $backupPath -Force
   Set-Content -Path $configPath -Value $repairedText -Encoding UTF8
   Write-Host "[hash-context] config repaired"
-  Write-Host "[hash-context] backup: $backupPath"
 }
 
 function Test-HttpOk {
@@ -489,16 +694,17 @@ function Stop-CodexProcesses {
 }
 
 function Test-DesktopConfigInstalled {
+  $state = Read-DesktopState
+  if (-not $state -or -not [bool] $state.enabled) {
+    return $false
+  }
   if (-not (Test-Path $configPath)) {
     return $false
   }
   try {
     $text = Get-Content -Raw -Path $configPath
     return (
-      $text.Contains($topBegin) -and
-      $text.Contains($providerBegin) -and
       $text.Contains('model_provider = "hash-context"') -and
-      $text.Contains('features.hooks = true') -and
       ($text.Contains("http://${loopbackHost}:$proxyPort/v1") -or $text.Contains("http://localhost:$proxyPort/v1") -or $text.Contains("http://127.0.0.1:$proxyPort/v1"))
     )
   } catch {
@@ -567,11 +773,10 @@ function Update-ServicePid {
     return
   }
   Save-DesktopState @{
-    version = 1
+    version = 2
     enabled = [bool] $state.enabled
     mode = [string] $state.mode
     config_path = [string] $state.config_path
-    backup_path = [string] $state.backup_path
     had_config = [bool] $state.had_config
     service_pid = $ServiceProcessId
     project_root = [string] $state.project_root
@@ -581,6 +786,11 @@ function Update-ServicePid {
     session_count_before = [int] $state.session_count_before
     proxy_log_length_before = [int64] $state.proxy_log_length_before
     updated_at = (Get-Date).ToUniversalTime().ToString("o")
+    original_provider = [string] $state.original_provider
+    upstream_kind = if ($state.upstream_kind) { [string] $state.upstream_kind } else { "" }
+    upstream_base_url = if ($state.upstream_base_url) { [string] $state.upstream_base_url } else { "" }
+    upstream_api_key = if ($state.upstream_api_key) { [string] $state.upstream_api_key } else { "" }
+    upstream_provider_id = if ($state.upstream_provider_id) { [string] $state.upstream_provider_id } else { "" }
   }
 }
 
@@ -606,7 +816,10 @@ function Show-DesktopStatus {
   $beforeLog = if ($state) { [int64] $state.proxy_log_length_before } else { $snapshot.proxy_log_length }
   Write-Host "[hash-context] desktop proxy: $(if ($enabled) { 'on' } else { 'off' })"
   Write-Host "[hash-context] config: $configPath"
-  Write-Host "[hash-context] config blocks: $(if (Test-DesktopConfigInstalled) { 'installed' } else { 'missing' })"
+  Write-Host "[hash-context] config installed: $(if (Test-DesktopConfigInstalled) { 'yes' } else { 'no' })"
+  if ($state -and $state.upstream_kind) {
+    Write-Host "[hash-context] upstream: $($state.upstream_kind) -> $($state.upstream_base_url)"
+  }
   if (Test-Path $configPath) {
     $configText = Get-Content -Raw -Path $configPath
     if ($configText.Contains('features.codex_hooks = true')) {
@@ -619,9 +832,6 @@ function Show-DesktopStatus {
   Write-Host "[hash-context] data dir: $($snapshot.data_dir)"
   Write-Host "[hash-context] sessions before/current: $beforeSessions/$($snapshot.session_count)"
   Write-Host "[hash-context] proxy log bytes before/current: $beforeLog/$($snapshot.proxy_log_length)"
-  if ($state -and $state.backup_path) {
-    Write-Host "[hash-context] backup: $($state.backup_path)"
-  }
   if ($snapshot.session_count -gt $beforeSessions -or $snapshot.proxy_log_length -gt $beforeLog) {
     Write-Host "[hash-context] probe signal: proxy activity increased" -ForegroundColor Green
   } elseif ($enabled) {
@@ -631,9 +841,18 @@ function Show-DesktopStatus {
 
 switch ($Command) {
   "probe" {
-    Set-DesktopConfigEnabled -Mode "probe"
+    $upstreamInfo = Test-CodexUpstreamInfo -ConfigPath $configPath
+    $requiresAuth = ($upstreamInfo.kind -ne "third_party")
+    Set-DesktopConfigEnabled -Mode "probe" -RequiresOpenAiAuth $requiresAuth -UpstreamInfo $upstreamInfo
+    if ($upstreamInfo.kind -eq "third_party") {
+      $env:HASH_CONTEXT_FORCE_UPSTREAM_BASE_URL = $upstreamInfo.effective_base_url
+      $env:HASH_CONTEXT_FORCE_UPSTREAM_API_KEY = $upstreamInfo.api_key
+    }
     $serviceProcessId = Start-DesktopServices
     Update-ServicePid -ServiceProcessId $serviceProcessId
+    if ($upstreamInfo.kind -eq "third_party") {
+      Write-Host "[hash-context] upstream: $($upstreamInfo.effective_base_url) (third-party)" -ForegroundColor Cyan
+    }
     Write-Host "[hash-context] desktop probe is armed"
     Write-Host "[hash-context] keep this desktop app open; use a fresh chat for testing, then run: codex ctx desktop status"
     Write-Host "[hash-context] if Codex says hooks need review, run /hooks and approve HashContext once"
@@ -642,9 +861,18 @@ switch ($Command) {
   }
   "on" {
     Stop-CodexProcesses -Reason "desktop proxy on"
-    Set-DesktopConfigEnabled -Mode "on"
+    $upstreamInfo = Test-CodexUpstreamInfo -ConfigPath $configPath
+    $requiresAuth = ($upstreamInfo.kind -ne "third_party")
+    Set-DesktopConfigEnabled -Mode "on" -RequiresOpenAiAuth $requiresAuth -UpstreamInfo $upstreamInfo
+    if ($upstreamInfo.kind -eq "third_party") {
+      $env:HASH_CONTEXT_FORCE_UPSTREAM_BASE_URL = $upstreamInfo.effective_base_url
+      $env:HASH_CONTEXT_FORCE_UPSTREAM_API_KEY = $upstreamInfo.api_key
+    }
     $serviceProcessId = Start-DesktopServices
     Update-ServicePid -ServiceProcessId $serviceProcessId
+    if ($upstreamInfo.kind -eq "third_party") {
+      Write-Host "[hash-context] upstream: $($upstreamInfo.effective_base_url) (third-party)" -ForegroundColor Cyan
+    }
     Write-Host "[hash-context] desktop proxy on"
     Write-Host "[hash-context] keep this desktop app open; use a fresh chat for testing"
     Write-Host "[hash-context] if Codex says hooks need review, run /hooks and approve HashContext once"
@@ -654,6 +882,8 @@ switch ($Command) {
     Stop-CodexProcesses -Reason "desktop proxy off"
     Restore-DesktopConfig
     Stop-DesktopServices
+    Remove-Item Env:\HASH_CONTEXT_FORCE_UPSTREAM_BASE_URL -ErrorAction SilentlyContinue
+    Remove-Item Env:\HASH_CONTEXT_FORCE_UPSTREAM_API_KEY -ErrorAction SilentlyContinue
     if (Test-Path $statePath) {
       Remove-Item -Path $statePath -Force
     }

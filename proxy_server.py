@@ -8,10 +8,13 @@ import http.client
 import io
 import json
 import os
+import re
+import sqlite3
 import threading
 import time
 import urllib.parse
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -36,6 +39,8 @@ CHATGPT_UPSTREAM_BASE_URL = os.environ.get(
     "HASH_CONTEXT_CHATGPT_UPSTREAM_BASE_URL",
     "https://chatgpt.com/backend-api/codex",
 )
+FORCE_UPSTREAM_BASE_URL = os.environ.get("HASH_CONTEXT_FORCE_UPSTREAM_BASE_URL", "").strip()
+FORCE_UPSTREAM_API_KEY = os.environ.get("HASH_CONTEXT_FORCE_UPSTREAM_API_KEY", "").strip()
 DATA_DIR = Path(os.environ.get("HASH_CONTEXT_PROXY_DATA_DIR", Path(__file__).parent / "data"))
 STATE_PATH = DATA_DIR / "proxy_state.json"
 LOG_PATH = DATA_DIR / "proxy.log"
@@ -1041,6 +1046,17 @@ def preload_openai_api_auth() -> bool:
     return bool(cached_upstream_auth_headers())
 
 
+def preload_force_upstream_auth() -> bool:
+    if not FORCE_UPSTREAM_API_KEY:
+        return False
+    headers = {
+        "Authorization": f"Bearer {FORCE_UPSTREAM_API_KEY}",
+        "User-Agent": "codex_cli_rs",
+    }
+    remember_upstream_auth(headers)
+    return bool(cached_upstream_auth_headers())
+
+
 def cached_upstream_auth_headers() -> dict[str, str]:
     with _UPSTREAM_AUTH_LOCK:
         return dict(_UPSTREAM_AUTH_HEADERS)
@@ -1107,6 +1123,8 @@ def parse_json_request_body(raw_body: bytes, content_encoding: str | None) -> An
 
 
 def upstream_base_url_for_request(headers: dict[str, str]) -> str:
+    if FORCE_UPSTREAM_BASE_URL:
+        return FORCE_UPSTREAM_BASE_URL
     effective_headers = apply_cached_upstream_auth(headers)
     lowered = {key.lower(): value for key, value in effective_headers.items()}
     if lowered.get("chatgpt-account-id"):
@@ -1172,7 +1190,30 @@ def normalize_model_record(item: Any) -> dict[str, Any] | None:
     normalized["id"] = model_id.removeprefix("models/")
     normalized.setdefault("object", "model")
     normalized.setdefault("owned_by", str(item.get("owned_by") or item.get("provider") or "codex"))
+
+    ctx = _extract_context_window(item)
+    if ctx is not None:
+        normalized["context_window"] = ctx
+
     return normalized
+
+
+def _extract_context_window(item: dict[str, Any]) -> int | None:
+    if isinstance(item.get("context_window"), (int, float)):
+        return int(item["context_window"])
+    if isinstance(item.get("max_context_length"), (int, float)):
+        return int(item["max_context_length"])
+    if isinstance(item.get("max_context_window"), (int, float)):
+        return int(item["max_context_window"])
+    meta = item.get("meta") or item.get("metadata")
+    if isinstance(meta, dict):
+        for key in ("context_window", "max_context_length", "max_context_window"):
+            if isinstance(meta.get(key), (int, float)):
+                return int(meta[key])
+    return None
+
+
+DEFAULT_MODEL_CONTEXT_WINDOW = 200000
 
 
 def normalize_models_payload(payload: Any) -> dict[str, Any] | None:
@@ -1202,6 +1243,8 @@ def normalize_models_payload(payload: Any) -> dict[str, Any] | None:
         if not model_id or model_id in seen_ids:
             continue
         seen_ids.add(model_id)
+        if "context_window" not in record or not isinstance(record.get("context_window"), (int, float)):
+            record["context_window"] = DEFAULT_MODEL_CONTEXT_WINDOW
         normalized_models.append(record)
 
     return {"object": "list", "data": normalized_models}
@@ -1239,6 +1282,7 @@ def fallback_models_response_body() -> bytes:
                 "id": model_id,
                 "object": "model",
                 "owned_by": "codex",
+                "context_window": DEFAULT_MODEL_CONTEXT_WINDOW,
             }
             for model_id in model_ids
         ],
@@ -1737,18 +1781,117 @@ def usage_summary_from_events(session_id: str, events: list[dict[str, Any]]) -> 
     return summary
 
 
+def usage_summary_with_event(session_id: str, current_summary: dict[str, Any] | None, event: dict[str, Any]) -> dict[str, Any]:
+    summary = copy.deepcopy(current_summary) if isinstance(current_summary, dict) else usage_summary_from_events(session_id, [])
+    summary["session_id"] = session_id
+    usage = event.get("usage") if isinstance(event, dict) else None
+    if not isinstance(usage, dict):
+        return summary
+    created_at = str(event.get("created_at") or "")
+    kind = str(event.get("kind") or "unknown").strip() or "unknown"
+    model = str(event.get("model") or "unknown").strip() or "unknown"
+    by_kind = summary.setdefault("by_kind", {})
+    if not isinstance(by_kind, dict):
+        by_kind = {}
+        summary["by_kind"] = by_kind
+    by_model = summary.setdefault("by_model", {})
+    if not isinstance(by_model, dict):
+        by_model = {}
+        summary["by_model"] = by_model
+    add_usage_to_bucket(summary, usage, created_at)
+    kind_bucket = by_kind.setdefault(kind, empty_usage_bucket())
+    add_usage_to_bucket(kind_bucket, usage, created_at)
+    model_bucket = by_model.setdefault(model, empty_usage_bucket())
+    add_usage_to_bucket(model_bucket, usage, created_at)
+    return summary
+
+
+def json_dumps_compact(value: Any) -> str:
+    return json.dumps(sanitize_json_value(value), ensure_ascii=False, separators=(",", ":"))
+
+
+def json_loads_value(value: str | None, default: Any) -> Any:
+    if value is None or value == "":
+        return copy.deepcopy(default)
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return copy.deepcopy(default)
+
+
+def sanitize_json_value(value: Any) -> Any:
+    try:
+        json.dumps(value, ensure_ascii=False)
+        return value
+    except (TypeError, ValueError):
+        return json.loads(json.dumps(value, ensure_ascii=False, default=str))
+
+
+def safe_session_path_part(value: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value or "").strip()).strip(".-")
+    return safe or uuid.uuid4().hex
+
+
+def session_date_parts(created_at: str) -> tuple[str, str, str]:
+    match = re.match(r"^(\d{4})-(\d{2})-(\d{2})", str(created_at or ""))
+    if match:
+        return match.group(1), match.group(2), match.group(3)
+    fallback = utc_timestamp()
+    return fallback[:4], fallback[5:7], fallback[8:10]
+
+
+def append_jsonl_line(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(json_dumps_compact(payload))
+        handle.write("\n")
+
+
+def load_jsonl_state(path: Path, default: Any) -> Any:
+    state = copy.deepcopy(default)
+    if not path.exists():
+        return state
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return state
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("type") or "")
+        if event_type == "clear":
+            state = None
+        elif event_type == "set":
+            state = copy.deepcopy(event.get("records", []))
+        elif event_type == "append":
+            records = event.get("records")
+            if isinstance(state, list) and isinstance(records, list):
+                state = [*state, *copy.deepcopy(records)]
+            elif isinstance(records, list):
+                state = copy.deepcopy(records)
+    return copy.deepcopy(default) if state is None and default is not None else state
+
+
 @dataclass
 class ProxySession:
     id: str
     title: str
     status: str = "mirror"
     transcript: list[dict[str, Any]] = field(default_factory=list)
+    override_base_transcript: list[dict[str, Any]] | None = None
     edited_transcript: list[dict[str, Any]] | None = None
     pending_transcript: list[dict[str, Any]] | None = None
     local_compact_source_transcript: list[dict[str, Any]] | None = None
     request_log: list[dict[str, Any]] = field(default_factory=list)
     response_items: list[dict[str, Any]] = field(default_factory=list)
     usage_events: list[dict[str, Any]] = field(default_factory=list)
+    usage_summary_cache: dict[str, Any] | None = None
     last_codex_session_headers: dict[str, str] = field(default_factory=dict)
     last_turn_metadata_header: str = ""
     last_error: str = ""
@@ -1763,6 +1906,12 @@ class ProxySession:
         return self.transcript
 
     def usage_summary(self) -> dict[str, Any]:
+        if isinstance(self.usage_summary_cache, dict):
+            summary = copy.deepcopy(self.usage_summary_cache)
+            summary["session_id"] = self.id
+            summary.setdefault("by_kind", {})
+            summary.setdefault("by_model", {})
+            return summary
         return usage_summary_from_events(self.id, self.usage_events)
 
     def metadata_payload(self) -> dict[str, Any]:
@@ -1797,73 +1946,458 @@ class ProxySession:
 class ProxyStore:
     def __init__(self, path: Path) -> None:
         self.path = path
+        self.sqlite_path = path.with_suffix(".sqlite3")
         self.lock = threading.Lock()
         self.sessions: dict[str, ProxySession] = {}
         self.active_session_id = ""
+        self._persisted_payloads: dict[str, dict[str, list[dict[str, Any]] | None]] = {}
+        self._persisted_logs: dict[str, dict[str, list[dict[str, Any]]]] = {}
+        self._init_db()
         self.load()
 
-    def load(self) -> None:
-        if not self.path.exists():
-            return
+    @contextmanager
+    def _connect(self):
+        self.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(self.sqlite_path)
         try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+            yield conn
+            conn.commit()
         except Exception:
-            return
-        self.active_session_id = str(data.get("active_session_id") or "")
-        for raw in data.get("sessions", []):
-            if not isinstance(raw, dict):
-                continue
-            session = ProxySession(
-                id=str(raw.get("id") or uuid.uuid4().hex),
-                title=str(raw.get("title") or "Codex Session"),
-                status=str(raw.get("status") or "mirror"),
-                transcript=clean_transcript(raw.get("transcript")),
-                edited_transcript=clean_transcript(raw.get("edited_transcript"))
-                if isinstance(raw.get("edited_transcript"), list)
-                else None,
-                pending_transcript=clean_transcript(raw.get("pending_transcript"))
-                if isinstance(raw.get("pending_transcript"), list)
-                else None,
-                request_log=raw.get("request_log") if isinstance(raw.get("request_log"), list) else [],
-                response_items=raw.get("response_items") if isinstance(raw.get("response_items"), list) else [],
-                usage_events=raw.get("usage_events") if isinstance(raw.get("usage_events"), list) else [],
-                last_codex_session_headers=(
-                    raw.get("last_codex_session_headers")
-                    if isinstance(raw.get("last_codex_session_headers"), dict)
-                    else {}
-                ),
-                last_turn_metadata_header=str(raw.get("last_turn_metadata_header") or ""),
-                last_error=str(raw.get("last_error") or ""),
-                created_at=str(raw.get("created_at") or utc_timestamp()),
-                updated_at=str(raw.get("updated_at") or utc_timestamp()),
-            )
-            self.sessions[session.id] = session
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
-    def save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        data = {
-            "active_session_id": self.active_session_id,
-            "sessions": [
-                {
-                    "id": session.id,
-                    "title": session.title,
-                    "status": session.status,
-                    "transcript": session.transcript,
-                    "edited_transcript": session.edited_transcript,
-                    "pending_transcript": session.pending_transcript,
-                    "last_codex_session_headers": session.last_codex_session_headers,
-                    "last_turn_metadata_header": session.last_turn_metadata_header,
-                    "last_error": session.last_error,
-                    "created_at": session.created_at,
-                    "updated_at": session.updated_at,
-                    "request_log": session.request_log[-20:],
-                    "response_items": session.response_items[-100:],
-                    "usage_events": session.usage_events[-USAGE_EVENT_LIMIT:],
-                }
-                for session in self.sessions.values()
-            ],
+    def _init_db(self) -> None:
+        with self._connect() as conn:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS sessions (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    session_dir TEXT NOT NULL DEFAULT '',
+                    last_codex_session_headers_json TEXT NOT NULL DEFAULT '{}',
+                    last_turn_metadata_header TEXT NOT NULL DEFAULT '',
+                    last_error TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS usage_events (
+                    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                    position INTEGER NOT NULL,
+                    event_json TEXT NOT NULL,
+                    PRIMARY KEY (session_id, position)
+                );
+                CREATE TABLE IF NOT EXISTS usage_summaries (
+                    session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+                    summary_json TEXT NOT NULL
+                );
+                """
+            )
+            self._ensure_column(conn, "sessions", "session_dir", "TEXT NOT NULL DEFAULT ''")
+
+    def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, declaration: str) -> None:
+        columns = {
+            str(row[1])
+            for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
         }
-        self.path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        if column not in columns:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+
+    def _sessions_root(self) -> Path:
+        return self.sqlite_path.parent / "sessions"
+
+    def _session_dir(self, session: ProxySession) -> Path:
+        year, month, day = session_date_parts(session.created_at)
+        return self._sessions_root() / year / month / day / safe_session_path_part(session.id)
+
+    def _state_file(self, session: ProxySession, kind: str) -> Path:
+        return self._session_dir(session) / f"{kind}.jsonl"
+
+    def _load_session_payloads_from_files(self, session: ProxySession) -> dict[str, list[dict[str, Any]] | None]:
+        return {
+            "transcript": clean_transcript(load_jsonl_state(self._state_file(session, "raw"), [])),
+            "override_base_transcript": (
+                clean_transcript(load_jsonl_state(self._state_file(session, "override_base"), []))
+                if self._state_file(session, "override_base").exists()
+                else None
+            ),
+            "edited_transcript": (
+                clean_transcript(load_jsonl_state(self._state_file(session, "edited"), []))
+                if self._state_file(session, "edited").exists()
+                else None
+            ),
+            "pending_transcript": (
+                clean_transcript(load_jsonl_state(self._state_file(session, "pending"), []))
+                if self._state_file(session, "pending").exists()
+                else None
+            ),
+        }
+
+    def _append_state_delta(
+        self,
+        session: ProxySession,
+        kind: str,
+        previous: list[dict[str, Any]] | None,
+        current: list[dict[str, Any]] | None,
+    ) -> None:
+        path = self._state_file(session, kind)
+        if current is None:
+            if previous is not None:
+                append_jsonl_line(path, {"type": "clear", "created_at": utc_timestamp()})
+            return
+        current_clean = clean_transcript(current)
+        previous_clean = clean_transcript(previous) if previous is not None else None
+        if previous_clean == current_clean:
+            return
+        if (
+            previous_clean is not None
+            and len(current_clean) >= len(previous_clean)
+            and current_clean[: len(previous_clean)] == previous_clean
+        ):
+            appended = current_clean[len(previous_clean) :]
+            if appended:
+                append_jsonl_line(
+                    path,
+                    {"type": "append", "created_at": utc_timestamp(), "records": sanitize_json_value(appended)},
+                )
+            return
+        append_jsonl_line(
+            path,
+            {"type": "set", "created_at": utc_timestamp(), "records": sanitize_json_value(current_clean)},
+        )
+
+    def _append_list_delta(
+        self,
+        path: Path,
+        previous: list[dict[str, Any]],
+        current: list[dict[str, Any]],
+    ) -> None:
+        previous_safe = copy.deepcopy(previous)
+        current_safe = copy.deepcopy(current)
+        if previous_safe == current_safe:
+            return
+        if len(current_safe) >= len(previous_safe) and current_safe[: len(previous_safe)] == previous_safe:
+            appended = current_safe[len(previous_safe) :]
+            if appended:
+                append_jsonl_line(
+                    path,
+                    {"type": "append", "created_at": utc_timestamp(), "records": sanitize_json_value(appended)},
+                )
+            return
+        append_jsonl_line(
+            path,
+            {"type": "set", "created_at": utc_timestamp(), "records": sanitize_json_value(current_safe)},
+        )
+
+    def _persist_session_log_files(self, session: ProxySession) -> None:
+        previous = self._persisted_logs.get(session.id, {"request_log": [], "response_items": []})
+        current = {
+            "request_log": copy.deepcopy(session.request_log[-20:]),
+            "response_items": copy.deepcopy(session.response_items[-100:]),
+        }
+        self._append_list_delta(
+            self._session_dir(session) / "request_log.jsonl",
+            previous.get("request_log", []),
+            current["request_log"],
+        )
+        self._append_list_delta(
+            self._session_dir(session) / "response_items.jsonl",
+            previous.get("response_items", []),
+            current["response_items"],
+        )
+        self._persisted_logs[session.id] = copy.deepcopy(current)
+
+    def _persist_session_payload_files(self, session: ProxySession) -> None:
+        previous = self._persisted_payloads.get(session.id, {})
+        current = {
+            "transcript": clean_transcript(session.transcript),
+            "override_base_transcript": (
+                clean_transcript(session.override_base_transcript)
+                if session.override_base_transcript is not None
+                else None
+            ),
+            "edited_transcript": (
+                clean_transcript(session.edited_transcript)
+                if session.edited_transcript is not None
+                else None
+            ),
+            "pending_transcript": (
+                clean_transcript(session.pending_transcript)
+                if session.pending_transcript is not None
+                else None
+            ),
+        }
+        for key, kind in (
+            ("transcript", "raw"),
+            ("override_base_transcript", "override_base"),
+            ("edited_transcript", "edited"),
+            ("pending_transcript", "pending"),
+        ):
+            self._append_state_delta(session, kind, previous.get(key), current[key])
+        self._persisted_payloads[session.id] = copy.deepcopy(current)
+
+    def _session_from_row(
+        self,
+        session_row: sqlite3.Row | tuple[Any, ...],
+        usage_events: list[dict[str, Any]],
+        usage_summary_cache: dict[str, Any] | None,
+    ) -> ProxySession:
+        (
+            session_id,
+            title,
+            status,
+            _session_dir,
+            headers_json,
+            last_turn_metadata_header,
+            last_error,
+            created_at,
+            updated_at,
+        ) = session_row
+        session = ProxySession(
+            id=str(session_id),
+            title=str(title or "Codex Session"),
+            status=str(status or "mirror"),
+            request_log=[],
+            response_items=[],
+            usage_events=usage_events,
+            usage_summary_cache=usage_summary_cache,
+            last_codex_session_headers=json_loads_value(str(headers_json or "{}"), {}),
+            last_turn_metadata_header=str(last_turn_metadata_header or ""),
+            last_error=str(last_error or ""),
+            created_at=str(created_at or utc_timestamp()),
+            updated_at=str(updated_at or utc_timestamp()),
+        )
+        request_log = [
+            item
+            for item in load_jsonl_state(self._session_dir(session) / "request_log.jsonl", [])
+            if isinstance(item, dict)
+        ][-20:]
+        response_items = [
+            item
+            for item in load_jsonl_state(self._session_dir(session) / "response_items.jsonl", [])
+            if isinstance(item, dict)
+        ][-100:]
+        session.request_log = request_log
+        session.response_items = response_items
+        self._persisted_logs[session.id] = {
+            "request_log": copy.deepcopy(request_log),
+            "response_items": copy.deepcopy(response_items),
+        }
+        payloads = self._load_session_payloads_from_files(session)
+        session.transcript = clean_transcript(payloads["transcript"])
+        session.override_base_transcript = (
+            clean_transcript(payloads["override_base_transcript"])
+            if payloads["override_base_transcript"] is not None
+            else None
+        )
+        session.edited_transcript = (
+            clean_transcript(payloads["edited_transcript"])
+            if payloads["edited_transcript"] is not None
+            else None
+        )
+        session.pending_transcript = (
+            clean_transcript(payloads["pending_transcript"])
+            if payloads["pending_transcript"] is not None
+            else None
+        )
+        self._persisted_payloads[session.id] = copy.deepcopy(payloads)
+        return session
+
+    def load(self) -> None:
+        with self._connect() as conn:
+            active = conn.execute("SELECT value FROM meta WHERE key = 'active_session_id'").fetchone()
+            self.active_session_id = str(active[0]) if active else ""
+            rows = conn.execute(
+                """
+                SELECT id, title, status, session_dir, last_codex_session_headers_json, last_turn_metadata_header,
+                       last_error, created_at, updated_at
+                FROM sessions
+                """
+            ).fetchall()
+            for row in rows:
+                usage_events = [
+                    item
+                    for item in (
+                        json_loads_value(event_row[0], {})
+                        for event_row in conn.execute(
+                            """
+                            SELECT event_json FROM usage_events
+                            WHERE session_id = ?
+                            ORDER BY position
+                            """,
+                            (row[0],),
+                        ).fetchall()
+                    )
+                    if isinstance(item, dict)
+                ]
+                summary_row = conn.execute(
+                    "SELECT summary_json FROM usage_summaries WHERE session_id = ?",
+                    (row[0],),
+                ).fetchone()
+                usage_summary_cache = (
+                    json_loads_value(summary_row[0], None)
+                    if summary_row is not None
+                    else usage_summary_from_events(str(row[0]), usage_events)
+                )
+                session = self._session_from_row(
+                    row,
+                    usage_events,
+                    usage_summary_cache if isinstance(usage_summary_cache, dict) else None,
+                )
+                self.sessions[session.id] = session
+
+    def _save_session_to_db(self, conn: sqlite3.Connection, session: ProxySession) -> None:
+        conn.execute(
+            """
+            INSERT INTO sessions (
+                id, title, status, session_dir, last_codex_session_headers_json, last_turn_metadata_header,
+                last_error, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                title = excluded.title,
+                status = excluded.status,
+                session_dir = excluded.session_dir,
+                last_codex_session_headers_json = excluded.last_codex_session_headers_json,
+                last_turn_metadata_header = excluded.last_turn_metadata_header,
+                last_error = excluded.last_error,
+                created_at = excluded.created_at,
+                updated_at = excluded.updated_at
+            """,
+            (
+                session.id,
+                session.title,
+                session.status,
+                self._session_dir(session).relative_to(self.sqlite_path.parent).as_posix(),
+                json_dumps_compact(session.last_codex_session_headers),
+                session.last_turn_metadata_header,
+                session.last_error,
+                session.created_at,
+                session.updated_at,
+            ),
+        )
+        self._persist_session_payload_files(session)
+        self._persist_session_log_files(session)
+        self._save_usage_to_db(conn, session)
+
+    def _save_usage_to_db(self, conn: sqlite3.Connection, session: ProxySession) -> None:
+        conn.execute("DELETE FROM usage_events WHERE session_id = ?", (session.id,))
+        for index, event in enumerate(session.usage_events[-USAGE_EVENT_LIMIT:]):
+            conn.execute(
+                "INSERT INTO usage_events (session_id, position, event_json) VALUES (?, ?, ?)",
+                (session.id, index, json_dumps_compact(event)),
+            )
+        summary = session.usage_summary()
+        session.usage_summary_cache = summary
+        conn.execute(
+            """
+            INSERT INTO usage_summaries (session_id, summary_json) VALUES (?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET summary_json = excluded.summary_json
+            """,
+            (session.id, json_dumps_compact(summary)),
+        )
+
+    def _append_usage_event_to_db(
+        self,
+        conn: sqlite3.Connection,
+        session: ProxySession,
+        event: dict[str, Any],
+    ) -> None:
+        next_position = conn.execute(
+            "SELECT COALESCE(MAX(position) + 1, 0) FROM usage_events WHERE session_id = ?",
+            (session.id,),
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO usage_events (session_id, position, event_json) VALUES (?, ?, ?)",
+            (session.id, int(next_position or 0), json_dumps_compact(event)),
+        )
+        conn.execute(
+            """
+            DELETE FROM usage_events
+            WHERE session_id = ?
+              AND position NOT IN (
+                  SELECT position FROM usage_events
+                  WHERE session_id = ?
+                  ORDER BY position DESC
+                  LIMIT ?
+              )
+            """,
+            (session.id, session.id, USAGE_EVENT_LIMIT),
+        )
+        summary = session.usage_summary()
+        session.usage_summary_cache = summary
+        conn.execute(
+            """
+            INSERT INTO usage_summaries (session_id, summary_json) VALUES (?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET summary_json = excluded.summary_json
+            """,
+            (session.id, json_dumps_compact(summary)),
+        )
+
+    def _save_session_metadata_to_db(self, conn: sqlite3.Connection, session: ProxySession) -> None:
+        conn.execute(
+            """
+            INSERT INTO sessions (
+                id, title, status, session_dir, last_codex_session_headers_json, last_turn_metadata_header,
+                last_error, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                title = excluded.title,
+                status = excluded.status,
+                session_dir = excluded.session_dir,
+                last_codex_session_headers_json = excluded.last_codex_session_headers_json,
+                last_turn_metadata_header = excluded.last_turn_metadata_header,
+                last_error = excluded.last_error,
+                created_at = excluded.created_at,
+                updated_at = excluded.updated_at
+            """,
+            (
+                session.id,
+                session.title,
+                session.status,
+                self._session_dir(session).relative_to(self.sqlite_path.parent).as_posix(),
+                json_dumps_compact(session.last_codex_session_headers),
+                session.last_turn_metadata_header,
+                session.last_error,
+                session.created_at,
+                session.updated_at,
+            ),
+        )
+
+    def save(self, session_ids: str | set[str] | list[str] | tuple[str, ...] | None = None) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO meta (key, value) VALUES ('active_session_id', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (self.active_session_id,),
+            )
+            if session_ids is None:
+                live_ids = set(self.sessions.keys())
+                if live_ids:
+                    placeholders = ",".join("?" for _ in live_ids)
+                    conn.execute(f"DELETE FROM sessions WHERE id NOT IN ({placeholders})", tuple(live_ids))
+                else:
+                    conn.execute("DELETE FROM sessions")
+                target_ids = live_ids
+            elif isinstance(session_ids, str):
+                target_ids = {session_ids}
+            else:
+                target_ids = {str(session_id) for session_id in session_ids if str(session_id)}
+            for session_id in target_ids:
+                session = self.sessions.get(session_id)
+                if session is None:
+                    continue
+                session.request_log = session.request_log[-20:]
+                session.response_items = session.response_items[-100:]
+                session.usage_events = session.usage_events[-USAGE_EVENT_LIMIT:]
+                self._save_session_to_db(conn, session)
 
     def begin_request(self, session_id: str, body: dict[str, Any], headers: dict[str, str]) -> tuple[ProxySession, dict[str, Any]]:
         request_body = copy.deepcopy(body)
@@ -1882,12 +2416,18 @@ class ProxyStore:
                 session.last_codex_session_headers = current_codex_session_headers
             previous_turn_metadata = session.last_turn_metadata_header
             if session.edited_transcript is not None:
+                source_snapshot = clean_transcript(source_transcript)
+                override_base_transcript = (
+                    session.override_base_transcript
+                    if session.override_base_transcript is not None
+                    else session.transcript
+                )
                 merged_body_transcript = merge_override_transcript(
                     strip_initial_context_prefix_records(
                         strip_context_edit_notice_records(session.edited_transcript)
                     ),
                     strip_initial_context_prefix_records(
-                        strip_context_edit_notice_records(session.transcript)
+                        strip_context_edit_notice_records(override_base_transcript)
                     ),
                     strip_initial_context_prefix_records(source_transcript),
                 )
@@ -1896,6 +2436,8 @@ class ProxyStore:
                     merged_body_transcript,
                 )
                 if input_items_end_with_tool_output(body.get("input")):
+                    session.transcript = copy.deepcopy(source_snapshot)
+                    session.override_base_transcript = copy.deepcopy(source_snapshot)
                     session.edited_transcript = forwarded_transcript
                     session.pending_transcript = with_running_assistant(forwarded_transcript)
                     request_body["input"] = drop_unpaired_tool_items(transcript_to_input_items(forwarded_transcript))
@@ -1915,10 +2457,12 @@ class ProxyStore:
                         }
                     )
                     session.request_log = session.request_log[-20:]
-                    self.save()
+                    self.save(session.id)
                     return session, request_body
                 compact_source = local_compact_source_from_transcript(forwarded_transcript)
                 if compact_source is not None:
+                    session.transcript = copy.deepcopy(compact_source)
+                    session.override_base_transcript = copy.deepcopy(compact_source)
                     session.local_compact_source_transcript = compact_source
                     session.pending_transcript = None
                     compact_prompt_transcript = replace_last_local_compact_prompt(
@@ -1944,8 +2488,10 @@ class ProxyStore:
                         }
                     )
                     session.request_log = session.request_log[-20:]
-                    self.save()
+                    self.save(session.id)
                     return session, request_body
+                session.transcript = copy.deepcopy(source_snapshot)
+                session.override_base_transcript = copy.deepcopy(source_snapshot)
                 session.edited_transcript = forwarded_transcript
                 session.pending_transcript = with_running_assistant(forwarded_transcript)
                 request_body["input"] = drop_unpaired_tool_items(transcript_to_input_items(forwarded_transcript))
@@ -1956,6 +2502,7 @@ class ProxyStore:
             else:
                 compact_source = local_compact_source_from_transcript(source_transcript)
                 if compact_source is not None:
+                    session.override_base_transcript = None
                     session.local_compact_source_transcript = compact_source
                     session.transcript = compact_source
                     session.pending_transcript = None
@@ -1980,8 +2527,9 @@ class ProxyStore:
                         }
                     )
                     session.request_log = session.request_log[-20:]
-                    self.save()
+                    self.save(session.id)
                     return session, request_body
+                session.override_base_transcript = None
                 session.transcript = source_transcript
                 session.pending_transcript = None
                 session.status = "running"
@@ -2000,7 +2548,7 @@ class ProxyStore:
                 }
             )
             session.request_log = session.request_log[-20:]
-            self.save()
+            self.save(session.id)
             return session, request_body
 
     def codex_session_headers(self, session_id: str) -> dict[str, str]:
@@ -2057,7 +2605,7 @@ class ProxyStore:
                 }
             )
             session.request_log = session.request_log[-20:]
-            self.save()
+            self.save(session.id)
             return session
 
     def begin_compact(self, session_id: str, body: dict[str, Any], headers: dict[str, str]) -> tuple[ProxySession, dict[str, Any]]:
@@ -2075,13 +2623,33 @@ class ProxyStore:
             session.local_compact_source_transcript = None
 
             if session.edited_transcript is not None:
-                compact_body_transcript = strip_initial_context_prefix_records(
+                source_snapshot = clean_transcript(source_transcript)
+                override_base_transcript = (
+                    session.override_base_transcript
+                    if session.override_base_transcript is not None
+                    else session.transcript
+                )
+                edited_compact_body_transcript = strip_initial_context_prefix_records(
                     strip_context_edit_notice_records(session.edited_transcript)
+                )
+                compact_base_transcript = strip_initial_context_prefix_records(
+                    strip_context_edit_notice_records(override_base_transcript)
+                )
+                compact_body_transcript = (
+                    merge_override_transcript(
+                        edited_compact_body_transcript,
+                        compact_base_transcript,
+                        strip_initial_context_prefix_records(source_transcript),
+                    )
+                    if compact_base_transcript
+                    else edited_compact_body_transcript
                 )
                 compact_transcript = with_fresh_initial_context_prefix(
                     source_transcript,
                     compact_body_transcript,
                 )
+                session.transcript = copy.deepcopy(source_snapshot)
+                session.override_base_transcript = copy.deepcopy(source_snapshot)
                 request_body["input"] = drop_unpaired_tool_items(
                     transcript_to_input_items(compact_transcript)
                 )
@@ -2100,7 +2668,7 @@ class ProxyStore:
                 }
             )
             session.request_log = session.request_log[-20:]
-            self.save()
+            self.save(session.id)
             return session, request_body
 
     def complete_compact(self, session_id: str, output_items: list[dict[str, Any]]) -> None:
@@ -2111,15 +2679,17 @@ class ProxyStore:
             compacted_transcript = input_items_to_transcript(output_items)
             session.transcript = compacted_transcript
             if session.edited_transcript is not None:
+                session.override_base_transcript = copy.deepcopy(compacted_transcript)
                 session.edited_transcript = copy.deepcopy(compacted_transcript)
                 session.status = "override"
             else:
+                session.override_base_transcript = None
                 session.status = "mirror"
             session.pending_transcript = None
             session.response_items.extend(output_items)
             session.response_items = session.response_items[-100:]
             session.updated_at = utc_timestamp()
-            self.save()
+            self.save(session.id)
 
     def complete_response(self, session_id: str, items: list[dict[str, Any]], text: str) -> None:
         with self.lock:
@@ -2135,22 +2705,25 @@ class ProxyStore:
                 )
                 session.transcript = compacted_transcript
                 if session.edited_transcript is not None:
+                    session.override_base_transcript = copy.deepcopy(compacted_transcript)
                     session.edited_transcript = copy.deepcopy(compacted_transcript)
                     session.status = "override"
                 else:
+                    session.override_base_transcript = None
                     session.status = "mirror"
                 session.local_compact_source_transcript = None
                 session.pending_transcript = None
                 session.response_items.extend(items)
                 session.response_items = session.response_items[-100:]
                 session.updated_at = utc_timestamp()
-                self.save()
+                self.save(session.id)
                 return
             if session.edited_transcript is None:
                 base = [record for record in session.transcript if not is_running_assistant(record)]
                 assistant_items = items or [{"type": "message", "role": "assistant", "content": text}]
                 assistant_text = text or assistant_text_from_items(assistant_items)
                 base = append_assistant_response_record(base, assistant_text, assistant_items)
+                session.override_base_transcript = None
                 session.transcript = base
                 session.status = "mirror"
             else:
@@ -2158,13 +2731,17 @@ class ProxyStore:
                 assistant_items = items or [{"type": "message", "role": "assistant", "content": text}]
                 assistant_text = text or assistant_text_from_items(assistant_items)
                 base = append_assistant_response_record(base, assistant_text, assistant_items)
+                raw_base = clean_transcript(session.override_base_transcript or session.transcript)
+                raw_base = append_assistant_response_record(raw_base, assistant_text, assistant_items)
+                session.transcript = raw_base
+                session.override_base_transcript = copy.deepcopy(raw_base)
                 session.edited_transcript = base
                 session.status = "override"
             session.pending_transcript = None
             session.response_items.extend(items)
             session.response_items = session.response_items[-100:]
             session.updated_at = utc_timestamp()
-            self.save()
+            self.save(session.id)
 
     def fail_response(self, session_id: str, message: str) -> None:
         with self.lock:
@@ -2176,7 +2753,7 @@ class ProxyStore:
             session.local_compact_source_transcript = None
             session.pending_transcript = None
             session.updated_at = utc_timestamp()
-            self.save()
+            self.save(session.id)
 
     def record_usage(self, session_id: str, kind: str, model: str, raw_usage: Any) -> None:
         event = usage_event(kind, model, raw_usage)
@@ -2189,20 +2766,22 @@ class ProxyStore:
                 self.sessions[session_id] = session
             session.usage_events.append(event)
             session.usage_events = session.usage_events[-USAGE_EVENT_LIMIT:]
+            session.usage_summary_cache = usage_summary_with_event(session.id, session.usage_summary_cache, event)
             session.updated_at = utc_timestamp()
-            self.save()
+            with self._connect() as conn:
+                self._save_session_metadata_to_db(conn, session)
+                self._append_usage_event_to_db(conn, session, event)
 
     def all_usage(self) -> dict[str, Any]:
         with self.lock:
             exposed_sessions = [session for session in self.sessions.values() if session.should_expose()]
-            all_events: list[dict[str, Any]] = []
             sessions: dict[str, dict[str, Any]] = {}
+            overall_events: list[dict[str, Any]] = []
             for session in exposed_sessions:
-                events = [event for event in session.usage_events if isinstance(event, dict)]
-                all_events.extend(events)
-                sessions[session.id] = usage_summary_from_events(session.id, events)
+                sessions[session.id] = session.usage_summary()
+                overall_events.extend(session.usage_events)
             return {
-                "overall": usage_summary_from_events("overall", all_events),
+                "overall": usage_summary_from_events("overall", overall_events),
                 "sessions": sessions,
             }
 
@@ -2220,8 +2799,11 @@ class ProxyStore:
                 raise KeyError(session_id)
             cleared_count = len(session.usage_events)
             session.usage_events = []
+            session.usage_summary_cache = usage_summary_from_events(session.id, [])
             session.updated_at = utc_timestamp()
-            self.save()
+            with self._connect() as conn:
+                self._save_session_metadata_to_db(conn, session)
+                self._save_usage_to_db(conn, session)
             return {"cleared_count": cleared_count, "summary": session.usage_summary()}
 
     def list_sessions(self) -> dict[str, Any]:
@@ -2254,15 +2836,17 @@ class ProxyStore:
             next_transcript = clean_transcript(transcript)
             mirror_transcript = clean_transcript(session.transcript)
             if next_transcript == mirror_transcript:
+                session.override_base_transcript = None
                 session.edited_transcript = None
                 session.status = "mirror"
             else:
+                session.override_base_transcript = copy.deepcopy(mirror_transcript)
                 session.edited_transcript = copy.deepcopy(next_transcript)
                 session.status = "override"
             session.pending_transcript = None
             session.updated_at = utc_timestamp()
             self.active_session_id = session_id
-            self.save()
+            self.save(session.id)
             payload = session.to_payload()
             payload["changed"] = previous_visible != clean_transcript(session.visible_transcript())
             return payload
@@ -2273,11 +2857,12 @@ class ProxyStore:
             if session is None:
                 raise KeyError(session_id)
             previous_visible = clean_transcript(session.visible_transcript())
+            session.override_base_transcript = None
             session.edited_transcript = None
             session.pending_transcript = None
             session.status = "mirror"
             session.updated_at = utc_timestamp()
-            self.save()
+            self.save(session.id)
             payload = session.to_payload()
             payload["changed"] = previous_visible != clean_transcript(session.visible_transcript())
             return payload
@@ -2318,6 +2903,7 @@ def clean_transcript(transcript: list[dict[str, Any]] | None) -> list[dict[str, 
     records = coalesce_adjacent_assistant_records(records)
     records = dedupe_local_compact_summary_records(records)
     return coalesce_adjacent_assistant_records(records)
+
 
 
 def coalesce_adjacent_assistant_records(transcript: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2431,7 +3017,21 @@ def common_prefix_len(left: list[dict[str, Any]], right: list[dict[str, Any]]) -
 
 def append_non_duplicate(base: list[dict[str, Any]], tail: list[dict[str, Any]]) -> list[dict[str, Any]]:
     merged = copy.deepcopy(base)
-    for record in tail:
+    clean_tail = clean_transcript(tail)
+    if not clean_tail:
+        return clean_transcript(merged)
+
+    max_overlap = min(len(merged), len(clean_tail))
+    overlap = 0
+    for size in range(max_overlap, 0, -1):
+        if [transcript_record_signature(record) for record in merged[-size:]] == [
+            transcript_record_signature(record)
+            for record in clean_tail[:size]
+        ]:
+            overlap = size
+            break
+
+    for record in clean_tail[overlap:]:
         if merged and transcript_record_signature(merged[-1]) == transcript_record_signature(record):
             continue
         summary_text = local_compact_summary_text(record)
@@ -2477,6 +3077,14 @@ def merge_override_transcript(
     if mirror:
         mirror_prefix = common_prefix_len(source, mirror)
         if mirror_prefix >= len(mirror):
+            return append_non_duplicate(base, source[mirror_prefix:])
+        if (
+            mirror_prefix == len(mirror) - 1
+            and mirror_prefix < len(source)
+            and str(mirror[mirror_prefix].get("role") or "") == "assistant"
+            and str(source[mirror_prefix].get("role") or "") == "assistant"
+            and not any(str(record.get("role") or "") == "user" for record in source[mirror_prefix + 1 :])
+        ):
             return append_non_duplicate(base, source[mirror_prefix:])
 
     base_prefix = common_prefix_len(source, base)
@@ -3005,7 +3613,9 @@ def main() -> None:
     args = parser.parse_args()
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    if preload_codex_subscription_auth():
+    if preload_force_upstream_auth():
+        proxy_log(f"preloaded force upstream auth for {FORCE_UPSTREAM_BASE_URL}")
+    elif preload_codex_subscription_auth():
         proxy_log("preloaded Codex subscription auth from local auth.json")
     elif preload_openai_api_auth():
         proxy_log("preloaded OpenAI API auth from OPENAI_API_KEY")
@@ -3013,8 +3623,11 @@ def main() -> None:
         proxy_log("local Codex auth was not available at proxy startup")
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"Hash Context proxy listening on http://{args.host}:{args.port}")
-    print(f"OpenAI API upstream: {OPENAI_UPSTREAM_BASE_URL.rstrip()}/responses")
-    print(f"ChatGPT upstream: {CHATGPT_UPSTREAM_BASE_URL.rstrip()}/responses")
+    if FORCE_UPSTREAM_BASE_URL:
+        print(f"Force upstream: {FORCE_UPSTREAM_BASE_URL.rstrip('/')}/responses")
+    else:
+        print(f"OpenAI API upstream: {OPENAI_UPSTREAM_BASE_URL.rstrip()}/responses")
+        print(f"ChatGPT upstream: {CHATGPT_UPSTREAM_BASE_URL.rstrip()}/responses")
     server.serve_forever()
 
 
