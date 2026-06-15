@@ -9,13 +9,13 @@ body,
 }
 
 body {
-  min-height: 100vh;
+  min-height: 100dvh;
 }
 
 #root {
   display: flex;
   width: 100%;
-  min-height: 100vh;
+  min-height: 100dvh;
 }
 
 button,
@@ -35,7 +35,7 @@ textarea {
 
 .markdown-body {
   color: inherit;
-  font-size: 17px;
+  font-size: var(--ui-font-size-lg);
   line-height: 1.75;
   word-break: break-word;
 }
@@ -56,15 +56,15 @@ textarea {
 }
 
 .markdown-body h1 {
-  font-size: 1.5em;
+  font-size: var(--ui-font-size-2xl);
 }
 
 .markdown-body h2 {
-  font-size: 1.3em;
+  font-size: var(--ui-font-size-2xl);
 }
 
 .markdown-body h3 {
-  font-size: 1.12em;
+  font-size: var(--ui-font-size-lg);
 }
 
 .markdown-body p,
@@ -157,7 +157,7 @@ textarea {
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.08);
   font-family: var(--code-font-family);
-  font-size: 0.92em;
+  font-size: var(--ui-font-size-sm);
 }
 
 .markdown-code-block {
@@ -172,7 +172,7 @@ textarea {
   align-items: center;
   justify-content: space-between;
   padding: 10px 14px;
-  font-size: 13px;
+  font-size: var(--ui-font-size-sm);
   color: rgba(255, 255, 255, 0.6);
   background: rgba(255, 255, 255, 0.04);
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
@@ -185,7 +185,7 @@ textarea {
   padding: 16px 18px;
   background: transparent;
   font-family: var(--code-font-family);
-  font-size: 14px;
+  font-size: var(--ui-font-size-sm);
   line-height: 1.65;
 }
 
@@ -236,11 +236,15 @@ textarea {
 .markdown-mermaid-error {
   margin-top: 10px;
   color: #ff8e8e;
-  font-size: 13px;
+  font-size: var(--ui-font-size-sm);
 }
 
 .inline-tool-block {
   margin: 12px 0;
+}
+
+.inline-tool-item + .inline-tool-item {
+  margin-top: 8px;
 }
 
 .inline-tool-call-count {
@@ -251,9 +255,13 @@ textarea {
   background: transparent;
   gap: 6px;
   color: rgba(255, 255, 255, 0.3);
-  font-size: 14px;
+  font-size: var(--ui-font-size-md);
   cursor: pointer;
   transition: color 180ms ease;
+}
+
+.inline-tool-group-icon {
+  font-size: var(--ui-font-size-sm);
 }
 
 .inline-tool-group-chevron,
@@ -320,7 +328,7 @@ textarea {
   background: transparent;
   cursor: pointer;
   color: rgba(255, 255, 255, 0.46);
-  font-size: 15px;
+  font-size: var(--ui-font-size);
   transition: color 180ms ease;
 }
 
@@ -346,7 +354,7 @@ textarea {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: rgba(255, 255, 255, 0.24);
-  font-size: 14px;
+  font-size: var(--ui-font-size-md);
   transition: color 180ms ease;
 }
 
@@ -362,7 +370,7 @@ textarea {
 .inline-tool-detail-text {
   margin-top: 8px;
   color: rgba(255, 255, 255, 0.56);
-  font-size: 13px;
+  font-size: var(--ui-font-size-sm);
   line-height: 1.6;
 }
 
@@ -379,7 +387,7 @@ textarea {
 .tool-json-box-label {
   padding: 10px 14px 8px;
   color: rgba(255, 255, 255, 0.7);
-  font-size: 12px;
+  font-size: var(--ui-font-size-sm);
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
@@ -387,7 +395,7 @@ textarea {
 .tool-shell-command {
   padding: 0 14px 10px;
   color: rgba(255, 255, 255, 0.96);
-  font-size: 14px;
+  font-size: var(--ui-font-size-md);
   font-family: var(--code-font-family);
 }
 
@@ -428,7 +436,7 @@ textarea {
 .tool-json-scroll pre {
   margin: 0;
   color: rgba(255, 255, 255, 0.84);
-  font-size: 13px;
+  font-size: var(--ui-font-size-sm);
   line-height: 1.65;
   white-space: pre-wrap;
   word-break: break-word;
@@ -440,7 +448,7 @@ textarea {
   justify-content: flex-end;
   padding: 0 14px 12px;
   color: rgba(255, 255, 255, 0.62);
-  font-size: 13px;
+  font-size: var(--ui-font-size-sm);
 }
 
 .tool-shell-footer.success {
@@ -457,7 +465,7 @@ textarea {
 
 .thinking-inline-text {
   display: inline-block;
-  font-size: 14px;
+  font-size: var(--ui-font-size-md);
   letter-spacing: 0.01em;
   background-image: linear-gradient(
     100deg,
@@ -498,7 +506,7 @@ textarea {
   background: transparent;
   color: rgba(255, 255, 255, 0.38);
   font: inherit;
-  font-size: 14px;
+  font-size: var(--ui-font-size-md);
   cursor: pointer;
   transition: color 160ms ease;
 }
@@ -568,14 +576,14 @@ textarea {
   border-left: 2px solid rgba(255, 255, 255, 0.12);
   color: rgba(255, 255, 255, 0.56);
   font-family: inherit;
-  font-size: 13px;
+  font-size: var(--ui-font-size-sm);
   line-height: 1.65;
   white-space: pre-wrap;
 }
 
 .message-empty-text {
   color: rgba(255, 255, 255, 0.56);
-  font-size: 14px;
+  font-size: var(--ui-font-size-md);
 }
 
 .message-attachments {
@@ -632,7 +640,7 @@ textarea {
 
 .message-attachment-subtitle {
   margin-top: 4px;
-  font-size: 13px;
+  font-size: var(--ui-font-size-sm);
   color: rgba(255, 255, 255, 0.58);
 }
 
@@ -751,18 +759,19 @@ textarea {
 
 .context-map-item.expanded {
   border-radius: 14px;
-  background: rgba(255, 255, 255, 0.034);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.045);
+  background: var(--surface-bg);
+  box-shadow: none;
+  overflow: hidden;
 }
 
 .context-node-row.hovered .context-map-item.expanded {
-  background: rgba(255, 255, 255, 0.038);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.055);
+  background: var(--surface-bg);
+  box-shadow: none;
 }
 
 .context-node-row.selected .context-map-item.expanded {
-  background: rgba(255, 255, 255, 0.032);
-  box-shadow: inset 0 0 0 1px rgba(var(--an-theme-rgb), 0.22);
+  background: var(--surface-bg);
+  box-shadow: none;
 }
 
 .context-map-item.expanded .context-map-item-button,
@@ -783,7 +792,7 @@ textarea {
 }
 
 .context-map-expand-icon {
-  font-size: 11px;
+  font-size: var(--ui-font-size-xs);
   opacity: 0.5;
   transition:
     transform 180ms ease,
@@ -824,6 +833,8 @@ textarea {
   padding: 0 6px 2px 12px;
   color: var(--text-primary);
   border-left: 1px solid transparent;
+  border-bottom-left-radius: inherit;
+  border-bottom-right-radius: inherit;
 }
 
 .context-map-expanded-body {
@@ -847,7 +858,7 @@ textarea {
 }
 
 .context-map-expanded-content .markdown-body {
-  font-size: 12px;
+  font-size: var(--ui-font-size-sm);
   line-height: 1.58;
   width: 100%;
 }
@@ -857,18 +868,18 @@ textarea {
 }
 
 .context-map-expanded-content .markdown-body h1 {
-  font-size: 1.24em;
+  font-size: var(--ui-font-size-md);
 }
 
 .context-map-expanded-content .markdown-body h2 {
-  font-size: 1.16em;
+  font-size: var(--ui-font-size-md);
 }
 
 .context-map-expanded-content .markdown-body h3,
 .context-map-expanded-content .markdown-body h4,
 .context-map-expanded-content .markdown-body h5,
 .context-map-expanded-content .markdown-body h6 {
-  font-size: 1.06em;
+  font-size: var(--ui-font-size-md);
 }
 
 .context-map-expanded-content .markdown-code-block {
@@ -877,19 +888,19 @@ textarea {
 
 .context-map-expanded-content .markdown-code-block-bar {
   padding: 7px 10px;
-  font-size: 10px;
+  font-size: var(--ui-font-size-xs);
 }
 
 .context-map-expanded-content .markdown-code-block code.hljs {
   padding: 10px 12px;
-  font-size: 11px;
+  font-size: var(--ui-font-size-xs);
   line-height: 1.5;
 }
 
 .context-map-expanded-content .markdown-table-wrap th,
 .context-map-expanded-content .markdown-table-wrap td {
   padding: 7px 9px;
-  font-size: 11px;
+  font-size: var(--ui-font-size-xs);
 }
 
 .context-map-expanded-content .inline-tool-block {
@@ -897,23 +908,23 @@ textarea {
 }
 
 .context-map-expanded-content .inline-tool-call-count {
-  font-size: 11px;
+  font-size: var(--ui-font-size-xs);
   gap: 4px;
 }
 
 .context-map-expanded-content .inline-tool-summary {
-  font-size: 11px;
+  font-size: var(--ui-font-size-xs);
   gap: 6px;
 }
 
 .context-map-expanded-content .inline-tool-command-preview {
   max-width: min(220px, calc(100vw - 180px));
-  font-size: 10px;
+  font-size: var(--ui-font-size-xs);
 }
 
 .context-map-expanded-content .inline-tool-detail-text {
   margin-top: 5px;
-  font-size: 10px;
+  font-size: var(--ui-font-size-xs);
 }
 
 .context-map-expanded-content .tool-shell-box,
@@ -925,12 +936,12 @@ textarea {
 .context-map-expanded-content .tool-shell-box-label,
 .context-map-expanded-content .tool-json-box-label {
   padding: 7px 9px 5px;
-  font-size: 10px;
+  font-size: var(--ui-font-size-xs);
 }
 
 .context-map-expanded-content .tool-shell-command {
   padding: 0 9px 7px;
-  font-size: 10px;
+  font-size: var(--ui-font-size-xs);
 }
 
 .context-map-expanded-content .tool-shell-scroll,
@@ -941,13 +952,13 @@ textarea {
 
 .context-map-expanded-content .tool-shell-scroll pre,
 .context-map-expanded-content .tool-json-scroll pre {
-  font-size: 10px;
+  font-size: var(--ui-font-size-xs);
   line-height: 1.46;
 }
 
 .context-map-expanded-content .tool-shell-footer {
   padding: 0 9px 9px;
-  font-size: 10px;
+  font-size: var(--ui-font-size-xs);
 }
 
 .context-map-expanded-content .message-attachments {
@@ -962,7 +973,7 @@ textarea {
 
 .context-map-expanded-content .message-attachment-subtitle,
 .context-map-expanded-content .message-empty-text {
-  font-size: 11px;
+  font-size: var(--ui-font-size-xs);
 }
 
 .context-minimap-bar.selected {
@@ -1075,7 +1086,7 @@ textarea {
 }
 
 .workbench-panel-title {
-  font-size: 15px;
+  font-size: var(--ui-font-size);
   font-weight: 600;
   color: rgba(255, 255, 255, 0.96);
 }
@@ -1083,7 +1094,7 @@ textarea {
 .workbench-panel-desc {
   margin-top: 8px;
   color: rgba(255, 255, 255, 0.52);
-  font-size: 13px;
+  font-size: var(--ui-font-size-sm);
   line-height: 1.6;
 }
 
@@ -1107,12 +1118,12 @@ textarea {
 
 .suggestion-card-label {
   color: rgba(255, 255, 255, 0.48);
-  font-size: 12px;
+  font-size: var(--ui-font-size-sm);
 }
 
 .suggestion-card-value {
   margin-top: 10px;
-  font-size: 24px;
+  font-size: var(--ui-font-size-2xl);
   font-weight: 600;
   color: rgba(255, 255, 255, 0.98);
 }
@@ -1120,7 +1131,7 @@ textarea {
 .suggestion-card-note {
   margin-top: 10px;
   color: rgba(255, 255, 255, 0.54);
-  font-size: 12px;
+  font-size: var(--ui-font-size-sm);
   line-height: 1.55;
 }
 
@@ -1166,7 +1177,7 @@ textarea {
 .usage-cost-row span {
   display: block;
   color: rgba(255, 255, 255, 0.48);
-  font-size: 11px;
+  font-size: var(--ui-font-size-xs);
   line-height: 1.35;
 }
 
@@ -1174,7 +1185,7 @@ textarea {
   display: block;
   margin-top: 8px;
   color: rgba(255, 255, 255, 0.95);
-  font-size: 16px;
+  font-size: var(--ui-font-size);
   font-weight: 600;
   overflow-wrap: anywhere;
 }
@@ -1193,7 +1204,7 @@ textarea {
 
 .usage-cost-row strong {
   color: rgba(226, 255, 230, 0.98);
-  font-size: 18px;
+  font-size: var(--ui-font-size-lg);
   font-weight: 650;
 }
 
@@ -1211,7 +1222,7 @@ textarea {
 }
 
 .suggestion-row-title {
-  font-size: 13px;
+  font-size: var(--ui-font-size-sm);
   font-weight: 600;
   color: rgba(255, 255, 255, 0.92);
 }
@@ -1219,13 +1230,13 @@ textarea {
 .suggestion-row-body {
   margin-top: 6px;
   color: rgba(255, 255, 255, 0.54);
-  font-size: 12px;
+  font-size: var(--ui-font-size-sm);
   line-height: 1.55;
 }
 
 .suggestion-row-meta {
   margin-top: 6px;
-  font-size: 12px;
+  font-size: var(--ui-font-size-sm);
   color: rgba(255, 255, 255, 0.5);
 }
 
@@ -1298,12 +1309,12 @@ textarea {
   white-space: pre-wrap;
   word-break: break-word;
   color: rgba(255, 255, 255, 0.96);
-  font-size: 14px;
+  font-size: var(--ui-font-size-md);
   line-height: 1.6;
 }
 
 .manual-workbench-message .markdown-body {
-  font-size: 14px;
+  font-size: var(--ui-font-size-md);
   line-height: 1.68;
 }
 
@@ -1362,7 +1373,7 @@ textarea {
 
 .manual-workbench-empty-title {
   color: rgba(255, 255, 255, 0.58);
-  font-size: 13px;
+  font-size: var(--ui-font-size-sm);
   font-weight: 600;
 }
 
@@ -1370,7 +1381,7 @@ textarea {
   max-width: 500px;
   margin-top: 6px;
   color: rgba(255, 255, 255, 0.58);
-  font-size: 12px;
+  font-size: var(--ui-font-size-sm);
   line-height: 1.65;
 }
 
@@ -1404,7 +1415,7 @@ textarea {
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(255, 255, 255, 0.06);
   color: rgba(255, 255, 255, 0.88);
-  font-size: 13px;
+  font-size: var(--ui-font-size-sm);
 }
 
 .manual-workbench-toolbar {
@@ -1417,7 +1428,7 @@ textarea {
 .manual-workbench-reasoning {
   min-height: 32px;
   padding: 0 11px;
-  font-size: 12px;
+  font-size: var(--ui-font-size-sm);
 }
 
 .workbench-model-picker-trigger {
@@ -1455,7 +1466,7 @@ textarea {
 
 .workbench-model-picker-trigger + .dropdown-menu .dropdown-item-left small {
   color: rgba(255, 255, 255, 0.42);
-  font-size: 10px;
+  font-size: var(--ui-font-size-xs);
   font-weight: 500;
 }
 
@@ -1475,7 +1486,7 @@ textarea {
   outline: none;
   background: transparent;
   color: rgba(255, 255, 255, 0.96);
-  font-size: 14px;
+  font-size: var(--ui-font-size-md);
   line-height: 1.6;
   overflow-y: hidden;
   scrollbar-width: none;
@@ -1512,7 +1523,7 @@ textarea {
 }
 
 .manual-workbench-clear i {
-  font-size: 17px;
+  font-size: var(--ui-font-size-lg);
 }
 
 .manual-workbench-clear:hover {
@@ -1539,9 +1550,44 @@ textarea {
   padding: 18px;
 }
 
+.workbench-settings-panel {
+  display: grid;
+  margin-top: 16px;
+}
+
+.workbench-settings-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.34fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: center;
+  min-height: 58px;
+  padding: 12px 0;
+}
+
+.workbench-settings-row + .workbench-settings-row {
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.workbench-settings-row-label {
+  min-width: 0;
+}
+
+.workbench-settings-row-meta {
+  margin-top: 4px;
+  color: rgba(255, 255, 255, 0.46);
+  font-size: var(--ui-font-size-sm);
+}
+
+.workbench-settings-row-control {
+  display: flex;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
 .workbench-setting-control-row {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 12px;
   flex-wrap: wrap;
 }
@@ -1552,7 +1598,7 @@ textarea {
 
 .workbench-setting-provider-hint {
   color: rgba(255, 255, 255, 0.52);
-  font-size: 12px;
+  font-size: var(--ui-font-size-sm);
 }
 
 .workbench-language-toggle {
@@ -1574,7 +1620,7 @@ textarea {
   color: rgba(255, 255, 255, 0.62);
   cursor: pointer;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--ui-font-size-sm);
   font-weight: 600;
 }
 
@@ -1598,24 +1644,25 @@ textarea {
   align-items: center;
   gap: 8px;
   color: rgba(255, 255, 255, 0.82);
-  font-size: 12px;
+  font-size: var(--ui-font-size-sm);
 }
 
 .workbench-setting-title {
-  font-size: 13px;
+  font-size: var(--ui-font-size-sm);
   font-weight: 600;
   color: rgba(255, 255, 255, 0.94);
 }
 
 .workbench-setting-desc {
   color: rgba(255, 255, 255, 0.54);
-  font-size: 12px;
+  font-size: var(--ui-font-size-sm);
   line-height: 1.55;
 }
 
 .workbench-setting-feedback {
+  margin-top: 12px;
   color: rgba(165, 220, 181, 0.96);
-  font-size: 12px;
+  font-size: var(--ui-font-size-sm);
 }
 
 .workbench-setting-feedback.error {
@@ -1646,13 +1693,13 @@ textarea {
 
 .workbench-tool-card-title {
   color: rgba(255, 255, 255, 0.94);
-  font-size: 13px;
+  font-size: var(--ui-font-size-sm);
   font-weight: 600;
 }
 
 .workbench-tool-card-desc {
   color: rgba(255, 255, 255, 0.54);
-  font-size: 12px;
+  font-size: var(--ui-font-size-sm);
   line-height: 1.55;
 }
 
@@ -1663,7 +1710,7 @@ textarea {
   min-height: 22px;
   padding: 0 9px;
   border-radius: 999px;
-  font-size: 11px;
+  font-size: var(--ui-font-size-xs);
 }
 
 .workbench-tool-status.available {
@@ -1679,6 +1726,17 @@ textarea {
 @media (max-width: 1280px) {
   .suggestion-card-grid {
     grid-template-columns: 1fr;
+  }
+
+  .workbench-settings-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+    align-items: start;
+  }
+
+  .workbench-settings-row-control,
+  .workbench-setting-control-row {
+    justify-content: flex-start;
   }
 }
 html[data-theme-mode] .right-panel {
@@ -1836,4 +1894,100 @@ html[data-theme-mode] .markdown-body .markdown-alert,
 html[data-theme-mode] .markdown-table-wrap th,
 html[data-theme-mode] .markdown-table-wrap td {
   border-color: var(--border-subtle);
+}
+
+/* Global typography scale. Keep this late so older component-local px sizes follow Settings > Font Size. */
+.markdown-body,
+.message .content {
+  font-size: var(--ui-font-size-lg);
+}
+
+.context-map-expanded-content .markdown-body,
+.map-bubble,
+.context-node-gutter,
+.manual-workbench-user-text,
+.manual-workbench-message .markdown-body,
+.manual-workbench-input,
+.tool-btn-capsule,
+.dropdown-item,
+.inline-tool-call-count,
+.inline-tool-command-preview,
+.inline-tool-detail-text,
+.tool-shell-command,
+.tool-shell-scroll pre,
+.tool-json-scroll pre,
+.tool-shell-footer,
+.thinking-inline-text,
+.reasoning-block-toggle,
+.workbench-panel-desc,
+.suggestion-row-title,
+.manual-workbench-empty-title,
+.manual-workbench-reference-chip,
+.workbench-setting-title,
+.workbench-tool-card-title {
+  font-size: var(--ui-font-size-md);
+}
+
+.inline-tool-summary,
+.workbench-panel-title,
+.usage-summary-item strong {
+  font-size: var(--ui-font-size);
+}
+
+.context-map-expanded-content .inline-tool-call-count,
+.context-map-expanded-content .inline-tool-summary,
+.context-map-expanded-content .markdown-code-block code.hljs,
+.context-map-expanded-content .markdown-table-wrap th,
+.context-map-expanded-content .markdown-table-wrap td,
+.context-map-expanded-content .message-attachment-subtitle,
+.context-map-expanded-content .message-empty-text,
+.map-metadata,
+.context-map-expand-icon,
+.markdown-code-block-bar,
+.markdown-code-block code.hljs,
+.markdown-mermaid-error,
+.tool-shell-box-label,
+.tool-json-box-label,
+.suggestion-card-label,
+.suggestion-card-note,
+.usage-summary-item span,
+.usage-cost-row span,
+.suggestion-row-body,
+.suggestion-row-meta,
+.manual-workbench-empty-body,
+.manual-workbench-reasoning,
+.workbench-settings-row-meta,
+.workbench-setting-provider-hint,
+.workbench-language-btn,
+.workbench-token-threshold-field,
+.workbench-setting-desc,
+.workbench-setting-feedback,
+.workbench-tool-card-desc {
+  font-size: var(--ui-font-size-sm);
+}
+
+.context-map-expanded-content .inline-tool-command-preview,
+.context-map-expanded-content .inline-tool-detail-text,
+.context-map-expanded-content .tool-shell-box-label,
+.context-map-expanded-content .tool-json-box-label,
+.context-map-expanded-content .tool-shell-command,
+.context-map-expanded-content .tool-shell-scroll pre,
+.context-map-expanded-content .tool-json-scroll pre,
+.context-map-expanded-content .tool-shell-footer,
+.workbench-model-picker-trigger + .dropdown-menu .dropdown-item-left small,
+.workbench-tool-status {
+  font-size: var(--ui-font-size-xs);
+}
+
+.suggestion-card-value {
+  font-size: var(--ui-font-size-2xl);
+}
+
+.usage-cost-row strong {
+  font-size: var(--ui-font-size-xl);
+}
+
+.manual-workbench-clear i,
+.send-btn i {
+  font-size: var(--ui-font-size-lg);
 }

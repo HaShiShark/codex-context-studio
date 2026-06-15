@@ -627,6 +627,8 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
             context_token_warning_threshold=payload.get("context_token_warning_threshold"),
             context_token_critical_threshold=payload.get("context_token_critical_threshold"),
             user_locale=payload.get("user_locale") if isinstance(payload.get("user_locale"), str) else None,
+            ui_font=payload.get("ui_font") if isinstance(payload.get("ui_font"), str) else None,
+            ui_font_size=payload.get("ui_font_size") if type(payload.get("ui_font_size")) is int else None,
         )
         self.app_state.settings = updated_settings
         provider_payloads = context_workbench_provider_payloads(

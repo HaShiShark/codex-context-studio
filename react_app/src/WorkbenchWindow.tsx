@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { PointerEvent as ReactPointerEvent } from 'react';
 
 import {
   createSessionRequest,
@@ -29,8 +28,8 @@ const LIVE_REFRESH_RUNNING_MS = 1500;
 const PENDING_CONTEXT_REFRESH_MS = 400;
 const PENDING_CONTEXT_REFRESH_MAX_MS = 8000;
 const LOCAL_EDIT_GRACE_MS = 2000;
-const MIN_WORKBENCH_WINDOW_WIDTH = 760;
-const MIN_WORKBENCH_WINDOW_HEIGHT = 520;
+const MIN_WORKBENCH_WINDOW_WIDTH = 600;
+const MIN_WORKBENCH_WINDOW_HEIGHT = 360;
 
 type WindowResizeEdge =
   | 'top'
@@ -41,17 +40,6 @@ type WindowResizeEdge =
   | 'top-right'
   | 'bottom-left'
   | 'bottom-right';
-
-const WINDOW_RESIZE_EDGES: WindowResizeEdge[] = [
-  'top',
-  'right',
-  'bottom',
-  'left',
-  'top-left',
-  'top-right',
-  'bottom-left',
-  'bottom-right',
-];
 
 function isProxyBusy(status?: string, isRunning?: boolean): boolean {
   return Boolean(isRunning || status === 'running' || status === 'compacting');
@@ -160,70 +148,133 @@ function nextWindowBounds(
   };
 }
 
-function WorkbenchWindowResizeHandles() {
-  const startResizing = useCallback(async (event: ReactPointerEvent<HTMLDivElement>, edge: WindowResizeEdge) => {
-    if (event.button !== 0 || !window.electronAPI?.getWindowBounds || !window.electronAPI?.setWindowBounds) {
+const WINDOW_RESIZE_EDGE_PX = 8;
+const WINDOW_DRAG_SURFACE_SELECTOR =
+  '.context-map-header, .extended-header, .workbench-window-state-panel, .workbench-window-title';
+const WINDOW_DRAG_BLOCK_SELECTOR =
+  'button, a, input, textarea, select, [role="button"], [role="menuitem"], .dropdown-menu, .dropdown-item, .extended-tab, .context-map-toggle';
+
+const WINDOW_RESIZE_CURSORS: Record<WindowResizeEdge, string> = {
+  top: 'ns-resize',
+  bottom: 'ns-resize',
+  left: 'ew-resize',
+  right: 'ew-resize',
+  'top-left': 'nwse-resize',
+  'bottom-right': 'nwse-resize',
+  'top-right': 'nesw-resize',
+  'bottom-left': 'nesw-resize',
+};
+
+function resizeEdgeAt(x: number, y: number, width: number, height: number): WindowResizeEdge | null {
+  const top = y <= WINDOW_RESIZE_EDGE_PX;
+  const bottom = y >= height - WINDOW_RESIZE_EDGE_PX;
+  const left = x <= WINDOW_RESIZE_EDGE_PX;
+  const right = x >= width - WINDOW_RESIZE_EDGE_PX;
+
+  if (top && left) return 'top-left';
+  if (top && right) return 'top-right';
+  if (bottom && left) return 'bottom-left';
+  if (bottom && right) return 'bottom-right';
+  if (top) return 'top';
+  if (bottom) return 'bottom';
+  if (left) return 'left';
+  if (right) return 'right';
+  return null;
+}
+
+let windowChromeInstalled = false;
+
+function installWindowChrome() {
+  if (windowChromeInstalled || !window.electronAPI?.isElectron || !window.electronAPI.getWindowBounds || !window.electronAPI.setWindowBounds) {
+    return;
+  }
+  windowChromeInstalled = true;
+
+  const root = document.documentElement;
+  let active = false;
+
+  const updateHoverCursor = (event: PointerEvent) => {
+    if (active) {
+      return;
+    }
+    const edge = resizeEdgeAt(event.clientX, event.clientY, window.innerWidth, window.innerHeight);
+    if (edge) {
+      root.style.cursor = WINDOW_RESIZE_CURSORS[edge];
+    } else if (root.style.cursor) {
+      root.style.cursor = '';
+    }
+  };
+
+  const onPointerDown = (event: PointerEvent) => {
+    if (event.button !== 0 || active) {
+      return;
+    }
+
+    const edge = resizeEdgeAt(event.clientX, event.clientY, window.innerWidth, window.innerHeight);
+    const target = event.target as Element | null;
+    const onDragSurface = Boolean(
+      target && target.closest(WINDOW_DRAG_SURFACE_SELECTOR) && !target.closest(WINDOW_DRAG_BLOCK_SELECTOR),
+    );
+
+    if (!edge && !onDragSurface) {
       return;
     }
 
     event.preventDefault();
     event.stopPropagation();
-
-    const target = event.currentTarget;
-    const pointerId = event.pointerId;
-    target.setPointerCapture(pointerId);
-
-    const startBounds = await window.electronAPI.getWindowBounds();
-    if (!startBounds) {
-      target.releasePointerCapture(pointerId);
-      return;
-    }
-
+    active = true;
     const startPoint = { x: event.screenX, y: event.screenY };
-    document.documentElement.dataset.workbenchWindowResizing = edge;
 
-    const resize = (moveEvent: PointerEvent) => {
-      moveEvent.preventDefault();
-      window.electronAPI?.setWindowBounds?.(
-        nextWindowBounds(edge, startBounds, startPoint, {
-          x: moveEvent.screenX,
-          y: moveEvent.screenY,
-        }),
-      );
-    };
-
-    const stopResizing = () => {
-      delete document.documentElement.dataset.workbenchWindowResizing;
-      window.removeEventListener('pointermove', resize, true);
-      window.removeEventListener('pointerup', stopResizing, true);
-      window.removeEventListener('pointercancel', stopResizing, true);
-      if (target.hasPointerCapture(pointerId)) {
-        target.releasePointerCapture(pointerId);
+    void window.electronAPI!.getWindowBounds!().then((startBounds) => {
+      if (!startBounds) {
+        active = false;
+        return;
       }
-    };
 
-    window.addEventListener('pointermove', resize, true);
-    window.addEventListener('pointerup', stopResizing, true);
-    window.addEventListener('pointercancel', stopResizing, true);
+      root.dataset[edge ? 'workbenchWindowResizing' : 'workbenchWindowMoving'] = edge || 'true';
+      root.style.cursor = edge ? WINDOW_RESIZE_CURSORS[edge] : 'grabbing';
+
+      const onMove = (moveEvent: PointerEvent) => {
+        moveEvent.preventDefault();
+        const point = { x: moveEvent.screenX, y: moveEvent.screenY };
+        if (edge) {
+          window.electronAPI?.setWindowBounds?.(nextWindowBounds(edge, startBounds, startPoint, point));
+        } else {
+          window.electronAPI?.setWindowBounds?.({
+            x: Math.round(startBounds.x + (point.x - startPoint.x)),
+            y: Math.round(startBounds.y + (point.y - startPoint.y)),
+            width: startBounds.width,
+            height: startBounds.height,
+          });
+        }
+      };
+
+      const onStop = () => {
+        active = false;
+        delete root.dataset.workbenchWindowResizing;
+        delete root.dataset.workbenchWindowMoving;
+        root.style.cursor = '';
+        window.removeEventListener('pointermove', onMove, true);
+        window.removeEventListener('pointerup', onStop, true);
+        window.removeEventListener('pointercancel', onStop, true);
+      };
+
+      window.addEventListener('pointermove', onMove, true);
+      window.addEventListener('pointerup', onStop, true);
+      window.addEventListener('pointercancel', onStop, true);
+    });
+  };
+
+  window.addEventListener('pointermove', updateHoverCursor, true);
+  window.addEventListener('pointerdown', onPointerDown, true);
+}
+
+function WorkbenchWindowChrome() {
+  useEffect(() => {
+    installWindowChrome();
   }, []);
 
-  if (!window.electronAPI?.isElectron) {
-    return null;
-  }
-
-  return (
-    <div className="workbench-window-resize-handles" aria-hidden="true">
-      {WINDOW_RESIZE_EDGES.map((edge) => (
-        <div
-          key={edge}
-          className={`workbench-window-resize-handle ${edge}`}
-          onPointerDown={(event) => {
-            void startResizing(event, edge);
-          }}
-        />
-      ))}
-    </div>
-  );
+  return null;
 }
 
 function WorkbenchWindowControls({ uiLocale }: { uiLocale: UiLocale }) {
@@ -270,6 +321,8 @@ export default function WorkbenchWindow() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [uiLocale, setUiLocale] = useState(normalizeSupportedLocale('en-US'));
+  const [uiFont, setUiFont] = useState('Noto Serif SC');
+  const [uiFontSize, setUiFontSize] = useState(15);
   const [session, setSession] = useState<SessionSummary | null>(null);
   const [messages, setMessages] = useState<MessageRecord[]>([]);
   const [histories, setHistories] = useState<Record<string, ContextWorkbenchHistoryEntry[]>>({});
@@ -485,6 +538,20 @@ export default function WorkbenchWindow() {
   }, [uiLocale]);
 
   useEffect(() => {
+    const fontStack = uiFont.trim()
+      ? `"${uiFont.trim()}", "Noto Serif SC", Georgia, "Times New Roman", serif`
+      : `"Noto Serif SC", Georgia, "Times New Roman", serif`;
+    document.documentElement.style.setProperty('--ui-font-family', fontStack);
+    document.documentElement.style.setProperty('--code-font-family', fontStack);
+    document.documentElement.style.setProperty('--ui-font-size', `${uiFontSize}px`);
+    document.documentElement.style.fontSize = `${uiFontSize}px`;
+    document.documentElement.style.fontFamily = fontStack;
+    document.body.style.fontFamily = fontStack;
+    document.getElementById('root')?.style.setProperty('font-family', fontStack);
+    document.documentElement.style.zoom = '';
+  }, [uiFont, uiFontSize]);
+
+  useEffect(() => {
     const handleShow = (event: Event) => {
       const detail = (event as CustomEvent<{ sessionId?: string }>).detail;
       const targetSessionId = detail?.sessionId?.trim() || '';
@@ -588,12 +655,14 @@ export default function WorkbenchWindow() {
   if (loading) {
     return (
       <main className="workbench-window-shell loading">
-        <WorkbenchWindowResizeHandles />
-        <WorkbenchWindowControls uiLocale={uiLocale} />
-        <div className="workbench-window-state-panel">
-          <div className="workbench-window-title">{windowText(uiLocale, 'Context Workbench', '上下文工作台')}</div>
-          <div className="workbench-window-muted">
-            {windowText(uiLocale, 'Loading current context...', '正在加载当前上下文...')}
+        <WorkbenchWindowChrome />
+        <div className="workbench-window-frame loading">
+          <WorkbenchWindowControls uiLocale={uiLocale} />
+          <div className="workbench-window-state-panel">
+            <div className="workbench-window-title">{windowText(uiLocale, 'Context Workbench', '上下文工作台')}</div>
+            <div className="workbench-window-muted">
+              {windowText(uiLocale, 'Loading current context...', '正在加载当前上下文...')}
+            </div>
           </div>
         </div>
       </main>
@@ -603,14 +672,16 @@ export default function WorkbenchWindow() {
   if (error) {
     return (
       <main className="workbench-window-shell loading">
-        <WorkbenchWindowResizeHandles />
-        <WorkbenchWindowControls uiLocale={uiLocale} />
-        <div className="workbench-window-state-panel">
-          <div className="workbench-window-title">{windowText(uiLocale, 'Context Workbench', '上下文工作台')}</div>
-          <div className="workbench-window-error">{error}</div>
-          <button className="workbench-window-button" type="button" onClick={() => void loadInit()}>
-            {windowText(uiLocale, 'Retry', '重试')}
-          </button>
+        <WorkbenchWindowChrome />
+        <div className="workbench-window-frame loading">
+          <WorkbenchWindowControls uiLocale={uiLocale} />
+          <div className="workbench-window-state-panel">
+            <div className="workbench-window-title">{windowText(uiLocale, 'Context Workbench', '上下文工作台')}</div>
+            <div className="workbench-window-error">{error}</div>
+            <button className="workbench-window-button" type="button" onClick={() => void loadInit()}>
+              {windowText(uiLocale, 'Retry', '重试')}
+            </button>
+          </div>
         </div>
       </main>
     );
@@ -618,32 +689,35 @@ export default function WorkbenchWindow() {
 
   return (
     <main className="workbench-window-shell">
-      <WorkbenchWindowResizeHandles />
-      <WorkbenchWindowControls uiLocale={uiLocale} />
-      {proxySaveError ? (
-        <div className="workbench-window-error" role="alert">
-          {proxySaveError}
-        </div>
-      ) : null}
-      <ContextMapSidebar
-        stage={2}
-        messages={messages}
-        onToggle={() => undefined}
-        onJumpToMessage={() => undefined}
-        sessionId={sessionId}
-        isMainChatBusy={isProxyRunning}
-        contextWorkbenchHistory={currentHistory}
-        reasoningOptions={reasoningOptions}
-        proxyUsageSummary={proxyUsageSummary}
-        uiLocale={uiLocale}
-        onContextWorkbenchHistoryChange={(changedSessionId, history) => {
-          setHistories((current) => ({ ...current, [changedSessionId]: history }));
-        }}
-        onContextWorkbenchConversationChange={commitContextConversation}
-        onProxyUsageSummaryChange={setProxyUsageSummary}
-        onEnsureSession={ensureSession}
-        onUiLocaleChange={(locale) => setUiLocale(normalizeSupportedLocale(locale))}
-      />
+      <WorkbenchWindowChrome />
+      <div className="workbench-window-frame">
+        <WorkbenchWindowControls uiLocale={uiLocale} />
+        {proxySaveError ? (
+          <div className="workbench-window-error" role="alert">
+            {proxySaveError}
+          </div>
+        ) : null}
+        <ContextMapSidebar
+          stage={2}
+          messages={messages}
+          onToggle={() => undefined}
+          onJumpToMessage={() => undefined}
+          sessionId={sessionId}
+          isMainChatBusy={isProxyRunning}
+          contextWorkbenchHistory={currentHistory}
+          reasoningOptions={reasoningOptions}
+          proxyUsageSummary={proxyUsageSummary}
+          uiLocale={uiLocale}
+          onContextWorkbenchHistoryChange={(changedSessionId, history) => {
+            setHistories((current) => ({ ...current, [changedSessionId]: history }));
+          }}
+          onContextWorkbenchConversationChange={commitContextConversation}
+          onProxyUsageSummaryChange={setProxyUsageSummary}
+          onEnsureSession={ensureSession}
+          onUiLocaleChange={(locale) => setUiLocale(normalizeSupportedLocale(locale))}
+          onUiFontChange={(font, size) => { setUiFont(font); setUiFontSize(size); }}
+        />
+      </div>
     </main>
   );
 }

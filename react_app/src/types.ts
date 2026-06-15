@@ -372,6 +372,8 @@ export interface ContextWorkbenchSettingsResponse {
     context_token_warning_threshold: number;
     context_token_critical_threshold: number;
     user_locale?: string;
+    ui_font?: string;
+    ui_font_size?: number;
   };
   models: string[];
   response_providers?: ResponseProviderSettings[];

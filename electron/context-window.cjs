@@ -16,8 +16,8 @@ const FRONTEND_PORT = readPort('HASH_CONTEXT_FRONTEND_PORT', 5174);
 const PROXY_PORT = readPort('HASH_CONTEXT_PROXY_PORT', 8787);
 const CONTROL_PORT = readPort('HASH_CONTEXT_CONTROL_PORT', 8790);
 const USE_VITE_FRONTEND = !app.isPackaged && process.env.HASH_CONTEXT_USE_BUILT_FRONTEND !== '1';
-const MIN_WINDOW_WIDTH = 760;
-const MIN_WINDOW_HEIGHT = 520;
+const MIN_WINDOW_WIDTH = 600;
+const MIN_WINDOW_HEIGHT = 360;
 
 app.setPath('userData', path.join(app.getPath('appData'), 'hash-context-codex-lab'));
 
@@ -453,8 +453,8 @@ function normalizeWindowBounds(bounds) {
 function createWindow(root) {
   writeLog('creating window');
   mainWindow = new BrowserWindow({
-    width: 1221,
-    height: 860,
+    width: 800,
+    height: 600,
     minWidth: MIN_WINDOW_WIDTH,
     minHeight: MIN_WINDOW_HEIGHT,
     backgroundColor: '#00000000',

@@ -67,6 +67,7 @@ interface ContextMapSidebarProps {
   onProxyUsageSummaryChange: (summary: ProxyUsageSummary | null) => void;
   onEnsureSession: () => Promise<string>;
   onUiLocaleChange?: (locale: 'zh-CN' | 'en-US') => void;
+  onUiFontChange?: (font: string, fontSize: number) => void;
 }
 
 export default function ContextMapSidebar({
@@ -85,6 +86,7 @@ export default function ContextMapSidebar({
   onProxyUsageSummaryChange,
   onEnsureSession,
   onUiLocaleChange,
+  onUiFontChange,
 }: ContextMapSidebarProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const minimapRef = useRef<HTMLDivElement>(null);
@@ -752,6 +754,7 @@ export default function ContextMapSidebar({
           onEnsureSession={onEnsureSession}
           onTokenThresholdsChange={setTokenThresholds}
           onUiLocaleChange={onUiLocaleChange}
+          onUiFontChange={onUiFontChange}
         />
       </div>
     </aside>

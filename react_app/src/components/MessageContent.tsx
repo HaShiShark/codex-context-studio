@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 
 import MarkdownRenderer from './MarkdownRenderer';
 import type { AttachmentRecord, MessageBlock, MessageRecord, ToolEvent } from '../types';
@@ -85,6 +85,27 @@ function truncateSingleLine(value: string, limit = 72) {
   }
 
   return `${value.slice(0, Math.max(0, limit - 3))}...`;
+}
+
+function isShellToolEvent(event: ToolEvent) {
+  return event.name === 'shell_command' || event.name === 'exec_command' || event.name === 'write_stdin';
+}
+
+function toolGroupLabel(events: ToolEvent[]) {
+  const allShellEvents = events.every(isShellToolEvent);
+
+  if (allShellEvents) {
+    return `已运行 ${events.length} 条命令`;
+  }
+
+  return `调用了 ${events.length} 个工具`;
+}
+
+function shouldOpenToolGroupInitially(events: ToolEvent[]) {
+  return events.some((event) => {
+    const status = String(event.status || '').toLowerCase();
+    return status && status !== 'completed' && status !== 'error';
+  });
 }
 
 function normalizePreviewWhitespace(value: string) {
@@ -241,24 +262,74 @@ function ReasoningBlock({ block }: { block: Extract<MessageBlock, { kind: 'reaso
   );
 }
 
-function ToolInvocationBlock({
+function ToolInvocationItem({
   event,
-  variant = 'default',
 }: {
   event: ToolEvent;
-  variant?: MessageContentVariant;
 }) {
-  const [isGroupOpen, setIsGroupOpen] = useState(true);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
   const title = event.display_title || humanizeToolName(event.name);
   const detail = (event.display_detail || '').trim();
-  const isShell = event.name === 'shell_command' || event.name === 'exec_command' || event.name === 'write_stdin';
+  const isShell = isShellToolEvent(event);
   const { prettyJson, shellOutput, exitCode } = parseToolOutput(event);
   const shellStatusText = event.status === 'error' ? '失败' : '成功';
   const safeShellOutput = shellOutput || event.display_result || '命令已执行，但没有输出。';
   const shellPreview = truncateSingleLine(detail);
-  const groupLabel = isShell ? '运行命令' : '调用了 1 个工具';
-  const itemLabel = isShell ? '已运行命令' : title;
+  const itemLabel = isShell ? '已运行' : title;
+
+  return (
+    <div className="inline-tool-item">
+      <button
+        className={`inline-tool-summary ${isDetailOpen ? 'open' : ''}`}
+        type="button"
+        onClick={() => setIsDetailOpen((previous) => !previous)}
+      >
+        <span className="inline-tool-summary-left">
+          <span>{itemLabel}</span>
+          {isShell && !isDetailOpen && detail ? (
+            <span className="inline-tool-command-preview">{shellPreview}</span>
+          ) : null}
+        </span>
+        <i className="ph-light ph-caret-right inline-tool-summary-chevron" />
+      </button>
+
+      <div className={`inline-tool-detail-panel ${isDetailOpen ? 'open' : ''}`}>
+        <div className="inline-tool-detail-inner">
+          {!isShell && detail ? <div className="inline-tool-detail-text">{detail}</div> : null}
+
+          {isShell ? (
+            <div className="tool-shell-box">
+              <div className="tool-shell-box-label">Shell</div>
+              <div className="tool-shell-command">$ {detail || 'powershell command'}</div>
+              <div className="tool-shell-scroll">
+                <pre>{safeShellOutput}</pre>
+              </div>
+              <div className={`tool-shell-footer ${event.status === 'error' ? 'error' : 'success'}`}>
+                {typeof exitCode === 'number' ? `退出码 ${exitCode} · ${shellStatusText}` : shellStatusText}
+              </div>
+            </div>
+          ) : (
+            <div className="tool-json-box">
+              <div className="tool-json-box-label">json</div>
+              <div className="tool-json-scroll">
+                <pre>{prettyJson}</pre>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ToolInvocationGroup({
+  events,
+  variant = 'default',
+}: {
+  events: ToolEvent[];
+  variant?: MessageContentVariant;
+}) {
+  const [isGroupOpen, setIsGroupOpen] = useState(() => shouldOpenToolGroupInitially(events));
   const compactClassName = variant === 'context-map' ? ' inline-tool-block-compact' : '';
 
   return (
@@ -268,51 +339,19 @@ function ToolInvocationBlock({
         type="button"
         onClick={() => setIsGroupOpen((previous) => !previous)}
       >
-        <span>{groupLabel}</span>
+        <i className="ph-light ph-terminal-window inline-tool-group-icon" />
+        <span>{toolGroupLabel(events)}</span>
         <i className="ph-light ph-caret-right inline-tool-group-chevron" />
       </button>
 
       <div className={`inline-tool-group-panel ${isGroupOpen ? 'open' : ''}`}>
         <div className="inline-tool-group-inner">
-          <button
-            className={`inline-tool-summary ${isDetailOpen ? 'open' : ''}`}
-            type="button"
-            onClick={() => setIsDetailOpen((previous) => !previous)}
-          >
-            <span className="inline-tool-summary-left">
-              <span>{itemLabel}</span>
-              {isShell && !isDetailOpen && detail ? (
-                <span className="inline-tool-command-preview">{shellPreview}</span>
-              ) : null}
-            </span>
-            <i className="ph-light ph-caret-right inline-tool-summary-chevron" />
-          </button>
-
-          <div className={`inline-tool-detail-panel ${isDetailOpen ? 'open' : ''}`}>
-            <div className="inline-tool-detail-inner">
-              {!isShell && detail ? <div className="inline-tool-detail-text">{detail}</div> : null}
-
-              {isShell ? (
-                <div className="tool-shell-box">
-                  <div className="tool-shell-box-label">Shell</div>
-                  <div className="tool-shell-command">$ {detail || 'powershell command'}</div>
-                  <div className="tool-shell-scroll">
-                    <pre>{safeShellOutput}</pre>
-                  </div>
-                  <div className={`tool-shell-footer ${event.status === 'error' ? 'error' : 'success'}`}>
-                    {typeof exitCode === 'number' ? `退出码 ${exitCode} · ${shellStatusText}` : shellStatusText}
-                  </div>
-                </div>
-              ) : (
-                <div className="tool-json-box">
-                  <div className="tool-json-box-label">json</div>
-                  <div className="tool-json-scroll">
-                    <pre>{prettyJson}</pre>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
+          {events.map((event, index) => (
+            <ToolInvocationItem
+              event={event}
+              key={event.call_id || `${event.name || 'tool'}-${index}`}
+            />
+          ))}
         </div>
       </div>
     </div>
@@ -321,27 +360,53 @@ function ToolInvocationBlock({
 
 function renderAssistantBlocks(record: MessageRecord, variant: MessageContentVariant) {
   if (record.blocks.length > 0) {
-    return record.blocks.map((block, index) => {
+    const renderedBlocks: ReactNode[] = [];
+    let pendingToolEvents: ToolEvent[] = [];
+    let pendingToolStartIndex = 0;
+
+    const flushToolEvents = () => {
+      if (!pendingToolEvents.length) {
+        return;
+      }
+
+      renderedBlocks.push(
+        <ToolInvocationGroup
+          events={pendingToolEvents}
+          key={`tool-group-${pendingToolStartIndex}-${pendingToolEvents.length}`}
+          variant={variant}
+        />,
+      );
+      pendingToolEvents = [];
+    };
+
+    record.blocks.forEach((block, index) => {
+      if (block.kind === 'tool') {
+        if (!pendingToolEvents.length) {
+          pendingToolStartIndex = index;
+        }
+        pendingToolEvents.push(block.tool_event);
+        return;
+      }
+
+      flushToolEvents();
+
       if (block.kind === 'text') {
-        return <MarkdownRenderer content={block.text} key={`text-${index}`} />;
+        renderedBlocks.push(<MarkdownRenderer content={block.text} key={`text-${index}`} />);
+        return;
       }
 
       if (block.kind === 'reasoning') {
-        return <ReasoningBlock block={block} key={`reasoning-${index}`} />;
+        renderedBlocks.push(<ReasoningBlock block={block} key={`reasoning-${index}`} />);
+        return;
       }
 
       if (block.kind === 'thinking') {
-        return <ThinkingBlock key={`thinking-${index}`} />;
+        renderedBlocks.push(<ThinkingBlock key={`thinking-${index}`} />);
       }
-
-      return (
-        <ToolInvocationBlock
-          event={block.tool_event}
-          key={`tool-${index}-${block.tool_event.name || 'tool'}`}
-          variant={variant}
-        />
-      );
     });
+
+    flushToolEvents();
+    return renderedBlocks;
   }
 
   if (record.text.trim()) {

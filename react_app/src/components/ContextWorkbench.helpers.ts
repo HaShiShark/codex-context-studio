@@ -48,7 +48,7 @@ export function uiLanguageLabel(value: UiLocale, locale: UiLocale) {
   if (value === 'en-US') {
     return uiText(locale, 'English', '英文');
   }
-  return uiText(locale, 'Simplified Chinese', '简体中文');
+  return uiText(locale, 'Chinese', '简体中文');
 }
 
 export function workbenchTabLabel(tab: WorkbenchTab, locale: UiLocale) {

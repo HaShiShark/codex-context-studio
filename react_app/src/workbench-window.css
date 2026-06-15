@@ -9,14 +9,66 @@ body {
   overflow: hidden;
 }
 
+:root,
+html {
+  --ui-font-family: "Noto Serif SC", Georgia, "Times New Roman", serif;
+  --code-font-family: "Noto Serif SC", Georgia, "Times New Roman", serif;
+  --ui-font-size: 15px;
+  --ui-font-size-2xs: calc(var(--ui-font-size) - 2px);
+  --ui-font-size-xs: calc(var(--ui-font-size) - 2px);
+  --ui-font-size-sm: calc(var(--ui-font-size) - 2px);
+  --ui-font-size-md: calc(var(--ui-font-size) + 1px);
+  --ui-font-size-lg: calc(var(--ui-font-size) + 1px);
+  --ui-font-size-xl: calc(var(--ui-font-size) + 1px);
+  --ui-font-size-2xl: calc(var(--ui-font-size) + 7px);
+}
+
+html,
+body,
+#root {
+  font-family: var(--ui-font-family) !important;
+}
+
 .workbench-window-shell {
   position: relative;
   width: 100vw;
-  height: 100vh;
-  padding: 0;
+  height: 100dvh;
+  padding: 12px 24px 28px;
+  box-sizing: border-box;
   overflow: hidden;
   background: transparent;
-  border-radius: 36px;
+  font-family: var(--ui-font-family) !important;
+  font-size: var(--ui-font-size);
+}
+
+.workbench-window-shell :where(:not(i, .ph, .ph-light, .ph-bold, .codicon, svg, svg *)) {
+  font-family: var(--ui-font-family) !important;
+}
+
+.workbench-window-shell .right-panel,
+.workbench-window-shell .context-map-pane,
+.workbench-window-shell .extended-pane,
+.workbench-window-shell .extended-content,
+.workbench-window-shell .extended-page,
+.workbench-window-shell .extended-page-scroll,
+.workbench-window-shell .manual-workbench,
+.workbench-window-shell .manual-workbench-list,
+.workbench-window-shell .manual-workbench-composer,
+.workbench-window-shell input,
+.workbench-window-shell textarea,
+.workbench-window-shell .markdown-body {
+  font-size: var(--ui-font-size);
+}
+
+.workbench-window-frame {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  isolation: isolate;
+  border-radius: var(--panel-radius, 12px);
+  background: var(--bg-main);
+  box-shadow: var(--shadow-window);
 }
 
 .workbench-window-shell .right-panel {
@@ -24,9 +76,9 @@ body {
   height: 100%;
   margin-left: 0;
   transform: none;
-  border-radius: 36px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.5);
+  border-radius: inherit;
+  border: 0;
+  box-shadow: none;
 }
 
 .workbench-window-shell .right-panel.stage-2 {
@@ -55,137 +107,36 @@ body {
 }
 
 .workbench-window-controls {
-  position: fixed;
+  position: absolute;
   top: 0;
   right: 0;
   z-index: 1200;
   display: flex;
   align-items: stretch;
-  height: 46px;
+  height: 38px;
   overflow: hidden;
-  border-top-right-radius: 36px;
+  border-top-right-radius: 12px;
   pointer-events: auto;
   -webkit-app-region: no-drag;
 }
 
-.workbench-window-resize-handles {
-  position: fixed;
-  inset: 0;
-  z-index: 1100;
-  pointer-events: none;
-  -webkit-app-region: no-drag;
-}
-
-.workbench-window-resize-handle {
-  position: fixed;
-  pointer-events: auto;
-  touch-action: none;
-  user-select: none;
-  -webkit-app-region: no-drag;
-}
-
-.workbench-window-resize-handle.top,
-.workbench-window-resize-handle.bottom {
-  right: 18px;
-  left: 18px;
-  height: 8px;
-}
-
-.workbench-window-resize-handle.top {
-  top: 0;
-  cursor: n-resize;
-}
-
-.workbench-window-resize-handle.bottom {
-  bottom: 0;
-  cursor: s-resize;
-}
-
-.workbench-window-resize-handle.left,
-.workbench-window-resize-handle.right {
-  top: 18px;
-  bottom: 18px;
-  width: 8px;
-}
-
-.workbench-window-resize-handle.left {
-  left: 0;
-  cursor: w-resize;
-}
-
-.workbench-window-resize-handle.right {
-  right: 0;
-  cursor: e-resize;
-}
-
-.workbench-window-resize-handle.top-left,
-.workbench-window-resize-handle.top-right,
-.workbench-window-resize-handle.bottom-left,
-.workbench-window-resize-handle.bottom-right {
-  width: 18px;
-  height: 18px;
-}
-
-.workbench-window-resize-handle.top-left {
-  top: 0;
-  left: 0;
-  cursor: nw-resize;
-}
-
-.workbench-window-resize-handle.top-right {
-  top: 0;
-  right: 0;
-  cursor: ne-resize;
-}
-
-.workbench-window-resize-handle.bottom-left {
-  bottom: 0;
-  left: 0;
-  cursor: sw-resize;
-}
-
-.workbench-window-resize-handle.bottom-right {
-  right: 0;
-  bottom: 0;
-  cursor: se-resize;
-}
-
-html[data-workbench-window-resizing] {
-  cursor: default;
-  user-select: none;
-}
-
-html[data-workbench-window-resizing='top'],
-html[data-workbench-window-resizing='bottom'] {
-  cursor: ns-resize;
-}
-
-html[data-workbench-window-resizing='left'],
-html[data-workbench-window-resizing='right'] {
-  cursor: ew-resize;
-}
-
-html[data-workbench-window-resizing='top-left'],
-html[data-workbench-window-resizing='bottom-right'] {
-  cursor: nwse-resize;
-}
-
-html[data-workbench-window-resizing='top-right'],
-html[data-workbench-window-resizing='bottom-left'] {
-  cursor: nesw-resize;
-}
-
-html[data-workbench-window-resizing] * {
+html[data-workbench-window-resizing] *,
+html[data-workbench-window-moving] * {
   cursor: inherit !important;
   user-select: none !important;
+}
+
+html[data-workbench-window-resizing],
+html[data-workbench-window-moving] {
+  user-select: none;
 }
 
 .workbench-window-control-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 48px;
-  height: 46px;
+  width: 32px;
+  height: 38px;
   padding: 0;
   border: 0;
   border-radius: 0;
@@ -205,7 +156,7 @@ html[data-workbench-window-resizing] * {
 }
 
 .workbench-window-control-btn.close {
-  border-top-right-radius: 36px;
+  border-top-right-radius: 12px;
 }
 
 .workbench-window-control-btn.close:hover {
@@ -214,7 +165,7 @@ html[data-workbench-window-resizing] * {
 }
 
 .workbench-window-control-btn i {
-  font-size: 14px;
+  font-size: var(--ui-font-size-sm);
   line-height: 1;
 }
 
@@ -249,12 +200,12 @@ html[data-workbench-window-resizing] * {
 
 .workbench-window-shell .extended-header {
   border-bottom: 0;
-  padding-right: 152px;
+  padding-right: 104px;
   -webkit-app-region: no-drag;
 }
 
 .workbench-window-shell .context-map-header {
-  -webkit-app-region: drag;
+  -webkit-app-region: no-drag;
 }
 
 .workbench-window-shell button,
@@ -267,6 +218,13 @@ html[data-workbench-window-resizing] * {
   -webkit-app-region: no-drag;
 }
 
+.workbench-window-shell button,
+.workbench-window-shell .extended-tab,
+.workbench-window-shell .tool-btn-capsule,
+.workbench-window-shell .dropdown-item {
+  user-select: none;
+}
+
 .workbench-window-shell .workbench-window-controls,
 .workbench-window-shell .workbench-window-controls * {
   -webkit-app-region: no-drag;
@@ -277,8 +235,14 @@ html[data-workbench-window-resizing] * {
   place-items: center;
   color: var(--an-text, #f4f4f5);
   background: var(--an-bg, #09090b);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.5);
+  border: 0;
+  box-shadow: none;
+}
+
+.workbench-window-shell.loading .workbench-window-frame {
+  display: grid;
+  place-items: center;
+  background: var(--bg-main);
 }
 
 .workbench-window-state-panel {
@@ -290,25 +254,25 @@ html[data-workbench-window-resizing] * {
 }
 
 .workbench-window-title {
-  font-size: 18px;
+  font-size: var(--ui-font-size-xl);
   font-weight: 650;
 }
 
 .workbench-window-muted {
   color: var(--an-muted, #a1a1aa);
-  font-size: 13px;
+  font-size: var(--ui-font-size-md);
 }
 
 .workbench-window-error {
   max-width: 560px;
   color: #fecaca;
-  font-size: 13px;
+  font-size: var(--ui-font-size-md);
   line-height: 1.6;
 }
 
 .workbench-window-button {
   justify-self: center;
-  border: 1px solid rgba(255, 255, 255, 0.16);
+  border: 0;
   border-radius: 8px;
   padding: 8px 14px;
   color: #f4f4f5;
@@ -318,4 +282,796 @@ html[data-workbench-window-resizing] * {
 
 .workbench-window-button:hover {
   background: rgba(255, 255, 255, 0.12);
+}
+
+/* Warm workbench redesign: token-driven, scoped to the Electron surface. */
+.workbench-window-shell {
+  --panel-radius: 12px;
+  --card-radius: 6px;
+  --composer-radius: 12px;
+  --control-radius: 6px;
+  --window-controls-width: 96px;
+  --accent-strong: #9f573f;
+  --accent-soft: rgba(184, 105, 78, 0.12);
+  --paper-raised: #ffffff;
+  --paper-soft: rgba(255, 255, 255, 0.54);
+  --paper-sunken: rgba(255, 255, 255, 0.42);
+  --divider: transparent;
+  --shadow-soft: 0 18px 48px rgba(96, 61, 45, 0.14);
+  --shadow-window:
+    0 12px 28px rgba(96, 61, 45, 0.08),
+    0 2px 8px rgba(96, 61, 45, 0.04);
+  --tool-surface: #f3eee8;
+  --tool-surface-strong: #ebe3da;
+  --tool-text: #3d302b;
+  --tool-muted: rgba(61, 48, 43, 0.58);
+  color: var(--text-primary);
+  background: transparent;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.workbench-window-shell .right-panel {
+  background: var(--bg-main);
+  border: 0;
+  border-radius: var(--panel-radius);
+  box-shadow: none;
+}
+
+.workbench-window-shell .context-map-pane {
+  background: var(--bg-main);
+}
+
+.workbench-window-shell .right-panel.stage-2 .context-map-pane {
+  border-right: 0;
+}
+
+.workbench-window-shell .extended-pane {
+  background: var(--bg-main);
+  border-left: 0;
+}
+
+.workbench-window-shell .context-map-header,
+.workbench-window-shell .extended-header {
+  min-height: 64px;
+  border-bottom: 0;
+  background: var(--bg-main);
+}
+
+.workbench-window-shell .extended-header {
+  gap: 8px;
+  flex-wrap: nowrap;
+  min-width: 0;
+  overflow: hidden;
+  padding-right: calc(var(--window-controls-width) + 8px);
+}
+
+.workbench-window-shell .context-map-title,
+.workbench-window-shell .workbench-panel-title,
+.workbench-window-shell .workbench-setting-title,
+.workbench-window-shell .suggestion-row-title,
+.workbench-window-shell .workbench-tool-card-title {
+  color: var(--text-primary);
+  font-weight: 650;
+  letter-spacing: 0;
+}
+
+.workbench-window-shell .workbench-panel-desc,
+.workbench-window-shell .workbench-setting-desc,
+.workbench-window-shell .workbench-setting-provider-hint,
+.workbench-window-shell .suggestion-card-label,
+.workbench-window-shell .suggestion-card-note,
+.workbench-window-shell .suggestion-row-body,
+.workbench-window-shell .suggestion-row-meta,
+.workbench-window-shell .workbench-tool-card-desc,
+.workbench-window-shell .manual-workbench-empty-title,
+.workbench-window-shell .manual-workbench-empty-body,
+.workbench-window-shell .map-metadata,
+.workbench-window-shell .map-preview-text,
+.workbench-window-shell .context-map-expand-icon {
+  color: var(--text-secondary);
+}
+
+.workbench-window-shell .extended-tab {
+  flex: 1 1 0;
+  justify-content: center;
+  min-width: 0;
+  max-width: 132px;
+  min-height: 34px;
+  padding: 0 11px;
+  border-radius: var(--control-radius);
+  color: var(--text-secondary);
+  opacity: 1;
+  letter-spacing: 0;
+}
+
+.workbench-window-shell .extended-tab span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workbench-window-shell .extended-tab:hover {
+  color: var(--text-primary);
+  background: rgba(184, 105, 78, 0.08);
+}
+
+.workbench-window-shell .extended-tab.active {
+  color: #ffffff;
+  background: var(--an-theme);
+  box-shadow: none;
+}
+
+.workbench-window-shell .context-map-list {
+  grid-template-columns: minmax(0, 1fr) 82px;
+  gap: 10px;
+  padding: 12px 8px 14px;
+}
+
+.workbench-window-shell .context-node-gutter {
+  color: rgba(116, 93, 83, 0.7);
+  font-variant-numeric: tabular-nums;
+  min-height: 24px;
+  border-radius: var(--card-radius);
+}
+
+.workbench-window-shell .context-node-gutter span {
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: var(--card-radius);
+}
+
+.workbench-window-shell .context-node-gutter:hover,
+.workbench-window-shell .context-node-gutter:focus-visible,
+.workbench-window-shell .context-node-row.hovered .context-node-gutter,
+.workbench-window-shell .context-node-row.expanded .context-node-gutter {
+  color: var(--accent-strong);
+  background: rgba(184, 105, 78, 0.08);
+}
+
+.workbench-window-shell .context-node-row.selected .context-node-gutter span {
+  color: #ffffff;
+  background: var(--an-theme);
+  box-shadow: none;
+}
+
+.workbench-window-shell .context-map-item-button {
+  border-radius: var(--card-radius);
+  gap: 2px;
+  padding: 3px 6px;
+  transition:
+    background-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease;
+}
+
+.workbench-window-shell .map-metadata {
+  gap: 4px;
+  line-height: 1.1;
+  min-height: 14px;
+}
+
+.workbench-window-shell .context-map-item-button:hover,
+.workbench-window-shell .context-node-row.hovered .context-map-item-button {
+  background: rgba(184, 105, 78, 0.07);
+  box-shadow: none;
+}
+
+.workbench-window-shell .context-map-item-button:focus-visible,
+.workbench-window-shell .extended-tab:focus-visible,
+.workbench-window-shell .tool-btn-capsule:focus-visible,
+.workbench-window-shell .tool-btn-primary:focus-visible,
+.workbench-window-shell .workbench-language-btn:focus-visible,
+.workbench-window-shell .manual-workbench-clear:focus-visible,
+.workbench-window-shell .send-btn:focus-visible,
+.workbench-window-shell .settings-input:focus-visible {
+  outline: 2px solid rgba(184, 105, 78, 0.42);
+  outline-offset: 2px;
+}
+
+.workbench-window-shell .context-map-item.expanded,
+.workbench-window-shell .context-node-row.hovered .context-map-item.expanded,
+.workbench-window-shell .context-node-row.selected .context-map-item-button,
+.workbench-window-shell .context-node-row.selected .context-map-item.expanded {
+  background: var(--paper-raised);
+  border-radius: var(--card-radius);
+  box-shadow: 0 8px 20px rgba(96, 61, 45, 0.08);
+  overflow: hidden;
+}
+
+.workbench-window-shell .context-map-item.expanded .context-map-item-button,
+.workbench-window-shell .context-map-item.expanded .context-map-item-button:hover,
+.workbench-window-shell .context-node-row.hovered .context-map-item.expanded .context-map-item-button,
+.workbench-window-shell .context-node-row.selected .context-map-item.expanded .context-map-item-button,
+.workbench-window-shell .context-map-expanded-shell.open,
+.workbench-window-shell .context-map-expanded-content {
+  background: var(--paper-raised);
+}
+
+.workbench-window-shell .context-map-expanded-shell {
+  border-bottom-left-radius: inherit;
+  border-bottom-right-radius: inherit;
+}
+
+.workbench-window-shell .context-map-item.assistant .map-bubble {
+  background: var(--paper-raised);
+  border-left: 0;
+  color: var(--text-primary);
+  box-shadow: 0 8px 20px rgba(96, 61, 45, 0.08);
+}
+
+.workbench-window-shell .context-map-item.user .map-bubble {
+  color: var(--text-primary);
+  background: var(--paper-raised);
+  box-shadow: 0 8px 20px rgba(96, 61, 45, 0.08);
+}
+
+.workbench-window-shell .manual-workbench-message.user .manual-workbench-bubble,
+.workbench-window-shell .message.user .content {
+  color: #ffffff;
+  background: var(--an-theme);
+  box-shadow: 0 8px 22px rgba(132, 70, 49, 0.18);
+}
+
+.workbench-window-shell .context-map-item.user .map-preview-text {
+  color: var(--text-primary);
+}
+
+.workbench-window-shell .context-map-expanded-content,
+.workbench-window-shell .manual-workbench-user-text,
+.workbench-window-shell .manual-workbench-message .markdown-body,
+.workbench-window-shell .markdown-body,
+.workbench-window-shell .message.an .content {
+  color: var(--text-primary);
+}
+
+.workbench-window-shell .context-minimap-shell {
+  padding-top: 2px;
+}
+
+.workbench-window-shell .context-minimap-track {
+  border-left: 0;
+}
+
+.workbench-window-shell .context-minimap-bar.assistant {
+  left: 4px;
+  width: calc(100% - 8px);
+}
+
+.workbench-window-shell .context-minimap-bar.user {
+  right: 4px;
+  width: 54%;
+}
+
+.workbench-window-shell .context-minimap-bar {
+  opacity: 0.78;
+  border-radius: 3px;
+}
+
+.workbench-window-shell .context-minimap-bar.weight-light {
+  background: #78956f;
+}
+
+.workbench-window-shell .context-minimap-bar.weight-medium {
+  background: #c99a54;
+}
+
+.workbench-window-shell .context-minimap-bar.weight-heavy {
+  background: #c35e4c;
+}
+
+.workbench-window-shell .context-minimap-bar.weight-neutral {
+  background: rgba(116, 93, 83, 0.32);
+}
+
+.workbench-window-shell .context-minimap-bar.hovered,
+.workbench-window-shell .context-minimap-bar:hover,
+.workbench-window-shell .context-minimap-bar.selected {
+  opacity: 1;
+  box-shadow: 0 0 0 1px rgba(184, 105, 78, 0.34);
+}
+
+.workbench-window-shell .context-minimap-viewport {
+  left: 2px;
+  right: 2px;
+  border: 0;
+  background: rgba(184, 105, 78, 0.1);
+  box-shadow: none;
+}
+
+.workbench-window-shell .extended-page-scroll,
+.workbench-window-shell .manual-workbench-list {
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+.workbench-window-shell .extended-page-scroll::-webkit-scrollbar-thumb,
+.workbench-window-shell .manual-workbench-list::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  background-clip: padding-box;
+}
+
+.workbench-window-shell .suggestion-card,
+.workbench-window-shell .suggestion-row,
+.workbench-window-shell .workbench-setting-card,
+.workbench-window-shell .workbench-tool-card,
+.workbench-window-shell .usage-summary-item,
+.workbench-window-shell .manual-workbench-composer-shell,
+.workbench-window-shell .manual-workbench-reference-chip,
+.workbench-window-shell .message-attachment-card {
+  border: 0;
+  border-radius: var(--card-radius);
+  background: var(--paper-raised);
+  color: var(--text-primary);
+  box-shadow: none;
+}
+
+.workbench-window-shell .usage-summary-item,
+.workbench-window-shell .workbench-tool-card,
+.workbench-window-shell .suggestion-row {
+  background: var(--paper-soft);
+}
+
+.workbench-window-shell .extended-page[data-page="settings"] .extended-page-scroll {
+  max-width: 660px;
+  padding: 28px 32px;
+}
+
+.workbench-window-shell .extended-page[data-page="settings"] .extended-page-scroll {
+  max-width: 660px;
+  padding: 28px 32px;
+}
+
+.workbench-window-shell .workbench-settings-panel {
+  margin-top: 20px;
+  padding: 0;
+  border-radius: 10px;
+  background: var(--paper-raised);
+  box-shadow: 0 2px 12px rgba(96, 61, 45, 0.08);
+}
+
+/* 强制左右双列，覆盖 react-entry.css 的 1280px 媒体查询折叠 */
+.workbench-window-shell .workbench-settings-row {
+  grid-template-columns: minmax(180px, 0.38fr) minmax(0, 1fr) !important;
+  align-items: center !important;
+  gap: 20px !important;
+  min-height: 56px;
+  padding: 14px 20px;
+}
+
+.workbench-window-shell .workbench-setting-title {
+  white-space: nowrap;
+}
+
+.workbench-window-shell .workbench-token-threshold-field {
+  color: var(--text-secondary);
+}
+
+.workbench-window-shell .workbench-setting-control-row {
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+}
+
+.workbench-window-shell .workbench-settings-row + .workbench-settings-row {
+  border-top: 1px solid rgba(127, 95, 80, 0.1);
+}
+
+.workbench-window-shell .workbench-settings-row-meta {
+  color: var(--text-secondary);
+  opacity: 0.72;
+}
+
+.workbench-window-shell .workbench-settings-row-control {
+  justify-content: flex-end !important;
+}
+
+.workbench-window-shell .workbench-settings-row-control .tool-btn-capsule {
+  min-height: 30px;
+}
+
+.workbench-window-shell .workbench-setting-feedback {
+  margin-top: 14px;
+  background: transparent;
+}
+
+.workbench-window-shell .settings-input {
+  background: var(--bg-main);
+  border: 1px solid rgba(127, 95, 80, 0.18);
+  border-radius: var(--control-radius);
+  color-scheme: light;
+}
+
+.workbench-window-shell .settings-input:focus {
+  border-color: rgba(184, 105, 78, 0.45);
+  box-shadow: 0 0 0 2px rgba(184, 105, 78, 0.14);
+}
+
+.workbench-window-shell .suggestion-card-value,
+.workbench-window-shell .usage-summary-item strong,
+.workbench-window-shell .usage-cost-row strong {
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.workbench-window-shell .usage-summary-item span,
+.workbench-window-shell .usage-cost-row span {
+  color: var(--text-secondary);
+}
+
+.workbench-window-shell .usage-cost-row {
+  border: 0;
+  background: rgba(184, 105, 78, 0.08);
+  border-radius: var(--card-radius);
+}
+
+.workbench-window-shell .tool-btn-capsule,
+.workbench-window-shell .manual-workbench-clear,
+.workbench-window-shell .workbench-window-button {
+  border: 0;
+  background: rgba(255, 253, 249, 0.64);
+  color: var(--text-primary);
+  border-radius: var(--control-radius);
+}
+
+.workbench-window-shell .tool-btn-capsule:hover,
+.workbench-window-shell .manual-workbench-clear:hover,
+.workbench-window-shell .workbench-window-button:hover {
+  background: rgba(184, 105, 78, 0.1);
+  color: var(--accent-strong);
+}
+
+.workbench-window-shell .tool-btn-primary,
+.workbench-window-shell .send-btn {
+  border: 0;
+  color: #ffffff;
+  background: var(--an-theme);
+  box-shadow: 0 8px 20px rgba(132, 70, 49, 0.18);
+}
+
+.workbench-window-shell .tool-btn-primary:hover,
+.workbench-window-shell .send-btn:hover {
+  background: var(--accent-strong);
+}
+
+.workbench-window-shell .manual-workbench-send {
+  border-radius: 50%;
+}
+
+.workbench-window-shell .manual-workbench-clear {
+  border-radius: 50%;
+  box-shadow: none;
+}
+
+.workbench-window-shell .manual-workbench-composer {
+  background: var(--bg-main);
+}
+
+.workbench-window-shell .manual-workbench-composer-shell {
+  padding: 12px;
+  border-radius: var(--composer-radius);
+  box-shadow: 0 12px 28px rgba(96, 61, 45, 0.1);
+}
+
+.workbench-window-shell .manual-workbench-input,
+.workbench-window-shell .settings-input {
+  color: var(--text-primary);
+  caret-color: var(--an-theme);
+}
+
+.workbench-window-shell .manual-workbench-input::placeholder,
+.workbench-window-shell .settings-input::placeholder {
+  color: rgba(116, 93, 83, 0.62);
+}
+
+
+.workbench-window-shell .workbench-language-toggle {
+  border: 1px solid rgba(127, 95, 80, 0.14);
+  background: var(--bg-main);
+  border-radius: var(--control-radius);
+  padding: 3px;
+}
+
+.workbench-window-shell .workbench-language-btn {
+  min-height: 28px;
+  padding: 0 12px;
+  font-size: var(--ui-font-size-sm);
+  color: var(--text-secondary);
+  border-radius: 5px;
+}
+
+.workbench-window-shell .workbench-language-btn:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: rgba(184, 105, 78, 0.08);
+}
+
+.workbench-window-shell .workbench-language-btn.is-active {
+  color: #ffffff;
+  background: var(--an-theme);
+}
+
+.workbench-window-shell .dropdown-menu {
+  bottom: calc(100% + 8px);
+  top: auto;
+  border: 0;
+  padding: 0;
+  background: #ffffff;
+  color: var(--text-primary);
+  box-shadow: 0 8px 28px rgba(96, 61, 45, 0.16);
+  border-radius: 10px;
+}
+
+.workbench-window-shell .workbench-model-picker-trigger + .dropdown-menu {
+  top: calc(100% + 8px);
+  bottom: auto;
+  max-height: none;
+  overflow-y: visible;
+}
+
+.workbench-window-shell .settings-input-small {
+  width: 64px;
+}
+
+.workbench-window-shell .settings-input-font {
+  width: 100%;
+  max-width: 200px;
+}
+
+.workbench-window-shell .dropdown-item {
+  color: var(--text-primary);
+}
+
+.workbench-window-shell .dropdown-item:hover,
+.workbench-window-shell .dropdown-item.selected {
+  background: rgba(184, 105, 78, 0.1);
+}
+
+.workbench-window-shell .dropdown-item-left small {
+  color: var(--text-secondary);
+}
+
+.workbench-window-shell .workbench-tool-status.available,
+.workbench-window-shell .workbench-setting-feedback {
+  color: #44693e;
+  background: transparent;
+}
+
+.workbench-window-shell .workbench-tool-status.preview {
+  color: #8b5f1f;
+  background: rgba(201, 154, 84, 0.12);
+}
+
+.workbench-window-shell .workbench-setting-feedback.error,
+.workbench-window-shell .workbench-window-error,
+.workbench-window-shell .markdown-mermaid-error {
+  color: #b54d42;
+}
+
+.workbench-window-shell .markdown-body a,
+.workbench-window-shell .message-attachment-open {
+  color: var(--accent-strong);
+}
+
+.workbench-window-shell .inline-tool-call-count,
+.workbench-window-shell .inline-tool-summary,
+.workbench-window-shell .inline-tool-command-preview,
+.workbench-window-shell .inline-tool-detail-text,
+.workbench-window-shell .reasoning-block,
+.workbench-window-shell .reasoning-block-toggle,
+.workbench-window-shell .reasoning-block-content {
+  color: var(--text-secondary);
+}
+
+.workbench-window-shell .inline-tool-call-count:hover,
+.workbench-window-shell .inline-tool-call-count.open,
+.workbench-window-shell .inline-tool-summary:hover,
+.workbench-window-shell .inline-tool-summary.open,
+.workbench-window-shell .reasoning-block-toggle:hover,
+.workbench-window-shell .reasoning-block.open .reasoning-block-toggle {
+  color: var(--text-primary);
+}
+
+.workbench-window-shell .inline-tool-summary:hover .inline-tool-command-preview,
+.workbench-window-shell .inline-tool-summary.open .inline-tool-command-preview {
+  color: var(--text-primary);
+}
+
+.workbench-window-shell .tool-shell-box-label,
+.workbench-window-shell .tool-json-box-label,
+.workbench-window-shell .tool-shell-footer {
+  color: var(--tool-muted);
+}
+
+.workbench-window-shell .tool-shell-command,
+.workbench-window-shell .tool-shell-scroll pre,
+.workbench-window-shell .tool-json-scroll pre {
+  color: var(--tool-text);
+}
+
+.workbench-window-shell .markdown-body blockquote {
+  border-left-color: rgba(184, 105, 78, 0.62);
+  color: var(--text-secondary);
+}
+
+.workbench-window-shell .markdown-body :not(pre) > code {
+  color: #8a4f3b;
+  background: rgba(184, 105, 78, 0.1);
+}
+
+.workbench-window-shell .markdown-alert,
+.workbench-window-shell .markdown-table-wrap {
+  border: 0;
+  background: rgba(255, 253, 249, 0.72);
+}
+
+.workbench-window-shell .markdown-code-block,
+.workbench-window-shell .markdown-mermaid,
+.workbench-window-shell .markdown-mermaid-fallback,
+.workbench-window-shell .tool-shell-box,
+.workbench-window-shell .tool-json-box {
+  border: 0;
+  background: var(--tool-surface);
+}
+
+.workbench-window-shell .tool-shell-box,
+.workbench-window-shell .tool-json-box {
+  box-shadow: inset 0 0 0 1px rgba(96, 61, 45, 0.05);
+}
+
+.workbench-window-shell .tool-shell-box-label,
+.workbench-window-shell .tool-json-box-label {
+  background: var(--tool-surface-strong);
+}
+
+.workbench-window-shell .tool-shell-scroll,
+.workbench-window-shell .tool-json-scroll {
+  scrollbar-color: rgba(116, 93, 83, 0.28) transparent;
+}
+
+.workbench-window-shell .thinking-inline-text,
+.workbench-window-shell .reasoning-block.streaming .reasoning-block-label {
+  color: var(--accent-strong);
+  background-image: none;
+  animation: none;
+}
+
+.workbench-window-control-btn {
+  color: rgba(42, 33, 29, 0.68);
+}
+
+.workbench-window-controls,
+.workbench-window-control-btn.close {
+  border-top-right-radius: var(--panel-radius);
+}
+
+.workbench-window-control-btn:hover {
+  color: var(--text-primary);
+  background: rgba(184, 105, 78, 0.1);
+}
+
+.workbench-window-control-btn.close:hover {
+  color: #ffffff;
+  background: #b54d42;
+}
+
+.workbench-window-shell.loading {
+  color: var(--text-primary);
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
+@media (max-width: 920px) {
+  .workbench-window-shell .extended-tab {
+    flex: 0 0 34px;
+    max-width: 34px;
+    padding: 0;
+  }
+
+  .workbench-window-shell .extended-tab span {
+    display: none;
+  }
+}
+
+/* Final scoped typography bridge for the Electron window. */
+.workbench-window-shell .markdown-body,
+.workbench-window-shell .message .content {
+  font-size: var(--ui-font-size-lg);
+}
+
+.workbench-window-shell .map-bubble,
+.workbench-window-shell .manual-workbench-user-text,
+.workbench-window-shell .manual-workbench-message .markdown-body,
+.workbench-window-shell .manual-workbench-input,
+.workbench-window-shell .tool-btn-capsule,
+.workbench-window-shell .dropdown-item,
+.workbench-window-shell .inline-tool-call-count,
+.workbench-window-shell .inline-tool-command-preview,
+.workbench-window-shell .inline-tool-detail-text,
+.workbench-window-shell .tool-shell-command,
+.workbench-window-shell .tool-shell-scroll pre,
+.workbench-window-shell .tool-json-scroll pre,
+.workbench-window-shell .tool-shell-footer,
+.workbench-window-shell .thinking-inline-text,
+.workbench-window-shell .reasoning-block-toggle,
+.workbench-window-shell .workbench-panel-desc,
+.workbench-window-shell .suggestion-row-title,
+.workbench-window-shell .manual-workbench-empty-title,
+.workbench-window-shell .manual-workbench-reference-chip,
+.workbench-window-shell .workbench-setting-title,
+.workbench-window-shell .workbench-tool-card-title {
+  font-size: var(--ui-font-size-md);
+}
+
+.workbench-window-shell .inline-tool-summary,
+.workbench-window-shell .workbench-panel-title,
+.workbench-window-shell .usage-summary-item strong {
+  font-size: var(--ui-font-size);
+}
+
+.workbench-window-shell .context-node-gutter,
+.workbench-window-shell .context-map-expanded-content .markdown-body,
+.workbench-window-shell .context-map-expanded-content .inline-tool-call-count,
+.workbench-window-shell .context-map-expanded-content .inline-tool-summary,
+.workbench-window-shell .context-map-expanded-content .markdown-code-block code.hljs,
+.workbench-window-shell .context-map-expanded-content .markdown-table-wrap th,
+.workbench-window-shell .context-map-expanded-content .markdown-table-wrap td,
+.workbench-window-shell .context-map-expanded-content .message-attachment-subtitle,
+.workbench-window-shell .context-map-expanded-content .message-empty-text,
+.workbench-window-shell .map-metadata,
+.workbench-window-shell .context-map-expand-icon,
+.workbench-window-shell .markdown-code-block-bar,
+.workbench-window-shell .markdown-code-block code.hljs,
+.workbench-window-shell .markdown-mermaid-error,
+.workbench-window-shell .tool-shell-box-label,
+.workbench-window-shell .tool-json-box-label,
+.workbench-window-shell .suggestion-card-label,
+.workbench-window-shell .suggestion-card-note,
+.workbench-window-shell .usage-summary-item span,
+.workbench-window-shell .usage-cost-row span,
+.workbench-window-shell .suggestion-row-body,
+.workbench-window-shell .suggestion-row-meta,
+.workbench-window-shell .manual-workbench-empty-body,
+.workbench-window-shell .manual-workbench-reasoning,
+.workbench-window-shell .workbench-settings-row-meta,
+.workbench-window-shell .workbench-setting-provider-hint,
+.workbench-window-shell .workbench-language-btn,
+.workbench-window-shell .workbench-token-threshold-field,
+.workbench-window-shell .workbench-setting-desc,
+.workbench-window-shell .workbench-setting-feedback,
+.workbench-window-shell .workbench-tool-card-desc {
+  font-size: var(--ui-font-size-sm);
+}
+
+.workbench-window-shell .context-map-expanded-content .inline-tool-command-preview,
+.workbench-window-shell .context-map-expanded-content .inline-tool-detail-text,
+.workbench-window-shell .context-map-expanded-content .tool-shell-box-label,
+.workbench-window-shell .context-map-expanded-content .tool-json-box-label,
+.workbench-window-shell .context-map-expanded-content .tool-shell-command,
+.workbench-window-shell .context-map-expanded-content .tool-shell-scroll pre,
+.workbench-window-shell .context-map-expanded-content .tool-json-scroll pre,
+.workbench-window-shell .context-map-expanded-content .tool-shell-footer,
+.workbench-window-shell .workbench-model-picker-trigger + .dropdown-menu .dropdown-item-left small,
+.workbench-window-shell .workbench-tool-status {
+  font-size: var(--ui-font-size-xs);
+}
+
+.workbench-window-shell .extended-tab {
+  font-size: var(--ui-font-size-md);
+}
+
+.workbench-window-shell .context-map-title,
+.workbench-window-shell .context-map-toggle,
+.workbench-window-shell .manual-workbench-clear i,
+.workbench-window-shell .send-btn i {
+  font-size: var(--ui-font-size-lg);
+}
+
+.workbench-window-shell .suggestion-card-value {
+  font-size: var(--ui-font-size-2xl);
+}
+
+.workbench-window-shell .usage-cost-row strong,
+.workbench-window-shell .workbench-window-title {
+  font-size: var(--ui-font-size-xl);
 }
