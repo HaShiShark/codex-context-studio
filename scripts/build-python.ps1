@@ -41,7 +41,7 @@ Remove-WorkspacePath $ProxyWork
   --workpath $WebWork `
   --specpath $WebWork `
   --name hash-web-server `
-  (Join-Path $Root "web_server.py")
+  (Join-Path $Root "backend\web_server.py")
 
 & $PythonExe -m PyInstaller `
   --noconfirm `
@@ -50,4 +50,4 @@ Remove-WorkspacePath $ProxyWork
   --workpath $ProxyWork `
   --specpath $ProxyWork `
   --name hash-proxy-server `
-  (Join-Path $Root "proxy_server.py")
+  (Join-Path $Root "backend\proxy_server.py")

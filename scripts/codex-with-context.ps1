@@ -161,6 +161,8 @@ function Stop-ProjectProcessOnPort {
         $commandLine -like "*Codex Context Proxy*" -or
         $commandLine -like "*proxy_server.py*" -or
         $commandLine -like "*web_server.py*" -or
+        $commandLine -like "*backend.proxy_server*" -or
+        $commandLine -like "*backend.web_server*" -or
         $commandLine -like "*hash-proxy-server*" -or
         $commandLine -like "*hash-web-server*") {
       Write-Host "[hash-context] stopping stale local service on port $Port pid=$($process.ProcessId)" -ForegroundColor DarkYellow

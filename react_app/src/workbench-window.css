@@ -218,7 +218,7 @@ html[data-workbench-window-resizing] * {
   line-height: 1;
 }
 
-.workbench-window-shell .context-map-header .control-btn-main {
+.workbench-window-shell .context-map-header .context-map-toggle {
   display: none;
 }
 
@@ -262,7 +262,7 @@ html[data-workbench-window-resizing] * {
 .workbench-window-shell input,
 .workbench-window-shell textarea,
 .workbench-window-shell select,
-.workbench-window-shell .control-btn-main,
+.workbench-window-shell .context-map-toggle,
 .workbench-window-shell .extended-tab {
   -webkit-app-region: no-drag;
 }

@@ -22,7 +22,7 @@ function Start-NamedJob {
 $backend = Start-NamedJob -Name "backend" -Arguments @($root.Path, $python) -Command {
   param($cwd, $pythonExe)
   Set-Location $cwd
-  & $pythonExe web_server.py 2>&1
+  & $pythonExe -m backend.web_server 2>&1
 }
 
 $frontend = Start-NamedJob -Name "frontend" -Arguments @($root.Path) -Command {

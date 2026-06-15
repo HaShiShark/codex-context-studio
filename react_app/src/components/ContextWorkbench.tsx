@@ -7,10 +7,8 @@ import {
   clearContextWorkbenchHistoryRequest,
   deleteContextWorkbenchMessageRequest,
   fetchContextWorkbenchSettings,
-  fetchContextWorkbenchSuggestionsRequest,
   fetchProxySessionUsageRequest,
   resetProxyUsageRequest,
-  restoreContextRevisionRequest,
   saveContextWorkbenchSettingsRequest,
   streamContextChatRequest,
 } from '../api';
@@ -21,38 +19,48 @@ import {
   type ContextTokenThresholds,
 } from '../contextTokenWeight';
 import type {
-  ContextRevisionSummary,
   ContextWorkbenchHistoryEntry,
-  ContextWorkbenchSuggestionNode,
-  ContextWorkbenchSuggestionStats,
   ContextWorkbenchToolCatalogItem,
   MessageRecord,
-  PendingContextRestore,
-  ProxyUsageBucket,
   ProxyUsageSummary,
   ReasoningOption,
   ResponseProviderDraft,
   ResponseProviderModel,
-  ResponseProviderSettings,
 } from '../types';
 import { normalizeSupportedLocale, type UiLocale } from '../i18n';
 import { copyText, getReasoningLabel, normalizeConversation } from '../utils';
+import {
+  buildManualMessagesFromHistory,
+  buildWorkbenchModelOptions,
+  createManualMessage,
+  DEFAULT_WORKBENCH_MODELS,
+  DEFAULT_WORKBENCH_PROVIDER_ID,
+  formatNodeReferenceSegments,
+  formatSuggestionRoleLabel,
+  formatTokenCount,
+  getThrownMessage,
+  inferWorkbenchProviderId,
+  isAbortError,
+  localizeToolCatalogItem,
+  parseTokenThresholdDraft,
+  reasoningDisplayLabel,
+  resolveWorkbenchSelection,
+  statusLabel,
+  toWorkbenchProviderDraft,
+  UI_LANGUAGE_OPTIONS,
+  uiLanguageLabel,
+  uiText,
+  workbenchProviderName,
+  WORKBENCH_TABS,
+  workbenchTabLabel,
+  type ManualWorkbenchMessage,
+  type WorkbenchTab,
+} from './ContextWorkbench.helpers';
 import Dropdown from './Dropdown';
 import MarkdownRenderer from './MarkdownRenderer';
-
-type WorkbenchTab = 'suggestions' | 'manual' | 'restore' | 'usage' | 'settings';
-const WORKBENCH_RESTORE_ENABLED = false;
-
-interface ManualWorkbenchMessage {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  pending?: boolean;
-  statusText?: string;
-}
+import UsageSummaryCard from './UsageSummaryCard';
 
 interface ContextWorkbenchProps {
-  messages: MessageRecord[];
   messageTokenStats: ContextMessageTokenStat[];
   selectedNodeIndexes: number[];
   criticalNodeIndexes: number[];
@@ -60,8 +68,6 @@ interface ContextWorkbenchProps {
   sessionId: string;
   isMainChatBusy: boolean;
   history: ContextWorkbenchHistoryEntry[];
-  revisions: ContextRevisionSummary[];
-  pendingRestore: PendingContextRestore | null;
   reasoningOptions: ReasoningOption[];
   proxyUsageSummary: ProxyUsageSummary | null;
   uiLocale: UiLocale;
@@ -71,342 +77,89 @@ interface ContextWorkbenchProps {
     conversation: MessageRecord[],
     options?: { resetProxyOverride?: boolean; skipProxyOverride?: boolean },
   ) => void | Promise<void>;
-  onRevisionHistoryChange: (sessionId: string, revisions: ContextRevisionSummary[]) => void;
-  onPendingRestoreChange: (sessionId: string, pendingRestore: PendingContextRestore | null) => void;
   onProxyUsageSummaryChange: (summary: ProxyUsageSummary | null) => void;
   onEnsureSession: () => Promise<string>;
   onTokenThresholdsChange: (thresholds: ContextTokenThresholds) => void;
   onUiLocaleChange?: (locale: UiLocale) => void;
 }
 
-const DEFAULT_WORKBENCH_MODELS = ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2'];
-const DEFAULT_WORKBENCH_PROVIDER_ID = 'codex-proxy';
-const EMPTY_SUGGESTION_STATS: ContextWorkbenchSuggestionStats = {
-  total_token_count: 0,
-  tool_token_count: 0,
-};
-
-const WORKBENCH_TABS: Array<{
-  id: WorkbenchTab;
-  label: string;
-  icon: string;
-}> = [
-  { id: 'suggestions', label: 'Suggestions', icon: 'ph-lightbulb' },
-  { id: 'manual', label: 'Manual', icon: 'ph-hand-pointing' },
-  ...(WORKBENCH_RESTORE_ENABLED
-    ? [{ id: 'restore' as const, label: 'Restore', icon: 'ph-arrow-counter-clockwise' }]
-    : []),
-  { id: 'usage', label: 'Usage', icon: 'ph-chart-bar' },
-  { id: 'settings', label: 'Settings', icon: 'ph-gear' },
-];
-
-const UI_LANGUAGE_OPTIONS: Array<{ value: UiLocale }> = [
-  { value: 'en-US' },
-  { value: 'zh-CN' },
-];
-
-function uiText(locale: UiLocale, english: string, chinese: string) {
-  return locale === 'zh-CN' ? chinese : english;
+interface ManualMessageItemProps {
+  entry: ManualWorkbenchMessage;
+  messageIndex: number;
+  uiLocale: UiLocale;
+  onCopy: (content: string) => void;
+  onDelete: (messageIndex: number) => void;
 }
 
-function uiLanguageLabel(value: UiLocale, locale: UiLocale) {
-  if (value === 'en-US') {
-    return uiText(locale, 'English', '英文');
-  }
-  return uiText(locale, 'Simplified Chinese', '简体中文');
-}
+function ManualMessageItem({
+  entry,
+  messageIndex,
+  uiLocale,
+  onCopy,
+  onDelete,
+}: ManualMessageItemProps) {
+  const copyLabel = uiText(uiLocale, 'Copy', '复制');
+  const deleteLabel = uiText(uiLocale, 'Delete', '删除');
 
-function workbenchTabLabel(tab: WorkbenchTab, locale: UiLocale) {
-  switch (tab) {
-    case 'suggestions':
-      return uiText(locale, 'Suggestions', '建议');
-    case 'manual':
-      return uiText(locale, 'Manual', '手动');
-    case 'restore':
-      return uiText(locale, 'Restore', '恢复');
-    case 'usage':
-      return uiText(locale, 'Usage', '用量');
-    case 'settings':
-      return uiText(locale, 'Settings', '设置');
-    default:
-      return tab;
-  }
-}
+  return (
+    <div className={`manual-workbench-message ${entry.role}`}>
+      <div className="manual-workbench-message-shell">
+        <div className="manual-workbench-bubble">
+          {entry.pending && !entry.content.trim() ? (
+            <div className="thinking-inline-line" role="status">
+              <span className="thinking-inline-text">{uiText(uiLocale, 'Thinking...', '正在思考...')}</span>
+            </div>
+          ) : entry.role === 'assistant' ? (
+            <>
+              <MarkdownRenderer content={entry.content} />
+              {entry.pending && entry.statusText ? (
+                <div className="thinking-inline-line" role="status">
+                  <span className="thinking-inline-text">{entry.statusText}</span>
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <div className="manual-workbench-user-text">{entry.content}</div>
+          )}
+        </div>
 
-function reasoningDisplayLabel(value: string, fallbackLabel: string, locale: UiLocale) {
-  switch (value) {
-    case 'default':
-      return uiText(locale, 'Auto', '自动');
-    case 'none':
-      return uiText(locale, 'Off', '关闭');
-    case 'minimal':
-      return uiText(locale, 'Minimal', '极简');
-    case 'low':
-      return uiText(locale, 'Low', '低');
-    case 'medium':
-      return uiText(locale, 'Medium', '中');
-    case 'high':
-      return uiText(locale, 'High', '高');
-    case 'xhigh':
-      return uiText(locale, 'Extra High', '超高');
-    default:
-      return fallbackLabel;
-  }
-}
-
-function createManualMessage(
-  role: ManualWorkbenchMessage['role'],
-  content: string,
-  options: Partial<ManualWorkbenchMessage> = {},
-): ManualWorkbenchMessage {
-  return {
-    id: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    role,
-    content,
-    pending: false,
-    ...options,
-  };
-}
-
-function buildManualMessagesFromHistory(history: ContextWorkbenchHistoryEntry[]): ManualWorkbenchMessage[] {
-  if (!history.length) {
-    return [];
-  }
-
-  return history.map((entry, index) =>
-    createManualMessage(entry.role, entry.content, {
-      id: `history-${index}-${entry.role}`,
-    }),
+        {!entry.pending ? (
+          <div className="manual-workbench-actions">
+            <button
+              aria-label={copyLabel}
+              title={copyLabel}
+              type="button"
+              onClick={() => onCopy(entry.content)}
+            >
+              <i className="ph-light ph-copy" />
+            </button>
+            <button
+              aria-label={deleteLabel}
+              title={deleteLabel}
+              type="button"
+              onClick={() => onDelete(messageIndex)}
+            >
+              <i className="ph-light ph-trash" />
+            </button>
+          </div>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
-function getThrownMessage(error: unknown) {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function formatCostUsd(value: number | undefined) {
-  const safeValue = Number.isFinite(value) ? Number(value) : 0;
-  if (safeValue <= 0) {
-    return '$0.0000';
-  }
-  if (safeValue < 0.0001) {
-    return '<$0.0001';
-  }
-  return `$${safeValue.toFixed(4)}`;
-}
-
-function formatPercent(value: number | undefined) {
-  const safeValue = Number.isFinite(value) ? Number(value) : 0;
-  return `${(Math.max(0, Math.min(safeValue, 1)) * 100).toFixed(1)}%`;
-}
-
-function formatNodeReferenceSegments(nodeNumbers: number[]) {
-  if (!nodeNumbers.length) {
-    return [];
-  }
-
-  const segments: string[] = [];
-  let rangeStart = nodeNumbers[0];
-  let previous = nodeNumbers[0];
-
-  for (let index = 1; index < nodeNumbers.length; index += 1) {
-    const current = nodeNumbers[index];
-    if (current === previous + 1) {
-      previous = current;
-      continue;
-    }
-
-    segments.push(rangeStart === previous ? `${rangeStart}` : `${rangeStart}-${previous}`);
-    rangeStart = current;
-    previous = current;
-  }
-
-  segments.push(rangeStart === previous ? `${rangeStart}` : `${rangeStart}-${previous}`);
-  return segments;
-}
-
-function statusLabel(status: ContextWorkbenchToolCatalogItem['status'], locale: UiLocale) {
-  return status === 'available'
-    ? uiText(locale, 'Available', '可用')
-    : uiText(locale, 'Preview', '预览');
-}
-
-function toWorkbenchProviderDraft(provider: ResponseProviderSettings): ResponseProviderDraft {
-  return {
-    id: provider.id,
-    name: provider.name,
-    provider_type: provider.provider_type,
-    enabled: provider.enabled,
-    supports_model_fetch: provider.supports_model_fetch,
-    supports_responses: provider.supports_responses,
-    api_base_url: provider.api_base_url || '',
-    api_key_input: '',
-    clear_api_key: false,
-    default_model: provider.default_model || '',
-    models: Array.isArray(provider.models) ? provider.models : [],
-    last_sync_at: provider.last_sync_at || '',
-    last_sync_error: provider.last_sync_error || '',
-  };
-}
-
-function inferWorkbenchProviderId(modelId: string, providers: ResponseProviderDraft[]) {
-  const cleanedModelId = modelId.trim();
-  if (cleanedModelId) {
-    const matchedProvider = providers.find((provider) =>
-      provider.models.some((model) => (model.id || '').trim() === cleanedModelId),
-    );
-    if (matchedProvider) {
-      return matchedProvider.id;
-    }
-  }
-
-  return providers.find((provider) => provider.enabled && provider.models.length > 0)?.id || 'openai';
-}
-
-function resolveWorkbenchSelection(modelId: string, providerId: string, providers: ResponseProviderDraft[]) {
-  const cleanedModelId = modelId.trim();
-  const cleanedProviderId = providerId.trim();
-  const matchedProvider = providers.find((provider) => provider.id === cleanedProviderId);
-  const matchedModel =
-    matchedProvider?.models.find((model) => (model.id || '').trim() === cleanedModelId) ||
-    providers.find((provider) => provider.models.some((model) => (model.id || '').trim() === cleanedModelId))
-      ?.models.find((model) => (model.id || '').trim() === cleanedModelId);
-
-  if (matchedModel) {
-    return {
-      providerId: matchedProvider?.models.some((model) => (model.id || '').trim() === cleanedModelId)
-        ? matchedProvider.id
-        : inferWorkbenchProviderId(cleanedModelId, providers),
-      modelId: matchedModel.id || matchedModel.label || DEFAULT_WORKBENCH_MODELS[0],
-    };
-  }
-
-  const fallbackProvider = providers.find((provider) => provider.enabled && provider.models.length > 0);
-  return {
-    providerId: fallbackProvider?.id || cleanedProviderId || DEFAULT_WORKBENCH_PROVIDER_ID,
-    modelId: cleanedModelId || fallbackProvider?.default_model || fallbackProvider?.models[0]?.id || DEFAULT_WORKBENCH_MODELS[0],
-  };
-}
-
-function workbenchProviderName(provider: ResponseProviderDraft | undefined) {
-  if (!provider) {
-    return 'No provider selected';
-  }
-  return provider.name.trim() || provider.id;
-}
-
-function formatChangeTypeLabel(changeType: string) {
-  switch (changeType) {
-    case 'delete':
-      return 'Delete';
-    case 'replace':
-      return 'Replace';
-    case 'compress':
-      return 'Compress';
-    case 'mixed':
-      return 'Mixed';
-    default:
-      return 'Update';
-  }
-}
-
-function formatRevisionMeta(revision: ContextRevisionSummary) {
-  const revisionNumber = revision.revision_number || 0;
-  const operationCount = revision.operation_count || 0;
-  const nodeCount = revision.node_count || 0;
-  const changedSegments = formatNodeReferenceSegments(revision.changed_nodes || []);
-  const parts = [
-    `Version ${revisionNumber}`,
-    `${operationCount} changes`,
-    `${nodeCount} nodes`,
-  ];
-
-  if (changedSegments.length) {
-    parts.push(`Nodes #${changedSegments.join(' / ')}`);
-  }
-
-  return parts.join(' / ');
-}
-
-function buildRestoreActionLabel(targetRevision: ContextRevisionSummary) {
-  const targetRevisionNumber = targetRevision.revision_number || 0;
-  return `Switch to version ${targetRevisionNumber}`;
-}
-
-function formatTokenCount(value: number) {
-  return value.toLocaleString('zh-CN');
-}
-
-function parseTokenThresholdDraft(value: string, fallback: number) {
-  const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) ? Math.max(0, parsed) : fallback;
-}
-
-function formatSuggestionRoleLabel(role: ContextWorkbenchSuggestionNode['role'], locale: UiLocale) {
-  return role === 'user' ? uiText(locale, 'User', '用户') : uiText(locale, 'Assistant', '助手');
-}
-
-function isAbortError(error: unknown) {
-  return error instanceof Error && error.name === 'AbortError';
-}
-
-function localizeToolCatalogItem(tool: ContextWorkbenchToolCatalogItem, locale: UiLocale) {
-  switch (tool.id) {
-    case 'get_context_node_details':
-      return {
-        label: uiText(locale, 'Expand node details', '展开节点详情'),
-        description: uiText(locale, 'Expand nodes into full content and editable items before deciding whether to edit.', '将节点展开为完整内容和可编辑条目，再决定是否编辑。'),
-      };
-    case 'find_context_items':
-      return {
-        label: uiText(locale, 'Find items', '查找条目'),
-        description: uiText(locale, 'Search provider items by metadata and previews without loading full node content.', '通过元数据和预览搜索条目，不加载完整节点内容。'),
-      };
-    case 'edit_context_items':
-      return {
-        label: uiText(locale, 'Edit items', '编辑条目'),
-        description: uiText(locale, 'Batch delete, replace, or compress items selected by node, item, or type filters.', '按节点、条目或类型筛选后，批量删除、替换或压缩条目。'),
-      };
-    case 'delete_context_item':
-      return {
-        label: uiText(locale, 'Delete one item', '删除单个条目'),
-        description: uiText(locale, 'Delete one item inside a node.', '删除某个节点里的一个条目。'),
-      };
-    case 'replace_context_item':
-      return {
-        label: uiText(locale, 'Replace one item', '替换单个条目'),
-        description: uiText(locale, 'Replace one item inside a node with new content.', '把某个节点里的一个条目替换成新的内容。'),
-      };
-    case 'compress_context_item':
-      return {
-        label: uiText(locale, 'Compress one item', '压缩单个条目'),
-        description: uiText(locale, 'Compress one item while keeping its item type.', '把某个条目压缩成更短的版本，同时保留原来的条目类型。'),
-      };
-    case 'compress_context_nodes':
-      return {
-        label: uiText(locale, 'Compress nodes', '压缩节点'),
-        description: uiText(locale, 'Compress one or more nodes into summary nodes in the working snapshot.', '把一个或多个节点压缩成新的摘要节点。'),
-      };
-    case 'delete_context_nodes':
-      return {
-        label: uiText(locale, 'Delete nodes', '删除节点'),
-        description: uiText(locale, 'Delete one or more nodes from the working snapshot.', '从当前工作快照里删除一个或多个节点。'),
-      };
-    case 'confirm_working_snapshot':
-      return {
-        label: uiText(locale, 'Confirm snapshot', '确认快照'),
-        description: uiText(locale, 'Review the final active nodes after the planned edits are complete.', '在计划内编辑完成后，确认最终生效的节点概览。'),
-      };
-    default:
-      return {
-        label: tool.label,
-        description: tool.description,
-      };
-  }
+function ManualEmptyState({ uiLocale }: { uiLocale: UiLocale }) {
+  return (
+    <div className="manual-workbench-empty">
+      <div className="manual-workbench-empty-title">{uiText(uiLocale, 'You can organize the current context directly', '可以直接整理当前上下文')}</div>
+      <div className="manual-workbench-empty-body">
+        {uiText(uiLocale, 'Ask which parts are too long, or tell the model what should be kept, compressed, replaced, or removed.', '可以询问哪些内容太长，或者直接告诉模型哪些内容应该保留、压缩、替换或删除。')}
+      </div>
+    </div>
+  );
 }
 
 export default function ContextWorkbench({
-  messages,
   messageTokenStats,
   selectedNodeIndexes,
   criticalNodeIndexes,
@@ -414,15 +167,11 @@ export default function ContextWorkbench({
   sessionId,
   isMainChatBusy,
   history,
-  revisions,
-  pendingRestore,
   reasoningOptions,
   proxyUsageSummary,
   uiLocale,
   onHistoryChange,
   onConversationChange,
-  onRevisionHistoryChange,
-  onPendingRestoreChange,
   onProxyUsageSummaryChange,
   onEnsureSession,
   onTokenThresholdsChange,
@@ -436,11 +185,9 @@ export default function ContextWorkbench({
     () => buildManualMessagesFromHistory(history),
   );
   const [isManualSending, setIsManualSending] = useState(false);
-  const [isRestoreBusy, setIsRestoreBusy] = useState(false);
   const [isUsageClearing, setIsUsageClearing] = useState(false);
   const [usageFeedback, setUsageFeedback] = useState('');
   const [usageFeedbackError, setUsageFeedbackError] = useState(false);
-  const [restoreError, setRestoreError] = useState('');
   const [manualFeedback, setManualFeedback] = useState('');
   const [manualFeedbackError, setManualFeedbackError] = useState(false);
   const [workbenchModelDraft, setWorkbenchModelDraft] = useState(DEFAULT_WORKBENCH_MODELS[0]);
@@ -455,10 +202,6 @@ export default function ContextWorkbench({
   );
   const [availableProviders, setAvailableProviders] = useState<ResponseProviderDraft[]>([]);
   const [toolCatalog, setToolCatalog] = useState<ContextWorkbenchToolCatalogItem[]>([]);
-  const [suggestionStats, setSuggestionStats] = useState<ContextWorkbenchSuggestionStats>(EMPTY_SUGGESTION_STATS);
-  const [suggestionNodes, setSuggestionNodes] = useState<ContextWorkbenchSuggestionNode[]>([]);
-  const [isSuggestionsLoading, setIsSuggestionsLoading] = useState(true);
-  const [suggestionsError, setSuggestionsError] = useState('');
   const [isSettingsLoading, setIsSettingsLoading] = useState(true);
   const [isSettingsSaving, setIsSettingsSaving] = useState(false);
   const [settingsMessage, setSettingsMessage] = useState('');
@@ -485,42 +228,10 @@ export default function ContextWorkbench({
     () => availableProviders.find((provider) => provider.id === workbenchProviderDraft),
     [availableProviders, workbenchProviderDraft],
   );
-  const workbenchModelOptions = useMemo<ResponseProviderModel[]>(() => {
-    const seen = new Set<string>();
-    const options: ResponseProviderModel[] = [];
-
-    function pushModel(model: Partial<ResponseProviderModel> | string) {
-      const modelId = typeof model === 'string' ? model : (model.id || model.label || '');
-      const cleanedId = modelId.trim();
-      if (!cleanedId || seen.has(cleanedId)) {
-        return;
-      }
-
-      seen.add(cleanedId);
-      if (typeof model === 'string') {
-        options.push({
-          id: cleanedId,
-          label: cleanedId,
-          group: 'Codex',
-          provider: 'Codex',
-        });
-        return;
-      }
-
-      options.push({
-        id: cleanedId,
-        label: (model.label || cleanedId).trim(),
-        group: (model.group || selectedWorkbenchProvider?.name || 'Codex').trim(),
-        provider: (model.provider || selectedWorkbenchProvider?.name || 'Codex').trim(),
-      });
-    }
-
-    (selectedWorkbenchProvider?.models || []).forEach(pushModel);
-    pushModel(workbenchModelDraft);
-    DEFAULT_WORKBENCH_MODELS.forEach(pushModel);
-
-    return options;
-  }, [selectedWorkbenchProvider, workbenchModelDraft]);
+  const workbenchModelOptions = useMemo<ResponseProviderModel[]>(
+    () => buildWorkbenchModelOptions(selectedWorkbenchProvider, workbenchModelDraft),
+    [selectedWorkbenchProvider, workbenchModelDraft],
+  );
   const currentWorkbenchModelLabel =
     workbenchModelOptions.find((model) => (model.id || model.label || '').trim() === workbenchModelDraft)?.label
     || workbenchModelDraft
@@ -540,7 +251,7 @@ export default function ContextWorkbench({
     () =>
       messageTokenStats
         .filter((stat) => stat.editable)
-        .map((stat): ContextWorkbenchSuggestionNode => ({
+        .map((stat): { node_index: number; node_number: number; role: string; token_count: number; tool_token_count: number; preview: string } => ({
           node_index: stat.nodeIndex,
           node_number: stat.nodeNumber,
           role: stat.role,
@@ -556,10 +267,9 @@ export default function ContextWorkbench({
     [localSuggestionNodes, criticalNodeIndexSet],
   );
   const manualHistoryKey = useMemo(() => JSON.stringify(history || []), [history]);
-  const isWorkbenchBusy = isManualSending || isRestoreBusy;
+  const isWorkbenchBusy = isManualSending;
   const isManualComposerLocked = isMainChatBusy || isWorkbenchBusy;
   const manualReasoningDisabled = reasoningOptions.length === 0;
-  const isRestoreLocked = isMainChatBusy || isRestoreBusy;
   const hasClearableManualHistory = manualMessages.some((message) => !message.pending);
   const currentManualReasoningLabel = reasoningDisplayLabel(
     manualReasoning,
@@ -568,56 +278,6 @@ export default function ContextWorkbench({
   );
   const mainUsageSummary = proxyUsageSummary?.by_kind?.main || null;
   const contextWorkbenchUsageSummary = proxyUsageSummary?.by_kind?.context_workbench || null;
-  const renderUsageSummaryCard = (
-    title: string,
-    description: string,
-    summary: ProxyUsageBucket | ProxyUsageSummary | null,
-    options: { compact?: boolean } = {},
-  ) => (
-    <div className={`workbench-setting-card usage-summary-card${options.compact ? ' compact' : ''}`}>
-      <div className="workbench-setting-title">{title}</div>
-      <div className="workbench-setting-desc">{description}</div>
-      <div className="usage-summary-grid">
-        <div className="usage-summary-item">
-          <span>{uiText(uiLocaleDraft, 'Calls', '调用次数')}</span>
-          <strong>{summary?.request_count || 0}</strong>
-        </div>
-        <div className="usage-summary-item">
-          <span>{uiText(uiLocaleDraft, 'Input', '输入')}</span>
-          <strong>{formatTokenCount(summary?.input_tokens || 0)}</strong>
-        </div>
-        <div className="usage-summary-item">
-          <span>{uiText(uiLocaleDraft, 'Cached', '缓存')}</span>
-          <strong>{formatTokenCount(summary?.cached_input_tokens || 0)}</strong>
-        </div>
-        <div className="usage-summary-item">
-          <span>{uiText(uiLocaleDraft, 'Non-cached', '非缓存')}</span>
-          <strong>{formatTokenCount(summary?.non_cached_input_tokens || 0)}</strong>
-        </div>
-        <div className="usage-summary-item">
-          <span>{uiText(uiLocaleDraft, 'Output', '输出')}</span>
-          <strong>{formatTokenCount(summary?.output_tokens || 0)}</strong>
-        </div>
-        <div className="usage-summary-item">
-          <span>{uiText(uiLocaleDraft, 'Cache hit', '缓存命中')}</span>
-          <strong>{formatPercent(summary?.cache_hit_rate)}</strong>
-        </div>
-      </div>
-      <div className="usage-cost-row">
-        <span>{uiText(uiLocaleDraft, 'Estimated API cost (GPT-5.5 reference)', '预估 API 成本（按 GPT-5.5 参考）')}</span>
-        <strong>{formatCostUsd(summary?.known_cost_usd)}</strong>
-      </div>
-      {summary?.unknown_cost_request_count ? (
-        <div className="workbench-setting-feedback">
-          {uiText(
-            uiLocaleDraft,
-            `${summary.unknown_cost_request_count} calls used models without a local price mapping, so their cost is excluded.`,
-            `${summary.unknown_cost_request_count} 次调用的模型没有本地价格映射，成本未计入。`,
-          )}
-        </div>
-      ) : null}
-    </div>
-  );
   const nextTokenThresholds = useMemo(() => {
     const warningThreshold = parseTokenThresholdDraft(
       tokenWarningThresholdDraft,
@@ -637,8 +297,6 @@ export default function ContextWorkbench({
     nextTokenThresholds.warningThreshold >= nextTokenThresholds.criticalThreshold
       ? uiText(uiLocaleDraft, 'The red threshold must be greater than the yellow threshold.', '红色阈值必须大于黄色阈值。')
       : '';
-
-  void pendingRestore;
 
   useEffect(() => {
     setUiLocaleDraft(uiLocale);
@@ -702,53 +360,6 @@ export default function ContextWorkbench({
       cancelled = true;
     };
   }, [onTokenThresholdsChange]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadSuggestions() {
-      if (!sessionId) {
-        setSuggestionStats(EMPTY_SUGGESTION_STATS);
-        setSuggestionNodes([]);
-        setSuggestionsError('');
-        setIsSuggestionsLoading(false);
-        return;
-      }
-
-      setIsSuggestionsLoading(true);
-      setSuggestionsError('');
-
-      try {
-        const response = await fetchContextWorkbenchSuggestionsRequest({
-          session_id: sessionId,
-        });
-
-        if (cancelled) {
-          return;
-        }
-
-        setSuggestionStats(response.stats || EMPTY_SUGGESTION_STATS);
-        setSuggestionNodes(response.nodes || []);
-      } catch (error) {
-        if (cancelled) {
-          return;
-        }
-
-        setSuggestionStats(EMPTY_SUGGESTION_STATS);
-        setSuggestionNodes([]);
-        setSuggestionsError(getThrownMessage(error));
-      } finally {
-        if (!cancelled) {
-          setIsSuggestionsLoading(false);
-        }
-      }
-    }
-
-    void loadSuggestions();
-    return () => {
-      cancelled = true;
-    };
-  }, [messages, sessionId]);
 
   useEffect(() => {
     setManualMessages(buildManualMessagesFromHistory(history));
@@ -1037,12 +648,10 @@ export default function ContextWorkbench({
           streamCompleted = true;
           onHistoryChange(targetSessionId, event.history);
           conversationCommit = Promise.resolve(
-            onConversationChange(targetSessionId, normalizeConversation(event.conversation), {
-              skipProxyOverride: true,
-            }),
-          );
-          onRevisionHistoryChange(targetSessionId, event.revisions || []);
-          onPendingRestoreChange(targetSessionId, event.pending_restore || null);
+          onConversationChange(targetSessionId, normalizeConversation(event.conversation), {
+            skipProxyOverride: true,
+          }),
+        );
           setManualMessages(buildManualMessagesFromHistory(event.history));
         },
         {
@@ -1091,34 +700,6 @@ export default function ContextWorkbench({
     }
   }
 
-  async function handleRestoreRevision(revisionId: string) {
-    if (!sessionId || !revisionId || isRestoreLocked) {
-      return;
-    }
-
-    setIsRestoreBusy(true);
-    setRestoreError('');
-
-    try {
-      const response = await restoreContextRevisionRequest({
-        session_id: sessionId,
-        revision_id: revisionId,
-      });
-      const restoredRevision = (response.revisions || []).find((revision) => revision.id === revisionId);
-      onHistoryChange(sessionId, response.history || []);
-      await onConversationChange(sessionId, normalizeConversation(response.conversation), {
-        resetProxyOverride: restoredRevision?.revision_number === 0,
-      });
-      onRevisionHistoryChange(sessionId, response.revisions || []);
-      onPendingRestoreChange(sessionId, response.pending_restore || null);
-      setManualMessages(buildManualMessagesFromHistory(response.history || []));
-    } catch (error) {
-      setRestoreError(getThrownMessage(error));
-    } finally {
-      setIsRestoreBusy(false);
-    }
-  }
-
   function handleManualDraftChange(event: ChangeEvent<HTMLTextAreaElement>) {
     setManualDraft(event.target.value);
   }
@@ -1160,8 +741,6 @@ export default function ContextWorkbench({
       await onConversationChange(sessionId, normalizeConversation(response.conversation), {
         skipProxyOverride: true,
       });
-      onRevisionHistoryChange(sessionId, response.revisions || []);
-      onPendingRestoreChange(sessionId, response.pending_restore || null);
       setManualMessages(buildManualMessagesFromHistory(response.history || []));
       setManualFeedback('');
       setManualFeedbackError(false);
@@ -1184,8 +763,6 @@ export default function ContextWorkbench({
       await onConversationChange(sessionId, normalizeConversation(response.conversation), {
         skipProxyOverride: true,
       });
-      onRevisionHistoryChange(sessionId, response.revisions || []);
-      onPendingRestoreChange(sessionId, response.pending_restore || null);
       setManualMessages(buildManualMessagesFromHistory(response.history || []));
       setManualFeedback('');
       setManualFeedbackError(false);
@@ -1272,24 +849,17 @@ export default function ContextWorkbench({
                 </div>
               </div>
 
-              {suggestionsError ? <div className="workbench-setting-feedback error">{suggestionsError}</div> : null}
-
               <div className="suggestion-stack">
                 <div className="workbench-setting-card">
                   <div className="workbench-setting-title">{uiText(uiLocaleDraft, 'Node Token Details', '节点 Token 明细')}</div>
                   <div className="workbench-setting-desc">{uiText(uiLocaleDraft, 'Only red nodes from the minimap are shown here.', '这里仅显示 minimap 里的红色节点。')}</div>
 
-                  {isSuggestionsLoading && !localSuggestionNodes.length ? (
-                    <div className="suggestion-row">
-                      <div className="suggestion-row-title">{uiText(uiLocaleDraft, 'Counting tokens...', '正在统计 Token...')}</div>
-                      <div className="suggestion-row-body">{uiText(uiLocaleDraft, 'This includes the context the main chat would send to the model.', '这会把主聊天当前真正会发给模型的上下文一起算进去。')}</div>
-                    </div>
-                  ) : criticalSuggestionNodes.length ? (
+                  {criticalSuggestionNodes.length ? (
                     criticalSuggestionNodes.map((node) => (
                       <div className="suggestion-row" key={node.node_index}>
                         <div className="suggestion-row-copy">
                           <div className="suggestion-row-title">{uiText(uiLocaleDraft, 'Node', '节点')} #{node.node_number}</div>
-                          <div className="restore-revision-meta">
+                          <div className="suggestion-row-meta">
                             {formatSuggestionRoleLabel(node.role, uiLocaleDraft)} - {formatTokenCount(node.token_count)} Token
                             {node.tool_token_count > 0
                               ? ` - ${uiText(uiLocaleDraft, 'Tool call', '工具调用')} ${formatTokenCount(node.tool_token_count)} Token`
@@ -1318,47 +888,17 @@ export default function ContextWorkbench({
               <div className="manual-workbench-list" ref={manualListRef}>
                 {manualMessages.length ? (
                   manualMessages.map((entry, messageIndex) => (
-                    <div className={`manual-workbench-message ${entry.role}`} key={entry.id}>
-                      <div className="manual-workbench-message-shell">
-                        <div className="manual-workbench-bubble">
-                          {entry.pending && !entry.content.trim() ? (
-                            <div className="thinking-inline-line" role="status">
-                              <span className="thinking-inline-text">{uiText(uiLocaleDraft, 'Thinking...', '正在思考...')}</span>
-                            </div>
-                          ) : entry.role === 'assistant' ? (
-                            <>
-                              <MarkdownRenderer content={entry.content} />
-                              {entry.pending && entry.statusText ? (
-                                <div className="thinking-inline-line" role="status">
-                                  <span className="thinking-inline-text">{entry.statusText}</span>
-                                </div>
-                              ) : null}
-                            </>
-                          ) : (
-                            <div className="manual-workbench-user-text">{entry.content}</div>
-                          )}
-                        </div>
-
-                        {!entry.pending ? (
-                          <div className="manual-workbench-actions">
-                            <button type="button" title={uiText(uiLocaleDraft, 'Copy', '复制')} onClick={() => void handleCopyManualMessage(entry.content)}>
-                              <i className="ph-light ph-copy" />
-                            </button>
-                            <button type="button" title={uiText(uiLocaleDraft, 'Delete', '删除')} onClick={() => void handleDeleteManualMessage(messageIndex)}>
-                              <i className="ph-light ph-trash" />
-                            </button>
-                          </div>
-                        ) : null}
-                      </div>
-                    </div>
+                    <ManualMessageItem
+                      entry={entry}
+                      key={entry.id}
+                      messageIndex={messageIndex}
+                      uiLocale={uiLocaleDraft}
+                      onCopy={(content) => void handleCopyManualMessage(content)}
+                      onDelete={(index) => void handleDeleteManualMessage(index)}
+                    />
                   ))
                 ) : (
-                  <div className="manual-workbench-empty">
-                    <div className="manual-workbench-empty-title">{uiText(uiLocaleDraft, 'You can organize the current context directly', '可以直接整理当前上下文')}</div>
-                    <div className="manual-workbench-empty-body">
-                      {uiText(uiLocaleDraft, 'Ask which parts are too long, or tell the model what should be kept, compressed, replaced, or removed.', '可以询问哪些内容太长，或者直接告诉模型哪些内容应该保留、压缩、替换或删除。')}
-                    </div>
-                  </div>
+                  <ManualEmptyState uiLocale={uiLocaleDraft} />
                 )}
               </div>
 
@@ -1421,8 +961,9 @@ export default function ContextWorkbench({
                     />
                     {hasClearableManualHistory ? (
                       <button
+                        aria-label={uiText(uiLocaleDraft, 'Clear context model chat history', '清空上下文模型对话记录')}
                         className="manual-workbench-clear"
-                        disabled={isManualSending || isRestoreBusy}
+                        disabled={isManualSending}
                         title={uiText(uiLocaleDraft, 'Clear context model chat history', '清空上下文模型对话记录')}
                         type="button"
                         onClick={() => void handleClearManualHistory()}
@@ -1431,6 +972,9 @@ export default function ContextWorkbench({
                       </button>
                     ) : null}
                     <button
+                      aria-label={isManualSending
+                        ? uiText(uiLocaleDraft, 'Stop context model chat', '停止上下文模型对话')
+                        : uiText(uiLocaleDraft, 'Send context model message', '发送上下文模型消息')}
                       className={`send-btn manual-workbench-send ${isManualSending ? 'is-stop-action' : 'is-send-action'}`}
                       disabled={isManualSending ? false : (!manualDraft.trim() || isManualComposerLocked)}
                       type="button"
@@ -1482,26 +1026,29 @@ export default function ContextWorkbench({
               ) : null}
 
               <div className="usage-page-stack">
-                {renderUsageSummaryCard(
-                  uiText(uiLocaleDraft, 'Total Session Usage', '会话历史总消耗'),
-                  uiText(uiLocaleDraft, 'All model calls recorded for this session.', '这个会话中已经发生过的所有模型调用。'),
-                  proxyUsageSummary,
-                )}
+                <UsageSummaryCard
+                  description={uiText(uiLocaleDraft, 'All model calls recorded for this session.', '这个会话中已经发生过的所有模型调用。')}
+                  summary={proxyUsageSummary}
+                  title={uiText(uiLocaleDraft, 'Total Session Usage', '会话历史总消耗')}
+                  uiLocale={uiLocaleDraft}
+                />
 
-                {renderUsageSummaryCard(
-                  uiText(uiLocaleDraft, 'Context Model Usage', '上下文模型消耗'),
-                  uiText(uiLocaleDraft, 'Token usage from the model that inspects, compresses, replaces, or deletes context.', '用于检查、压缩、替换或删除上下文的模型消耗。'),
-                  contextWorkbenchUsageSummary,
-                  { compact: true },
-                )}
+                <UsageSummaryCard
+                  compact
+                  description={uiText(uiLocaleDraft, 'Token usage from the model that inspects, compresses, replaces, or deletes context.', '用于检查、压缩、替换或删除上下文的模型消耗。')}
+                  summary={contextWorkbenchUsageSummary}
+                  title={uiText(uiLocaleDraft, 'Context Model Usage', '上下文模型消耗')}
+                  uiLocale={uiLocaleDraft}
+                />
 
                 {mainUsageSummary ? (
-                  renderUsageSummaryCard(
-                    uiText(uiLocaleDraft, 'Main Codex Usage', '主 Codex 消耗'),
-                    uiText(uiLocaleDraft, 'Token usage from normal Codex task requests.', '正常 Codex 任务请求产生的模型消耗。'),
-                    mainUsageSummary,
-                    { compact: true },
-                  )
+                  <UsageSummaryCard
+                    compact
+                    description={uiText(uiLocaleDraft, 'Token usage from normal Codex task requests.', '正常 Codex 任务请求产生的模型消耗。')}
+                    summary={mainUsageSummary}
+                    title={uiText(uiLocaleDraft, 'Main Codex Usage', '主 Codex 消耗')}
+                    uiLocale={uiLocaleDraft}
+                  />
                 ) : null}
               </div>
             </div>

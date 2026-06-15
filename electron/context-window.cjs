@@ -4,12 +4,17 @@ const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
 
+function readPort(name, fallback) {
+  const value = Number(process.env[name] || fallback);
+  return Number.isInteger(value) && value > 0 && value < 65536 ? value : fallback;
+}
+
 const HOST = process.env.HASH_CONTEXT_HOST || 'localhost';
 const PROBE_HOST = process.env.HASH_CONTEXT_PROBE_HOST || (HOST === 'localhost' ? '127.0.0.1' : HOST);
-const BACKEND_PORT = 8765;
-const FRONTEND_PORT = 5174;
-const PROXY_PORT = 8787;
-const CONTROL_PORT = Number(process.env.HASH_CONTEXT_CONTROL_PORT || 8790);
+const BACKEND_PORT = readPort('HASH_WEB_PORT', 8765);
+const FRONTEND_PORT = readPort('HASH_CONTEXT_FRONTEND_PORT', 5174);
+const PROXY_PORT = readPort('HASH_CONTEXT_PROXY_PORT', 8787);
+const CONTROL_PORT = readPort('HASH_CONTEXT_CONTROL_PORT', 8790);
 const USE_VITE_FRONTEND = !app.isPackaged && process.env.HASH_CONTEXT_USE_BUILT_FRONTEND !== '1';
 const MIN_WINDOW_WIDTH = 760;
 const MIN_WINDOW_HEIGHT = 520;
@@ -213,17 +218,21 @@ function pythonCandidateWorks(candidate) {
   return result.status === 0;
 }
 
-function sourcePythonCandidates(root) {
-  const localPython = process.platform === 'win32'
+function localVenvPython(root) {
+  return process.platform === 'win32'
     ? path.join(root, '.venv', 'Scripts', 'python.exe')
     : path.join(root, '.venv', 'bin', 'python');
-  const candidates = [];
+}
 
+function sourcePythonCandidates(root) {
+  const localPython = localVenvPython(root);
+  if (fs.existsSync(localPython)) {
+    return [{ command: localPython, args: [] }];
+  }
+
+  const candidates = [];
   if (process.env.HASH_CONTEXT_PYTHON) {
     candidates.push({ command: process.env.HASH_CONTEXT_PYTHON, args: [] });
-  }
-  if (fs.existsSync(localPython)) {
-    candidates.push({ command: localPython, args: [] });
   }
   if (process.platform === 'win32') {
     candidates.push({ command: 'py', args: ['-3'] });
@@ -241,6 +250,14 @@ function pythonScriptCommand(root, scriptName) {
     if (pythonCandidateWorks(candidate)) {
       return { command: candidate.command, args: [...candidate.args, scriptName] };
     }
+  }
+
+  const localPython = localVenvPython(root);
+  if (fs.existsSync(localPython)) {
+    throw new Error(
+      `Project .venv at ${localPython} is missing required dependencies (dotenv, zstandard). ` +
+        'Run npm run setup:python to repair it, then try again.',
+    );
   }
   throw new Error('No usable Python runtime found. Run npm run setup:python or set HASH_CONTEXT_PYTHON to a Python with the project dependencies installed.');
 }
@@ -272,6 +289,14 @@ function pythonServerCommand(root, scriptName, exeName) {
   return pythonScriptCommand(root, scriptName);
 }
 
+function pythonPathForRoot(root) {
+  const existing = process.env.PYTHONPATH;
+  if (typeof existing === 'string' && existing.trim()) {
+    return `${root}${path.delimiter}${existing}`;
+  }
+  return root;
+}
+
 function cleanEnv(extra = {}) {
   const env = {};
   for (const [key, value] of Object.entries({ ...process.env, ...extra })) {
@@ -282,6 +307,19 @@ function cleanEnv(extra = {}) {
   return env;
 }
 
+function pipeChildLogs(child, label) {
+  child.stdout.on('data', (chunk) => {
+    const text = chunk.toString().trim();
+    console.log(`[${label}] ${text}`);
+    writeLog(`[${label}] ${text}`);
+  });
+  child.stderr.on('data', (chunk) => {
+    const text = chunk.toString().trim();
+    console.error(`[${label}] ${text}`);
+    writeLog(`[${label}:error] ${text}`);
+  });
+}
+
 async function startBackend(root) {
   writeLog('checking backend');
   if (await requestOk(BACKEND_PORT, '/api/health', PROBE_HOST)) {
@@ -290,7 +328,7 @@ async function startBackend(root) {
   }
 
   writeLog('starting backend');
-  const serverCommand = pythonServerCommand(root, 'web_server.py', 'hash-web-server');
+  const serverCommand = pythonServerCommand(root, path.join('backend', 'web_server.py'), 'hash-web-server');
   backendProcess = spawn(serverCommand.command, serverCommand.args, {
     cwd: root,
     env: cleanEnv({
@@ -298,19 +336,13 @@ async function startBackend(root) {
       HASH_WEB_PORT: String(BACKEND_PORT),
       HASH_DATA_DIR: path.join(app.getPath('userData'), 'data'),
       PYTHONIOENCODING: 'utf-8',
+      PYTHONPATH: pythonPathForRoot(root),
     }),
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
-  backendProcess.stdout.on('data', (chunk) => {
-    console.log(`[backend] ${chunk.toString().trim()}`);
-    writeLog(`[backend] ${chunk.toString().trim()}`);
-  });
-  backendProcess.stderr.on('data', (chunk) => {
-    console.error(`[backend] ${chunk.toString().trim()}`);
-    writeLog(`[backend:error] ${chunk.toString().trim()}`);
-  });
+  pipeChildLogs(backendProcess, 'backend');
 
   await waitFor(BACKEND_PORT, '/api/health', 'Backend', 30000, PROBE_HOST);
   writeLog('backend ready');
@@ -324,7 +356,7 @@ async function startProxy(root) {
   }
 
   writeLog('starting proxy');
-  const serverCommand = pythonServerCommand(root, 'proxy_server.py', 'hash-proxy-server');
+  const serverCommand = pythonServerCommand(root, path.join('backend', 'proxy_server.py'), 'hash-proxy-server');
   proxyProcess = spawn(serverCommand.command, serverCommand.args, {
     cwd: root,
     env: cleanEnv({
@@ -332,19 +364,13 @@ async function startProxy(root) {
       HASH_CONTEXT_PROXY_PORT: String(PROXY_PORT),
       HASH_CONTEXT_PROXY_DATA_DIR: path.join(app.getPath('userData'), 'data'),
       PYTHONIOENCODING: 'utf-8',
+      PYTHONPATH: pythonPathForRoot(root),
     }),
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
-  proxyProcess.stdout.on('data', (chunk) => {
-    console.log(`[proxy] ${chunk.toString().trim()}`);
-    writeLog(`[proxy] ${chunk.toString().trim()}`);
-  });
-  proxyProcess.stderr.on('data', (chunk) => {
-    console.error(`[proxy] ${chunk.toString().trim()}`);
-    writeLog(`[proxy:error] ${chunk.toString().trim()}`);
-  });
+  pipeChildLogs(proxyProcess, 'proxy');
 
   await waitFor(PROXY_PORT, '/api/proxy/health', 'Proxy', 30000, PROBE_HOST);
   writeLog('proxy ready');
@@ -367,6 +393,8 @@ async function startFrontend(root) {
       path.join(root, 'react_app', 'vite.config.ts'),
       '--host',
       HOST,
+      '--port',
+      String(FRONTEND_PORT),
       '--strictPort',
     ],
     {
@@ -377,14 +405,7 @@ async function startFrontend(root) {
     },
   );
 
-  frontendProcess.stdout.on('data', (chunk) => {
-    console.log(`[frontend] ${chunk.toString().trim()}`);
-    writeLog(`[frontend] ${chunk.toString().trim()}`);
-  });
-  frontendProcess.stderr.on('data', (chunk) => {
-    console.error(`[frontend] ${chunk.toString().trim()}`);
-    writeLog(`[frontend:error] ${chunk.toString().trim()}`);
-  });
+  pipeChildLogs(frontendProcess, 'frontend');
 
   await waitFor(FRONTEND_PORT, '/', 'Frontend');
   writeLog('frontend ready');

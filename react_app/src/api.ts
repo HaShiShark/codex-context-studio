@@ -1,29 +1,15 @@
 import type {
-  ComposerAttachment,
   ContextChatResponse,
   ContextChatStreamEvent,
-  ContextRevisionSummary,
-  ContextRestoreResponse,
   ContextWorkbenchHistoryEntry,
   ContextWorkbenchSettingsResponse,
-  ContextWorkbenchSuggestionsResponse,
-  CreateProjectResponse,
   CreateSessionResponse,
-  DeleteProjectResponse,
-  DeleteSessionResponse,
   InitPayload,
-  ArchiveProjectSessionsResponse,
-  PendingContextRestore,
-  ProjectActionResponse,
   ProxyUsageSummary,
   ProviderModelCandidatesResponse,
   ProviderModelsResponse,
-  ResetSessionResponse,
   ResponseProviderModel,
-  SendMessageResponse,
-  SendMessageStreamEvent,
   SettingsResponse,
-  TruncateSessionResponse,
   TranscriptRecord,
 } from './types';
 
@@ -308,53 +294,6 @@ export function saveContextWorkbenchSettingsRequest(payload: {
   });
 }
 
-export function fetchContextWorkbenchSuggestionsRequest(payload: {
-  session_id: string;
-}): Promise<ContextWorkbenchSuggestionsResponse> {
-  return apiFetch<ContextWorkbenchSuggestionsResponse>('/api/context-workbench-suggestions', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-}
-
-export function createProjectRequest(payload: {
-  title?: string;
-  root_path?: string;
-} = {}): Promise<CreateProjectResponse> {
-  return apiFetch<CreateProjectResponse>('/api/projects', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-}
-
-export function deleteProjectRequest(projectId: string): Promise<DeleteProjectResponse> {
-  return apiFetch<DeleteProjectResponse>('/api/delete-project', {
-    method: 'POST',
-    body: JSON.stringify({ project_id: projectId }),
-  });
-}
-
-export function pinProjectRequest(projectId: string): Promise<ProjectActionResponse> {
-  return apiFetch<ProjectActionResponse>('/api/pin-project', {
-    method: 'POST',
-    body: JSON.stringify({ project_id: projectId }),
-  });
-}
-
-export function renameProjectRequest(projectId: string, title: string): Promise<ProjectActionResponse> {
-  return apiFetch<ProjectActionResponse>('/api/rename-project', {
-    method: 'POST',
-    body: JSON.stringify({ project_id: projectId, title }),
-  });
-}
-
-export function archiveProjectSessionsRequest(projectId: string): Promise<ArchiveProjectSessionsResponse> {
-  return apiFetch<ArchiveProjectSessionsResponse>('/api/archive-project-sessions', {
-    method: 'POST',
-    body: JSON.stringify({ project_id: projectId }),
-  });
-}
-
 export function createSessionRequest(payload: {
   scope: 'chat' | 'project';
   project_id?: string | null;
@@ -415,8 +354,8 @@ export function syncProxySessionRequest(payload: {
   };
   conversation: TranscriptRecord[];
   context_workbench_history: ContextWorkbenchHistoryEntry[];
-  context_revision_history: ContextRevisionSummary[];
-  pending_context_restore: PendingContextRestore | null;
+  context_revision_history: unknown[];
+  pending_context_restore: unknown | null;
 }> {
   return apiFetch('/api/proxy-sync-session', {
     method: 'POST',
@@ -448,34 +387,6 @@ export function resetProxyUsageRequest(sessionId: string): Promise<{
   });
 }
 
-export function resetSessionRequest(sessionId: string): Promise<ResetSessionResponse> {
-  return apiFetch<ResetSessionResponse>('/api/reset', {
-    method: 'POST',
-    body: JSON.stringify({ session_id: sessionId }),
-  });
-}
-
-export function truncateSessionRequest(sessionId: string, fromIndex: number): Promise<TruncateSessionResponse> {
-  return apiFetch<TruncateSessionResponse>('/api/truncate-session', {
-    method: 'POST',
-    body: JSON.stringify({ session_id: sessionId, from_index: fromIndex }),
-  });
-}
-
-export function deleteMessageRequest(sessionId: string, messageIndex: number): Promise<TruncateSessionResponse> {
-  return apiFetch<TruncateSessionResponse>('/api/delete-message', {
-    method: 'POST',
-    body: JSON.stringify({ session_id: sessionId, message_index: messageIndex }),
-  });
-}
-
-export function deleteSessionRequest(sessionId: string): Promise<DeleteSessionResponse> {
-  return apiFetch<DeleteSessionResponse>('/api/delete-session', {
-    method: 'POST',
-    body: JSON.stringify({ session_id: sessionId }),
-  });
-}
-
 export function cancelActiveRequest(payload: {
   session_id: string;
   mode?: 'main' | 'context';
@@ -487,62 +398,6 @@ export function cancelActiveRequest(payload: {
       mode: payload.mode || 'main',
     }),
   });
-}
-
-function mapAttachments(attachments: ComposerAttachment[]) {
-  return attachments.map((attachment) => ({
-    name: attachment.name,
-    mime_type: attachment.mime_type,
-    data_url: attachment.data_url,
-  }));
-}
-
-export function sendMessageRequest(payload: {
-  session_id: string;
-  message: string;
-  model: string;
-  reasoning_effort: string;
-  attachments?: ComposerAttachment[];
-}): Promise<SendMessageResponse> {
-  return apiFetch<SendMessageResponse>('/api/send-message', {
-    method: 'POST',
-    body: JSON.stringify({
-      ...payload,
-      attachments: mapAttachments(payload.attachments || []),
-    }),
-  });
-}
-
-export async function streamMessageRequest(
-  payload: {
-    session_id: string;
-    message: string;
-    model: string;
-    reasoning_effort: string;
-    attachments?: ComposerAttachment[];
-  },
-  onEvent: (event: SendMessageStreamEvent) => void,
-  options: {
-    signal?: AbortSignal;
-  } = {},
-): Promise<void> {
-  const response = await fetch('/api/send-message-stream', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    signal: options.signal,
-    body: JSON.stringify({
-      ...payload,
-      attachments: mapAttachments(payload.attachments || []),
-    }),
-  });
-
-  if (!response.ok) {
-    throw new Error(await extractResponseErrorMessage(response));
-  }
-
-  await readJsonLineStream<SendMessageStreamEvent>(response, onEvent);
 }
 
 export function sendContextChatRequest(payload: {
@@ -585,21 +440,21 @@ export async function streamContextChatRequest(
   await readJsonLineStream<ContextChatStreamEvent>(response, onEvent);
 }
 
-export function restoreContextRevisionRequest(payload: {
-  session_id: string;
-  revision_id: string;
-}): Promise<ContextRestoreResponse> {
-  return apiFetch<ContextRestoreResponse>('/api/context-restore', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-}
-
 export function deleteContextWorkbenchMessageRequest(payload: {
   session_id: string;
   message_index: number;
-}): Promise<ContextRestoreResponse> {
-  return apiFetch<ContextRestoreResponse>('/api/context-workbench-history-message-delete', {
+}): Promise<{
+  conversation: TranscriptRecord[];
+  history: ContextWorkbenchHistoryEntry[];
+  revisions: unknown[];
+  pending_restore: unknown | null;
+}> {
+  return apiFetch<{
+    conversation: TranscriptRecord[];
+    history: ContextWorkbenchHistoryEntry[];
+    revisions: unknown[];
+    pending_restore: unknown | null;
+  }>('/api/context-workbench-history-message-delete', {
     method: 'POST',
     body: JSON.stringify(payload),
   });
@@ -607,17 +462,18 @@ export function deleteContextWorkbenchMessageRequest(payload: {
 
 export function clearContextWorkbenchHistoryRequest(payload: {
   session_id: string;
-}): Promise<ContextRestoreResponse> {
-  return apiFetch<ContextRestoreResponse>('/api/context-workbench-history-clear', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-}
-
-export function undoContextRestoreRequest(payload: {
-  session_id: string;
-}): Promise<ContextRestoreResponse> {
-  return apiFetch<ContextRestoreResponse>('/api/context-undo-restore', {
+}): Promise<{
+  conversation: TranscriptRecord[];
+  history: ContextWorkbenchHistoryEntry[];
+  revisions: unknown[];
+  pending_restore: unknown | null;
+}> {
+  return apiFetch<{
+    conversation: TranscriptRecord[];
+    history: ContextWorkbenchHistoryEntry[];
+    revisions: unknown[];
+    pending_restore: unknown | null;
+  }>('/api/context-workbench-history-clear', {
     method: 'POST',
     body: JSON.stringify(payload),
   });

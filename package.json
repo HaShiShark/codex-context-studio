@@ -7,9 +7,10 @@
   "main": "electron/context-window.cjs",
   "scripts": {
     "start": "npm run start:backend",
-    "setup:python": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"if (-not (Test-Path '.venv\\Scripts\\python.exe')) { py -3 -m venv .venv }; .venv\\Scripts\\python.exe -m pip install --upgrade pip; .venv\\Scripts\\python.exe -m pip install -r requirements.txt\"",
-    "start:backend": "if exist .venv\\Scripts\\python.exe (.venv\\Scripts\\python.exe web_server.py) else (py -3 web_server.py)",
-    "proxy": "if exist .venv\\Scripts\\python.exe (.venv\\Scripts\\python.exe proxy_server.py) else (py -3 proxy_server.py)",
+    "setup:python": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-python.ps1",
+    "setup:python:reset": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-python.ps1 -Reset",
+    "start:backend": "if exist .venv\\Scripts\\python.exe (.venv\\Scripts\\python.exe -m backend.web_server) else (py -3 -m backend.web_server)",
+    "proxy": "if exist .venv\\Scripts\\python.exe (.venv\\Scripts\\python.exe -m backend.proxy_server) else (py -3 -m backend.proxy_server)",
     "codex": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/codex-with-context.ps1",
     "ctx:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/codex-ctx-proxy.ps1 install",
     "ctx:proxy:on": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/codex-ctx-proxy.ps1 on",
@@ -39,6 +40,7 @@
     "dist:mac": "npm run build:react && npm run build:python && electron-builder --mac --publish never"
   },
   "dependencies": {
+    "@phosphor-icons/web": "^2.1.2",
     "highlight.js": "^11.11.1",
     "js-tiktoken": "^1.0.21",
     "mermaid": "^11.12.0",
@@ -70,9 +72,7 @@
     "files": [
       "electron/**/*",
       "codex_context.py",
-      "web_server.py",
-      "main.py",
-      "hash.html",
+      "backend/**/*",
       "requirements.txt",
       "RELEASE.md",
       ".env.example",

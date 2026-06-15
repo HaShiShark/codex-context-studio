@@ -1,32 +1,54 @@
-import { getEncoding } from 'js-tiktoken';
 import type {
   AttachmentRecord,
   MessageBlock,
   MessageRecord,
-  ProjectSummary,
   ReasoningOption,
-  SessionMeta,
-  SessionSummary,
-  SidebarPayload,
   TranscriptRecord,
 } from './types';
 
-let encoding: ReturnType<typeof getEncoding> | null = null;
+type TokenEncoder = {
+  encode(text: string): unknown[];
+};
 
-function getEncoder() {
-  if (encoding) {
-    return encoding;
-  }
-  try {
-    encoding = getEncoding('cl100k_base');
-  } catch {
-    encoding = null;
-  }
-  return encoding;
+let encoding: TokenEncoder | null = null;
+let encoderLoadPromise: Promise<TokenEncoder | null> | null = null;
+let encoderUnavailable = false;
+
+const _tokenResults = new Map<string, { exact: boolean; value: number }>();
+const _TOKEN_CACHE_LIMIT = 4096;
+const _TOKEN_ENCODER_LOAD_THRESHOLD = 2000;
+
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 3.5);
 }
 
-const _tokenResults = new Map<string, number>();
-const _TOKEN_CACHE_LIMIT = 4096;
+function shouldLoadPreciseEncoder(text: string): boolean {
+  return text.length >= _TOKEN_ENCODER_LOAD_THRESHOLD;
+}
+
+function loadEncoder(): Promise<TokenEncoder | null> {
+  if (encoding || encoderUnavailable) {
+    return Promise.resolve(encoding);
+  }
+
+  if (!encoderLoadPromise) {
+    encoderLoadPromise = import('js-tiktoken')
+      .then(({ getEncoding }) => {
+        encoding = getEncoding('cl100k_base');
+        _tokenResults.clear();
+        return encoding;
+      })
+      .catch(() => {
+        encoderUnavailable = true;
+        return null;
+      })
+      .finally(() => {
+        encoderLoadPromise = null;
+      });
+  }
+
+  return encoderLoadPromise;
+}
 
 export function countTokens(text: string): number {
   if (!text) {
@@ -34,26 +56,33 @@ export function countTokens(text: string): number {
   }
 
   const cached = _tokenResults.get(text);
-  if (cached !== undefined) {
-    return cached;
+  if (cached && (cached.exact || !encoding)) {
+    if (!encoding && shouldLoadPreciseEncoder(text)) {
+      void loadEncoder();
+    }
+    return cached.value;
   }
 
-  const encoder = getEncoder();
   let result = 0;
-  if (encoder) {
+  let exact = false;
+  if (encoding) {
     try {
-      result = encoder.encode(text).length;
+      result = encoding.encode(text).length;
+      exact = true;
     } catch {
-      result = Math.ceil(text.length / 3.5);
+      result = estimateTokens(text);
     }
   } else {
-    result = Math.ceil(text.length / 3.5);
+    result = estimateTokens(text);
+    if (shouldLoadPreciseEncoder(text)) {
+      void loadEncoder();
+    }
   }
 
   if (_tokenResults.size >= _TOKEN_CACHE_LIMIT) {
     _tokenResults.clear();
   }
-  _tokenResults.set(text, result);
+  _tokenResults.set(text, { exact, value: result });
   return result;
 }
 
@@ -248,87 +277,8 @@ export function getReasoningLabel(value: string, options: ReasoningOption[]): st
   return match ? match.label : FALLBACK_REASONING_LABELS[value] || value;
 }
 
-export function deriveSidebarState(
-  payload: SidebarPayload,
-  previousProjects: ProjectSummary[],
-  previousChatSessions: SessionSummary[],
-  previousExpansions: Record<string, boolean>,
-  preferredCurrentProjectId: string,
-): {
-  projects: ProjectSummary[];
-  chatSessions: SessionSummary[];
-  projectExpansions: Record<string, boolean>;
-  currentProjectId: string;
-} {
-  const projects = Array.isArray(payload.projects) ? payload.projects : previousProjects;
-  const chatSessions = Array.isArray(payload.chat_sessions) ? payload.chat_sessions : previousChatSessions;
-  const existingProjectIds = new Set(projects.map((project) => project.id));
-  const nextExpansions: Record<string, boolean> = {};
 
-  projects.forEach((project, index) => {
-    if (project.id in previousExpansions) {
-      nextExpansions[project.id] = previousExpansions[project.id];
-      return;
-    }
-    nextExpansions[project.id] = index === 0;
-  });
 
-  Object.keys(nextExpansions).forEach((projectId) => {
-    if (!existingProjectIds.has(projectId)) {
-      delete nextExpansions[projectId];
-    }
-  });
-
-  let currentProjectId = preferredCurrentProjectId;
-  if (!currentProjectId || !existingProjectIds.has(currentProjectId)) {
-    currentProjectId = projects[0]?.id || '';
-  }
-
-  return {
-    projects,
-    chatSessions,
-    projectExpansions: nextExpansions,
-    currentProjectId,
-  };
-}
-
-export function getProjectById(projects: ProjectSummary[], projectId: string): ProjectSummary | null {
-  return projects.find((project) => project.id === projectId) || null;
-}
-
-export function getSessionMeta(
-  projects: ProjectSummary[],
-  chatSessions: SessionSummary[],
-  sessionId: string,
-): SessionMeta | null {
-  if (!sessionId) {
-    return null;
-  }
-
-  for (const project of projects) {
-    const session = project.sessions.find((item) => item.id === sessionId);
-    if (session) {
-      return {
-        scope: 'project',
-        project,
-        projectId: project.id,
-        session,
-      };
-    }
-  }
-
-  const chatSession = chatSessions.find((item) => item.id === sessionId);
-  if (!chatSession) {
-    return null;
-  }
-
-  return {
-    scope: 'chat',
-    project: null,
-    projectId: null,
-    session: chatSession,
-  };
-}
 
 export function getConversation(
   conversations: Record<string, MessageRecord[]>,

@@ -129,6 +129,21 @@ function ConvertTo-TomlBasicString {
   return '"' + $Value.Replace("\", "\\").Replace('"', '\"') + '"'
 }
 
+function Remove-DesktopManagedConfig {
+  param(
+    [string] $Text,
+    [bool] $RemoveContextWindow = $false
+  )
+
+  $clean = $Text
+  $clean = [regex]::Replace($clean, '(?m)^\s*hooks\.UserPromptSubmit\s*=.*\r?\n?', '')
+  $clean = [regex]::Replace($clean, '(?ms)(?:^|\r?\n)\s*\[model_providers\.hash-context\]\s*\r?\n.*?(?=(?:\r?\n\s*\[)|\z)', "`r`n")
+  if ($RemoveContextWindow) {
+    $clean = [regex]::Replace($clean, '(?m)^\s*model_context_window\s*=\s*\d+\s*\r?\n?', '')
+  }
+  return ($clean.TrimEnd() + "`r`n")
+}
+
 function Test-CodexUpstreamInfo {
   param([string] $ConfigPath)
 
@@ -342,6 +357,12 @@ function Set-DesktopConfigEnabled {
     $originalProvider = $mpMatch.Groups[1].Value
   }
 
+  $existingState = Read-DesktopState
+  if ($originalProvider -eq "hash-context" -and $existingState -and $existingState.original_provider) {
+    $originalProvider = [string] $existingState.original_provider
+  }
+
+  $text = Remove-DesktopManagedConfig -Text $text -RemoveContextWindow:(-not $RequiresOpenAiAuth)
   $text = $text -replace '(?m)^\s*model_provider\s*=\s*"[^"]*"\s*\r?\n?', ''
 
   $hookPath = (Join-Path $projectRoot.Path "scripts\codex-context-hook.cmd").Replace("\", "/")
@@ -417,17 +438,12 @@ function Restore-DesktopConfig {
 
   $text = Repair-ProjectTables -Text (Get-Content -Raw -Path $configPath)
 
-  # Remove what we injected
-  if ($state.upstream_kind -eq "third_party") {
-    $text = $text -replace '\r?\nmodel_context_window\s*=\s*\d+', ''
-  }
-  $text = $text -replace '\r?\n\s*hooks\.UserPromptSubmit\s*=\s*.*', ''
-  $text = [regex]::Replace($text, '\r?\n\s*\r?\n\[model_providers\.hash-context\]\r?\n[\s\S]*?(?=\r?\n\[|\z)', '')
+  $text = Remove-DesktopManagedConfig -Text $text -RemoveContextWindow:($state.upstream_kind -eq "third_party")
   $text = $text -replace '(?m)^\s*model_provider\s*=\s*"hash-context"\s*\r?\n?', ''
 
   $text = $text.Trim()
-  if ($text -and $text -notmatch '(?m)^\s*model_provider\s*=') {
-    $providerId = if ($state.original_provider) { [string] $state.original_provider } else { "openai" }
+  if ($text -and $text -notmatch '(?m)^\s*model_provider\s*=' -and $state.original_provider) {
+    $providerId = [string] $state.original_provider
     $text = "model_provider = `"$providerId`"`r`n`r`n" + $text
   }
 
@@ -503,6 +519,8 @@ function Get-ProjectPortOwners {
           $commandLine.Contains($projectRoot.Path) -or
           $commandLine -like "*proxy_server.py*" -or
           $commandLine -like "*web_server.py*" -or
+          $commandLine -like "*backend.proxy_server*" -or
+          $commandLine -like "*backend.web_server*" -or
           $commandLine -like "*hash-proxy-server*" -or
           $commandLine -like "*hash-web-server*" -or
           $commandLine -like "*electron/context-window.cjs*" -or
@@ -551,6 +569,8 @@ function Get-ProjectServiceProcesses {
         (
           $commandLine -like "*proxy_server.py*" -or
           $commandLine -like "*web_server.py*" -or
+          $commandLine -like "*backend.proxy_server*" -or
+          $commandLine -like "*backend.web_server*" -or
           $commandLine -like "*hash-proxy-server*" -or
           $commandLine -like "*hash-web-server*" -or
           $commandLine -like "*electron/context-window.cjs*" -or
@@ -591,7 +611,7 @@ function Stop-ProjectServiceProcesses {
 function Test-SourceProxyRunning {
   $owners = Get-ProjectPortOwners -Ports @([int] $proxyPort)
   foreach ($owner in $owners) {
-    if ($owner.CommandLine -like "*proxy_server.py*") {
+    if ($owner.CommandLine -like "*proxy_server.py*" -or $owner.CommandLine -like "*backend.proxy_server*") {
       return $true
     }
   }
@@ -794,6 +814,17 @@ function Update-ServicePid {
   }
 }
 
+function Get-ResidualServicePorts {
+  $ports = @([int] $proxyPort, 8765, [int] $controlPort, 5174)
+  $open = @()
+  foreach ($port in $ports) {
+    if (Test-TcpPortOpen -Port $port) {
+      $open += $port
+    }
+  }
+  return $open
+}
+
 function Stop-DesktopServices {
   $state = Read-DesktopState
   if ($state -and $state.service_pid -and [int] $state.service_pid -gt 0) {
@@ -804,8 +835,46 @@ function Stop-DesktopServices {
       Write-Host "[hash-context] stopped desktop services pid=$pidToStop"
     }
   }
-  Stop-ProjectServicePorts -Reason "desktop services stop"
-  Stop-ProjectServiceProcesses -Reason "desktop services stop"
+
+  # The saved service_pid only covers the Electron launcher, and when the
+  # state file is missing (or the launcher was started from a different
+  # terminal) it covers nothing. Kill by listening port + command-line
+  # signature, then keep retrying until the ports are actually free so we
+  # never leave orphaned proxy/backend/vite processes behind.
+  $maxAttempts = 5
+  for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+    Stop-ProjectServicePorts -Reason "desktop services stop (attempt $attempt)"
+    Stop-ProjectServiceProcesses -Reason "desktop services stop (attempt $attempt)"
+
+    $residual = Get-ResidualServicePorts
+    if ($residual.Count -eq 0) {
+      if ($attempt -gt 1) {
+        Write-Host "[hash-context] all desktop service ports cleared after $attempt attempt(s)"
+      }
+      return
+    }
+
+    Write-Host "[hash-context] ports still listening after attempt ${attempt}: $($residual -join ', '); retrying" -ForegroundColor DarkYellow
+    Start-Sleep -Milliseconds 700
+  }
+
+  $stillOpen = Get-ResidualServicePorts
+  if ($stillOpen.Count -gt 0) {
+    Write-Host "[hash-context] WARNING: ports still listening after $maxAttempts attempts: $($stillOpen -join ', '). Run 'codex ctx desktop status' to inspect." -ForegroundColor Red
+  }
+}
+
+function Stop-DesktopProxy {
+  param([string] $Reason)
+
+  Stop-CodexProcesses -Reason $Reason
+  Restore-DesktopConfig
+  Stop-DesktopServices
+  Remove-Item Env:\HASH_CONTEXT_FORCE_UPSTREAM_BASE_URL -ErrorAction SilentlyContinue
+  Remove-Item Env:\HASH_CONTEXT_FORCE_UPSTREAM_API_KEY -ErrorAction SilentlyContinue
+  if (Test-Path $statePath) {
+    Remove-Item -Path $statePath -Force
+  }
 }
 
 function Show-DesktopStatus {
@@ -860,7 +929,7 @@ switch ($Command) {
     break
   }
   "on" {
-    Stop-CodexProcesses -Reason "desktop proxy on"
+    Stop-DesktopProxy -Reason "desktop proxy on reset"
     $upstreamInfo = Test-CodexUpstreamInfo -ConfigPath $configPath
     $requiresAuth = ($upstreamInfo.kind -ne "third_party")
     Set-DesktopConfigEnabled -Mode "on" -RequiresOpenAiAuth $requiresAuth -UpstreamInfo $upstreamInfo
@@ -879,14 +948,7 @@ switch ($Command) {
     break
   }
   "off" {
-    Stop-CodexProcesses -Reason "desktop proxy off"
-    Restore-DesktopConfig
-    Stop-DesktopServices
-    Remove-Item Env:\HASH_CONTEXT_FORCE_UPSTREAM_BASE_URL -ErrorAction SilentlyContinue
-    Remove-Item Env:\HASH_CONTEXT_FORCE_UPSTREAM_API_KEY -ErrorAction SilentlyContinue
-    if (Test-Path $statePath) {
-      Remove-Item -Path $statePath -Force
-    }
+    Stop-DesktopProxy -Reason "desktop proxy off"
     Write-Host "[hash-context] desktop proxy off"
     break
   }

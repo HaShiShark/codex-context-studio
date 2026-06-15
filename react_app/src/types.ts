@@ -1,6 +1,3 @@
-export type SidebarMode = 'projects' | 'chats';
-export type ViewName = 'chat' | 'settings';
-export type DropdownId = 'permission' | 'model' | 'intensity' | null;
 export type ContextMapMode = 'all' | 'condensed';
 
 export interface ContextMapState {
@@ -231,28 +228,6 @@ export interface ContextWorkbenchHistoryEntry {
   content: string;
 }
 
-export interface ContextRevisionSummary {
-  id: string;
-  label: string;
-  summary: string;
-  created_at: string;
-  revision_number: number;
-  change_type: string;
-  change_types: string[];
-  changed_nodes: number[];
-  is_active: boolean;
-  operation_count: number;
-  node_count: number;
-}
-
-export interface PendingContextRestore {
-  target_revision_id: string;
-  target_label: string;
-  created_at: string;
-  undo_active_revision_id?: string;
-  can_undo: boolean;
-}
-
 export interface ProxyUsageBucket {
   request_count: number;
   input_tokens: number;
@@ -308,8 +283,6 @@ export interface InitPayload {
   chat_sessions?: SessionSummary[];
   conversations?: Record<string, TranscriptRecord[]>;
   context_workbench_histories?: Record<string, ContextWorkbenchHistoryEntry[]>;
-  context_revision_histories?: Record<string, ContextRevisionSummary[]>;
-  pending_context_restores?: Record<string, PendingContextRestore>;
 }
 
 export interface SidebarPayload {
@@ -390,15 +363,6 @@ export interface ContextChatResponse {
   tool_events?: ToolEvent[];
   history: ContextWorkbenchHistoryEntry[];
   conversation: TranscriptRecord[];
-  revisions: ContextRevisionSummary[];
-  pending_restore: PendingContextRestore | null;
-}
-
-export interface ContextRestoreResponse {
-  conversation: TranscriptRecord[];
-  history: ContextWorkbenchHistoryEntry[];
-  revisions: ContextRevisionSummary[];
-  pending_restore: PendingContextRestore | null;
 }
 
 export interface ContextWorkbenchSettingsResponse {
@@ -412,25 +376,6 @@ export interface ContextWorkbenchSettingsResponse {
   models: string[];
   response_providers?: ResponseProviderSettings[];
   tool_catalog: ContextWorkbenchToolCatalogItem[];
-}
-
-export interface ContextWorkbenchSuggestionStats {
-  total_token_count: number;
-  tool_token_count: number;
-}
-
-export interface ContextWorkbenchSuggestionNode {
-  node_index: number;
-  node_number: number;
-  role: string;
-  token_count: number;
-  tool_token_count: number;
-  preview: string;
-}
-
-export interface ContextWorkbenchSuggestionsResponse {
-  stats: ContextWorkbenchSuggestionStats;
-  nodes: ContextWorkbenchSuggestionNode[];
 }
 
 export interface StreamDeltaEvent {
@@ -500,8 +445,6 @@ export interface ContextChatStreamDoneEvent {
   tool_events?: ToolEvent[];
   history: ContextWorkbenchHistoryEntry[];
   conversation: TranscriptRecord[];
-  revisions: ContextRevisionSummary[];
-  pending_restore: PendingContextRestore | null;
 }
 
 export type ContextChatStreamEvent =
@@ -514,24 +457,7 @@ export type ContextChatStreamEvent =
   | StreamErrorEvent
   | ContextChatStreamDoneEvent;
 
-export interface PermissionOption {
-  value: string;
-  label: string;
-  icon: string;
-  toastMessage?: string;
-}
 
-export interface ThemeOption {
-  value: string;
-  label: string;
-}
-
-export interface SessionMeta {
-  scope: 'chat' | 'project';
-  project: ProjectSummary | null;
-  projectId: string | null;
-  session: SessionSummary;
-}
 
 export type CanonicalJsonValue =
   | string

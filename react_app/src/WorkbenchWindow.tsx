@@ -14,11 +14,9 @@ import {
 import ContextMapSidebar from './components/ContextMapSidebar';
 import { normalizeSupportedLocale, type UiLocale } from './i18n';
 import type {
-  ContextRevisionSummary,
   ContextWorkbenchHistoryEntry,
   InitPayload,
   MessageRecord,
-  PendingContextRestore,
   ProxyUsageSummary,
   ReasoningOption,
   SessionSummary,
@@ -26,7 +24,6 @@ import type {
 } from './types';
 import { normalizeConversation, normalizeReasoningOptions } from './utils';
 
-const DEMO_SESSION_ID = 'hash-context-preview';
 const LIVE_REFRESH_IDLE_MS = 4000;
 const LIVE_REFRESH_RUNNING_MS = 1500;
 const PENDING_CONTEXT_REFRESH_MS = 400;
@@ -83,79 +80,6 @@ type ConversationCommitOptions = {
   resetProxyOverride?: boolean;
   skipProxyOverride?: boolean;
 };
-
-function repeatForWeight(seed: string, count: number) {
-  return Array.from({ length: count }, () => seed).join('\n');
-}
-
-const DEMO_TRANSCRIPT: TranscriptRecord[] = [
-  {
-    role: 'user',
-    text: '介绍一下这个项目',
-  },
-  {
-    role: 'assistant',
-    text: `我先按我看到的代码和 README，给你说个“人话版”：这个项目是一个本地 AI 工作台，重点不是普通聊天，而是把上下文拆成可观察、可编辑、可回滚的节点。\n\n${repeatForWeight('README、服务端、前端、上下文地图、工具调用、provider adapter、历史版本、恢复点、手动编辑。', 480)}`,
-  },
-  {
-    role: 'user',
-    text: '你为什么要给我一般写进简历的，你怎么知道我要干什么的',
-  },
-  {
-    role: 'assistant',
-    text:
-      '你说得对，这里是我多猜了一步。我不知道你要拿它干什么，刚刚提简历是不严谨的外推。\n\n' +
-      '更准确地说，我应该只围绕这个项目本身：\n\n' +
-      '- **上下文整理**：把长对话拆成节点。\n' +
-      '- **压缩**：把冗余搜索结果和运行日志变短。\n' +
-      '- **删除**：移除干扰当前目标的片段。\n' +
-      '- **替换和恢复**：改错之后还能回到旧版本。\n\n' +
-      `${repeatForWeight('这部分可以被压缩成一个更短的项目说明，不应该擅自假设使用场景。', 20)}`,
-  },
-  {
-    role: 'user',
-    text: '客观评估一下这个产品，有没有可能火',
-  },
-  {
-    role: 'assistant',
-    text: `客观说：有机会火，但更像“在开发者/AI 重度用户圈子里小范围火”，不是大众产品一上来就爆。核心价值是它把模型上下文这个黑盒变成可视、可控、可修剪的工作区。\n\n${repeatForWeight('市场判断、目标用户、上下文爆炸、工具调用日志、代码搜索结果、代理循环、记忆污染、可解释编辑、版本恢复。', 400)}`,
-  },
-  {
-    role: 'user',
-    text: '我发到github会不会被大产品吸收是什么意思',
-  },
-  {
-    role: 'assistant',
-    text: `我说的“被大产品吸收”，不是说别人把你整个项目偷偷拿走了。更现实的意思是：如果这个交互证明有价值，IDE、CLI Agent、代码助手这些产品可能会自己做类似功能。\n\n${repeatForWeight('这类功能的壁垒在体验、协议适配、稳定性和开发者生态，不只在单个界面。', 55)}`,
-  },
-  {
-    role: 'user',
-    text: '我能收获一些star吗，不需要多久',
-  },
-  {
-    role: 'assistant',
-    text: `能，拿到一些 star 是有现实可能的。如果你的目标不是大火，而是让早期开发者看懂价值，最关键的是做一个可复现的 demo：打开 Codex 或 Claude Code，输入一条命令，就能看到上下文地图并修改。\n\n${repeatForWeight('发布策略、README 动图、最小插件、安装命令、使用场景、限制说明、路线图。', 60)}`,
-  },
-];
-
-const DEMO_WORKBENCH_HISTORY: ContextWorkbenchHistoryEntry[] = [
-  {
-    role: 'user',
-    content: '你能为我做什么呢',
-  },
-  {
-    role: 'assistant',
-    content:
-      '在这个窗口里，我是你的**上下文管理助手**。\n\n' +
-      '简单来说，我可以帮你“修剪”和“整理”咱们刚才聊天的记忆。如果你觉得对话太长了、模型开始变笨、或者有些中间过程（比如那些长长的搜索结果和代码运行日志）太占空间，你可以直接指挥我来处理：\n\n' +
-      '1. **清理冗余**：比如第 2 步和第 6 步里那些巨大的工具搜索结果，我可以把它们删掉或压缩，只保留结论，这样能省下不少空间。\n' +
-      '2. **精简回顾**：我可以把之前好几轮的讨论合并成一个简短的总结。\n' +
-      '3. **精准删除**：如果你觉得某段对话干扰了现在的思路，我可以帮你把它从记忆里彻底抹去。\n' +
-      '4. **修改错误**：如果你觉得我之前某句话说得不对，或者逻辑有问题，我可以帮你重写那段记录。\n\n' +
-      '举个例子：我看 Node #2 和 Node #6 都有两万多 tokens，里面塞满了搜索结果。如果你想让接下来的对话更清爽，我可以帮你把它们压缩一下。\n\n' +
-      '你想先试试清理哪一部分吗？',
-  },
-];
 
 function currentUrlSessionId(): string {
   return new URLSearchParams(window.location.search).get('session_id')?.trim() || '';
@@ -349,8 +273,6 @@ export default function WorkbenchWindow() {
   const [session, setSession] = useState<SessionSummary | null>(null);
   const [messages, setMessages] = useState<MessageRecord[]>([]);
   const [histories, setHistories] = useState<Record<string, ContextWorkbenchHistoryEntry[]>>({});
-  const [revisions, setRevisions] = useState<Record<string, ContextRevisionSummary[]>>({});
-  const [pendingRestores, setPendingRestores] = useState<Record<string, PendingContextRestore | null>>({});
   const [reasoningOptions, setReasoningOptions] = useState<ReasoningOption[]>(normalizeReasoningOptions());
   const [proxySessionId, setProxySessionId] = useState('');
   const [isProxyRunning, setIsProxyRunning] = useState(false);
@@ -403,8 +325,6 @@ export default function WorkbenchWindow() {
         setSession(null);
         setMessagesIfChanged([]);
         setHistories({});
-        setRevisions({});
-        setPendingRestores({});
         setProxySessionId('');
         setIsProxyRunning(false);
         setProxyUsageSummary(null);
@@ -467,16 +387,10 @@ export default function WorkbenchWindow() {
         const payloadSession = payload.chat_sessions?.find((item) => item.id === activeProxySession.id) || null;
         const syncedSession = payloadSession || fallbackSession;
         const nextHistories = payload.context_workbench_histories || {};
-        const nextRevisions = payload.context_revision_histories || {};
-        const nextPendingRestores: Record<string, PendingContextRestore | null> = {
-          ...(payload.pending_context_restores || {}),
-        };
 
         setSession(syncedSession);
         setMessagesIfChanged(syncedMessages);
         setHistories(nextHistories);
-        setRevisions(nextRevisions);
-        setPendingRestores(nextPendingRestores);
         setReasoningOptions(normalizeReasoningOptions(payload.reasoning_options));
         setProxySessionId(activeProxySession.id);
         setIsProxyRunning(nextIsProxyRunning);
@@ -496,19 +410,6 @@ export default function WorkbenchWindow() {
                 ...current,
                 [synced.session.id]: synced.context_workbench_history || [],
               }));
-              setRevisions((current) => ({
-                ...current,
-                [synced.session.id]: synced.context_revision_history || [],
-              }));
-              setPendingRestores((current) => {
-                const next = { ...current };
-                if (synced.pending_context_restore) {
-                  next[synced.session.id] = synced.pending_context_restore;
-                } else {
-                  delete next[synced.session.id];
-                }
-                return next;
-              });
             })
             .catch(() => {});
         }
@@ -529,8 +430,6 @@ export default function WorkbenchWindow() {
         setSession(targetSession);
         setMessagesIfChanged(normalizeConversation(transcriptForSession(fallbackPayload, targetSessionId)));
         setHistories(fallbackPayload.context_workbench_histories || {});
-        setRevisions(fallbackPayload.context_revision_histories || {});
-        setPendingRestores(fallbackPayload.pending_context_restores || {});
         setReasoningOptions(normalizeReasoningOptions(fallbackPayload.reasoning_options));
         setProxySessionId(targetSessionId);
         setIsProxyRunning(false);
@@ -553,20 +452,12 @@ export default function WorkbenchWindow() {
         nextSession = created.session;
       }
 
-      const normalizedMessages = nextSession ? normalizeConversation(transcriptForSession(fallbackPayload, nextSession.id)) : [];
-      const nextMessages = normalizedMessages.length ? normalizedMessages : normalizeConversation(DEMO_TRANSCRIPT);
+      const nextMessages = normalizeConversation(transcriptForSession(fallbackPayload, nextSession.id));
       const nextHistories = fallbackPayload.context_workbench_histories || {};
-      const effectiveSessionId = nextSession?.id || DEMO_SESSION_ID;
 
       setSession(nextSession);
       setMessagesIfChanged(nextMessages);
-      setHistories(
-        nextHistories[effectiveSessionId]
-          ? nextHistories
-          : { ...nextHistories, [effectiveSessionId]: DEMO_WORKBENCH_HISTORY },
-      );
-      setRevisions(fallbackPayload.context_revision_histories || {});
-      setPendingRestores(fallbackPayload.pending_context_restores || {});
+      setHistories(nextHistories);
       setReasoningOptions(normalizeReasoningOptions(fallbackPayload.reasoning_options));
       setProxySessionId('');
       setIsProxyRunning(false);
@@ -638,12 +529,6 @@ export default function WorkbenchWindow() {
     [histories, sessionId],
   );
 
-  const currentRevisions = useMemo(
-    () => (sessionId ? revisions[sessionId] || [] : []),
-    [revisions, sessionId],
-  );
-
-  const currentPendingRestore = sessionId ? pendingRestores[sessionId] || null : null;
   const hasPendingAssistant = useMemo(() => hasPendingAssistantMessage(messages), [messages]);
 
   useEffect(() => {
@@ -748,8 +633,6 @@ export default function WorkbenchWindow() {
         sessionId={sessionId}
         isMainChatBusy={isProxyRunning}
         contextWorkbenchHistory={currentHistory}
-        contextRevisionHistory={currentRevisions}
-        pendingContextRestore={currentPendingRestore}
         reasoningOptions={reasoningOptions}
         proxyUsageSummary={proxyUsageSummary}
         uiLocale={uiLocale}
@@ -757,12 +640,6 @@ export default function WorkbenchWindow() {
           setHistories((current) => ({ ...current, [changedSessionId]: history }));
         }}
         onContextWorkbenchConversationChange={commitContextConversation}
-        onContextRevisionHistoryChange={(changedSessionId, revisionHistory) => {
-          setRevisions((current) => ({ ...current, [changedSessionId]: revisionHistory }));
-        }}
-        onPendingContextRestoreChange={(changedSessionId, pendingRestore) => {
-          setPendingRestores((current) => ({ ...current, [changedSessionId]: pendingRestore }));
-        }}
         onProxyUsageSummaryChange={setProxyUsageSummary}
         onEnsureSession={ensureSession}
         onUiLocaleChange={(locale) => setUiLocale(normalizeSupportedLocale(locale))}

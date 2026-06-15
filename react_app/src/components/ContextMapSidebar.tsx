@@ -8,27 +8,44 @@ import {
 } from 'react';
 
 import './ContextMapSidebar.polish.css';
-import MessageContent, { getMessagePreviewText } from './MessageContent';
 import ContextWorkbench from './ContextWorkbench';
+import ContextMapNodeList from './ContextMapNodeList';
+import ContextMinimap from './ContextMinimap';
 import type {
   ContextWorkbenchHistoryEntry,
-  ContextRevisionSummary,
   MessageRecord,
-  PendingContextRestore,
   ProxyUsageSummary,
   ReasoningOption,
 } from '../types';
 import {
   buildContextMapNodeMeta,
   DEFAULT_CONTEXT_TOKEN_THRESHOLDS,
-  getContextToolWeightSource,
-  getContextTokenWeightClass,
-  getContextWeightSource,
   type ContextTokenThresholds,
-  type ContextMessageTokenStat,
-  type ContextTokenWeightClass,
 } from '../contextTokenWeight';
-import { countTokens } from '../utils';
+import {
+  DEFAULT_SCROLL_METRICS,
+  MINIMAP_CONTENT_PADDING_PX,
+  MINIMAP_VIEWPORT_KEEP_OFFSET_PX,
+  MINIMAP_VIEWPORT_MIN_HEIGHT_PX,
+  SELECTION_AUTO_SCROLL_EDGE_PX,
+  SELECTION_AUTO_SCROLL_MAX_SPEED_PX,
+  SELECTION_DRAG_THRESHOLD_PX,
+  areIndexSetsEqual,
+  areNodeLayoutsEqual,
+  areScrollMetricsEqual,
+  buildFallbackMinimapBars,
+  buildMessageStats,
+  buildMinimapBars,
+  buildRangeSelection,
+  clampIndexSet,
+  contextMapContentSignature,
+  getFallbackMinimapContentHeightPx,
+  sidebarText,
+  type MessageStat,
+  type MinimapBarLayout,
+  type NodeLayout,
+  type ScrollMetrics,
+} from './ContextMapSidebar.helpers';
 
 interface ContextMapSidebarProps {
   stage: 0 | 1 | 2;
@@ -38,8 +55,6 @@ interface ContextMapSidebarProps {
   sessionId: string;
   isMainChatBusy: boolean;
   contextWorkbenchHistory: ContextWorkbenchHistoryEntry[];
-  contextRevisionHistory: ContextRevisionSummary[];
-  pendingContextRestore: PendingContextRestore | null;
   reasoningOptions: ReasoningOption[];
   proxyUsageSummary: ProxyUsageSummary | null;
   uiLocale: 'zh-CN' | 'en-US';
@@ -49,161 +64,9 @@ interface ContextMapSidebarProps {
     conversation: MessageRecord[],
     options?: { resetProxyOverride?: boolean; skipProxyOverride?: boolean },
   ) => void | Promise<void>;
-  onContextRevisionHistoryChange: (sessionId: string, revisions: ContextRevisionSummary[]) => void;
-  onPendingContextRestoreChange: (sessionId: string, pendingRestore: PendingContextRestore | null) => void;
   onProxyUsageSummaryChange: (summary: ProxyUsageSummary | null) => void;
   onEnsureSession: () => Promise<string>;
   onUiLocaleChange?: (locale: 'zh-CN' | 'en-US') => void;
-}
-
-interface NodeLayout {
-  top: number;
-  height: number;
-}
-
-interface MinimapBarLayout {
-  topPx: number;
-  heightPx: number;
-}
-
-interface MessageStat extends ContextMessageTokenStat {
-  label: string;
-  previewText: string;
-}
-
-interface ScrollMetrics {
-  clientHeight: number;
-  scrollHeight: number;
-  scrollTop: number;
-}
-
-const DEFAULT_SCROLL_METRICS: ScrollMetrics = {
-  clientHeight: 1,
-  scrollHeight: 1,
-  scrollTop: 0,
-};
-
-const MINIMAP_CONTENT_PADDING_PX = 14;
-const MINIMAP_BAR_GAP_PX = 8;
-const MINIMAP_VIEWPORT_MIN_HEIGHT_PX = 56;
-const MINIMAP_VIEWPORT_KEEP_OFFSET_PX = 14;
-const SELECTION_DRAG_THRESHOLD_PX = 4;
-const SELECTION_AUTO_SCROLL_EDGE_PX = 68;
-const SELECTION_AUTO_SCROLL_MAX_SPEED_PX = 14;
-
-function normalizePlainText(value: string) {
-  return value.replace(/\r?\n+/g, ' ').replace(/\s+/g, ' ').trim();
-}
-
-function getMinimapBarHeightPx(role: MessageRecord['role'], weightClass: ContextTokenWeightClass) {
-  if (role !== 'an') {
-    return 4;
-  }
-
-  if (weightClass === 'heavy') {
-    return 7;
-  }
-
-  if (weightClass === 'medium') {
-    return 6;
-  }
-
-  return 5;
-}
-
-function contextNodeRoleName(role: MessageRecord['role']) {
-  return role === 'an' ? 'assistant' : role;
-}
-
-function contextNodeClassName(role: MessageRecord['role']) {
-  return role === 'an' ? 'assistant' : role;
-}
-
-function sidebarText(locale: ContextMapSidebarProps['uiLocale'], english: string, chinese: string) {
-  return locale === 'zh-CN' ? chinese : english;
-}
-
-function buildRangeSelection(
-  startIndex: number,
-  endIndex: number,
-  baseSelection: Set<number>,
-  mode: 'replace' | 'add',
-  selectableIndexes: Set<number>,
-) {
-  const next = mode === 'add' ? new Set(baseSelection) : new Set<number>();
-  const rangeStart = Math.min(startIndex, endIndex);
-  const rangeEnd = Math.max(startIndex, endIndex);
-
-  for (let index = rangeStart; index <= rangeEnd; index += 1) {
-    if (selectableIndexes.has(index)) {
-      next.add(index);
-    }
-  }
-
-  return next;
-}
-
-function clampIndexSet(indexes: Set<number>, length: number, selectableIndexes?: Set<number>) {
-  const next = new Set<number>();
-  indexes.forEach((index) => {
-    if (index >= 0 && index < length && (!selectableIndexes || selectableIndexes.has(index))) {
-      next.add(index);
-    }
-  });
-  return next;
-}
-
-function areIndexSetsEqual(left: Set<number>, right: Set<number>) {
-  return left.size === right.size && [...left].every((index) => right.has(index));
-}
-
-function contextMapContentSignature(messages: MessageRecord[]) {
-  return JSON.stringify(
-    messages.map((message) => ({
-      role: message.role,
-      text: message.text,
-      attachments: message.attachments.map((attachment) => ({
-        name: attachment.name,
-        mime_type: attachment.mime_type,
-      })),
-      blocks: message.blocks,
-      toolEvents: message.toolEvents,
-      providerItems: message.providerItems,
-    })),
-  );
-}
-
-function areNodeLayoutsEqual(left: NodeLayout[], right: NodeLayout[]) {
-  return (
-    left.length === right.length
-    && left.every((layout, index) => layout.top === right[index]?.top && layout.height === right[index]?.height)
-  );
-}
-
-function areScrollMetricsEqual(left: ScrollMetrics, right: ScrollMetrics) {
-  return (
-    left.clientHeight === right.clientHeight
-    && left.scrollHeight === right.scrollHeight
-    && left.scrollTop === right.scrollTop
-  );
-}
-
-function canExpandMessage(record: MessageRecord, previewText: string, isPreviewTruncated: boolean) {
-  void previewText;
-  const textValue = record.text || '';
-  const trimmedTextValue = textValue.trim();
-  const hasAttachmentsOrTools = Boolean(record.attachments.length || record.toolEvents.length);
-  if (record.role === 'user') {
-    return hasAttachmentsOrTools || /\r?\n/.test(trimmedTextValue) || isPreviewTruncated;
-  }
-
-  const hasStructuredContent = Boolean(
-    hasAttachmentsOrTools
-    || record.blocks.length > 1
-    || /\r?\n/.test(trimmedTextValue),
-  );
-
-  return hasStructuredContent || isPreviewTruncated;
 }
 
 export default function ContextMapSidebar({
@@ -214,15 +77,11 @@ export default function ContextMapSidebar({
   sessionId,
   isMainChatBusy,
   contextWorkbenchHistory,
-  contextRevisionHistory,
-  pendingContextRestore,
   reasoningOptions,
   proxyUsageSummary,
   uiLocale,
   onContextWorkbenchHistoryChange,
   onContextWorkbenchConversationChange,
-  onContextRevisionHistoryChange,
-  onPendingContextRestoreChange,
   onProxyUsageSummaryChange,
   onEnsureSession,
   onUiLocaleChange,
@@ -261,55 +120,19 @@ export default function ContextMapSidebar({
   );
 
   const messageStats: MessageStat[] = useMemo(
-    () =>
-      messages.map((message, index) => {
-        const meta = nodeMeta[index];
-        const tokens = countTokens(getContextWeightSource(message));
-        const toolTokens = countTokens(getContextToolWeightSource(message));
-        const roleName = contextNodeRoleName(message.role);
-        const size = (tokens / 1000).toFixed(1);
-
-        return {
-          nodeIndex: index,
-          nodeNumber: meta?.displayNodeNumber ?? 0,
-          role: roleName,
-          label: `${roleName}: ${size}k`,
-          previewText: getMessagePreviewText(message),
-          tokens,
-          toolTokens,
-          weightClass: getContextTokenWeightClass(tokens, tokenThresholds),
-          editable: Boolean(meta?.editable),
-          internalKind: meta?.internalKind,
-        };
-      }),
+    () => buildMessageStats(messages, nodeMeta, tokenThresholds),
     [messages, nodeMeta, tokenThresholds],
   );
 
   const scrollRange = Math.max(scrollMetrics.scrollHeight - scrollMetrics.clientHeight, 0);
   const scrollRatio = scrollRange <= 0 ? 0 : scrollMetrics.scrollTop / scrollRange;
-  const fallbackMinimapBars: MinimapBarLayout[] = useMemo(() => {
-    let minimapCursorPx = MINIMAP_CONTENT_PADDING_PX;
-    return messages.map((message, index) => {
-      const layout = {
-        topPx: minimapCursorPx,
-        heightPx: getMinimapBarHeightPx(message.role, messageStats[index]?.weightClass ?? 'light'),
-      };
-
-      minimapCursorPx += layout.heightPx;
-      if (index < messages.length - 1) {
-        minimapCursorPx += MINIMAP_BAR_GAP_PX;
-      }
-
-      return layout;
-    });
-  }, [messageStats, messages]);
+  const fallbackMinimapBars: MinimapBarLayout[] = useMemo(
+    () => buildFallbackMinimapBars(messages, messageStats),
+    [messageStats, messages],
+  );
 
   const fallbackMinimapContentHeightPx = useMemo(() => {
-    const lastLayout = fallbackMinimapBars[fallbackMinimapBars.length - 1];
-    const fallbackHeight = lastLayout
-      ? lastLayout.topPx + lastLayout.heightPx + MINIMAP_CONTENT_PADDING_PX
-      : MINIMAP_CONTENT_PADDING_PX * 2;
-    return Math.max(fallbackHeight, MINIMAP_CONTENT_PADDING_PX * 2 + MINIMAP_VIEWPORT_MIN_HEIGHT_PX);
+    return getFallbackMinimapContentHeightPx(fallbackMinimapBars);
   }, [fallbackMinimapBars]);
 
   const minimapContentHeightPx = Math.max(
@@ -329,64 +152,27 @@ export default function ContextMapSidebar({
   const minimapViewportTravelPx = Math.max(minimapUsableHeightPx - minimapViewportHeightPx, 0);
   const minimapViewportTopPx = MINIMAP_CONTENT_PADDING_PX + scrollRatio * minimapViewportTravelPx;
   const effectiveScrollHeight = Math.max(scrollMetrics.scrollHeight, 1);
-  const minimapBars: MinimapBarLayout[] = useMemo(() => {
-    const desiredMinimapBars: MinimapBarLayout[] = messages.map((message, index) => {
-      const fallbackLayout = fallbackMinimapBars[index];
-      const nodeLayout = nodeLayouts[index];
-      const heightPx = fallbackLayout?.heightPx ?? getMinimapBarHeightPx(message.role, messageStats[index]?.weightClass ?? 'light');
-
-      if (!nodeLayout || nodeLayout.height <= 0) {
-        return fallbackLayout;
-      }
-
-      const nodeCenter = nodeLayout.top + nodeLayout.height / 2;
-      const centerRatio = Math.min(Math.max(nodeCenter / effectiveScrollHeight, 0), 1);
-      const centeredTopPx =
-        MINIMAP_CONTENT_PADDING_PX + centerRatio * minimapUsableHeightPx - heightPx / 2;
-      const maxTopPx = MINIMAP_CONTENT_PADDING_PX + minimapUsableHeightPx - heightPx;
-
-      return {
-        topPx: Math.min(Math.max(centeredTopPx, MINIMAP_CONTENT_PADDING_PX), maxTopPx),
-        heightPx,
-      };
-    });
-    const minimapBottomLimitPx = minimapContentHeightPx - MINIMAP_CONTENT_PADDING_PX;
-    const nextMinimapBars: MinimapBarLayout[] = [];
-
-    desiredMinimapBars.forEach((layout, index) => {
-      const previousBar = index > 0 ? nextMinimapBars[index - 1] : null;
-      const minTopPx = previousBar
-        ? previousBar.topPx + previousBar.heightPx + MINIMAP_BAR_GAP_PX
-        : MINIMAP_CONTENT_PADDING_PX;
-      const maxTopPx = minimapBottomLimitPx - layout.heightPx;
-
-      nextMinimapBars.push({
-        ...layout,
-        topPx: Math.min(Math.max(layout.topPx, minTopPx), maxTopPx),
-      });
-    });
-
-    for (let index = nextMinimapBars.length - 2; index >= 0; index -= 1) {
-      const nextBar = nextMinimapBars[index + 1];
-      const currentBar = nextMinimapBars[index];
-      const maxTopPx = nextBar.topPx - currentBar.heightPx - MINIMAP_BAR_GAP_PX;
-
-      nextMinimapBars[index] = {
-        ...currentBar,
-        topPx: Math.max(MINIMAP_CONTENT_PADDING_PX, Math.min(currentBar.topPx, maxTopPx)),
-      };
-    }
-
-    return nextMinimapBars;
-  }, [
-    effectiveScrollHeight,
-    fallbackMinimapBars,
-    messageStats,
-    messages,
-    minimapContentHeightPx,
-    minimapUsableHeightPx,
-    nodeLayouts,
-  ]);
+  const minimapBars: MinimapBarLayout[] = useMemo(
+    () =>
+      buildMinimapBars({
+        effectiveScrollHeight,
+        fallbackMinimapBars,
+        messageStats,
+        messages,
+        minimapContentHeightPx,
+        minimapUsableHeightPx,
+        nodeLayouts,
+      }),
+    [
+      effectiveScrollHeight,
+      fallbackMinimapBars,
+      messageStats,
+      messages,
+      minimapContentHeightPx,
+      minimapUsableHeightPx,
+      nodeLayouts,
+    ],
+  );
 
   useEffect(() => {
     setExpandedIndexes(new Set());
@@ -891,195 +677,65 @@ export default function ContextMapSidebar({
     <aside className={`right-panel stage-${stage}`}>
       <div className="context-map-pane">
         <div className="context-map-header">
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div className="context-map-header-row">
             <div className="context-map-title">{sidebarText(uiLocale, 'Context Map', '上下文地图')}</div>
             {(stage === 1 || stage === 2) && (
-              <i
-                className="ph-light ph-layout control-btn-main active"
+              <button
+                aria-label={sidebarText(uiLocale, 'Toggle right sidebar', '切换右侧侧边栏')}
+                className="context-map-toggle"
                 onClick={onToggle}
                 title={sidebarText(uiLocale, 'Toggle right sidebar', '切换右侧侧边栏')}
-                style={{ fontSize: '18px', cursor: 'pointer' }}
-              />
+                type="button"
+              >
+                <i className="ph-light ph-layout" />
+              </button>
             )}
           </div>
         </div>
 
         <div className="context-map-list">
-          <div className="context-map-scroll-shell" ref={scrollRef}>
-            <div className="context-map-list-inner">
-              {messages.length > 0 ? (
-                messages.map((message, index) => {
-                  const isExpanded = expandedIndexes.has(index);
-                  const isSelected = selectedIndexes.has(index);
-                  const stats = messageStats[index];
-                  const meta = nodeMeta[index];
-                  const displayNodeNumber = meta?.displayNodeNumber;
-                  const isSelectable = Boolean(meta?.selectable);
-                  const isInternal = Boolean(meta?.internalKind);
-                  const canExpand = canExpandMessage(message, stats.previewText, previewTruncatedIndexes.has(index));
-                  const canToggleExpand = stage !== 1 && canExpand;
-                  const canJumpToChat = stage === 1;
-                  const isInteractive = canToggleExpand || canJumpToChat;
-                  const hoverClass = hoveredIndex === index ? 'hovered' : '';
-                  const selectedClass = isSelected ? 'selected' : '';
-                  const lockedClass = isInternal ? 'locked' : '';
-
-                  return (
-                    <div
-                      className={`context-node-row ${contextNodeClassName(message.role)} ${isExpanded ? 'expanded' : ''} ${hoverClass} ${selectedClass} ${lockedClass} ${stage === 1 ? 'without-gutter' : ''}`}
-                      key={`${message.role}-${index}`}
-                      onMouseEnter={() => setHoveredIndex(index)}
-                      onMouseLeave={() => setHoveredIndex((previous) => (previous === index ? null : previous))}
-                      ref={(node) => setNodeRef(index, node)}
-                    >
-                      {stage !== 1 && isSelectable ? (
-                        <button
-                          className="context-node-gutter"
-                          type="button"
-                          onMouseDown={(event) => handleGutterMouseDown(index, event)}
-                          onKeyDown={(event) => handleGutterKeyDown(index, event)}
-                          aria-label={sidebarText(
-                            uiLocale,
-                            `Select node ${index + 1}`,
-                            `选择第 ${index + 1} 个节点`,
-                          )}
-                          aria-pressed={isSelected}
-                        >
-                          <span>{displayNodeNumber}</span>
-                        </button>
-                      ) : stage !== 1 ? (
-                        <div className="context-node-gutter locked" aria-hidden="true">
-                          <i className="ph-light ph-lock-simple" />
-                        </div>
-                      ) : null}
-
-                      <div
-                        className={`context-map-item ${contextNodeClassName(message.role)} ${isExpanded ? 'expanded' : ''} ${selectedClass}`}
-                      >
-                        <button
-                          aria-expanded={canToggleExpand ? isExpanded : undefined}
-                          aria-label={canJumpToChat
-                            ? sidebarText(
-                                uiLocale,
-                                `Jump to main chat message ${index + 1}`,
-                                `跳转到主聊天第 ${index + 1} 条消息`,
-                              )
-                            : undefined}
-                          className={`context-map-item-button ${isInteractive ? '' : 'non-expandable'}`}
-                          type="button"
-                          onClick={
-                            isInteractive
-                              ? () => {
-                                  if (canJumpToChat) {
-                                    onJumpToMessage(index);
-                                    return;
-                                  }
-
-                                  toggleMessage(index);
-                                }
-                              : undefined
-                          }
-                        >
-                          <div className="map-metadata">
-                            <span>{stats.label}</span>
-                            {canToggleExpand ? (
-                              <i
-                                className={`ph-light ph-caret-right context-map-expand-icon ${isExpanded ? 'open' : ''}`}
-                              />
-                            ) : null}
-                          </div>
-                          {!isExpanded ? (
-                            <div className="map-bubble">
-                              <span className="map-preview-text">{stats.previewText}</span>
-                            </div>
-                          ) : null}
-                        </button>
-
-                        {canToggleExpand ? (
-                          <div
-                            className={`context-map-expanded-shell ${isExpanded ? 'open' : ''}`}
-                            aria-hidden={!isExpanded}
-                          >
-                            <div className="context-map-expanded-content">
-                              {isExpanded ? (
-                                <div className="context-map-expanded-body">
-                                  <MessageContent record={message} variant="context-map" />
-                                </div>
-                              ) : null}
-                            </div>
-                          </div>
-                        ) : null}
-                      </div>
-                    </div>
-                  );
-                })
-              ) : (
-                <div style={{ padding: '20px', textAlign: 'center', opacity: 0.4, fontSize: '13px' }}>
-                  {sidebarText(
-                    uiLocale,
-                    'Messages that enter this turn of context will appear here.',
-                    '这里会显示本轮真正进入上下文的消息。',
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
+          <ContextMapNodeList
+            messages={messages}
+            stage={stage}
+            nodeMeta={nodeMeta}
+            messageStats={messageStats}
+            expandedIndexes={expandedIndexes}
+            selectedIndexes={selectedIndexes}
+            hoveredIndex={hoveredIndex}
+            previewTruncatedIndexes={previewTruncatedIndexes}
+            uiLocale={uiLocale}
+            scrollRef={scrollRef}
+            setHoveredIndex={setHoveredIndex}
+            setNodeRef={setNodeRef}
+            onToggleMessage={toggleMessage}
+            onJumpToMessage={onJumpToMessage}
+            onGutterMouseDown={handleGutterMouseDown}
+            onGutterKeyDown={handleGutterKeyDown}
+          />
 
           {showMinimap ? (
-            <div className="context-minimap-shell">
-              <div className="context-minimap" role="presentation">
-                <div className="context-minimap-track" ref={minimapRef} onMouseDown={handleMinimapMouseDown}>
-                  <div className="context-minimap-scroll" ref={minimapScrollRef}>
-                    <div className="context-minimap-content" style={{ height: `${minimapContentHeightPx}px` }}>
-                      {messages.map((message, index) => {
-                        const layout = minimapBars[index];
-                        const stats = messageStats[index];
-
-                        return (
-                          <button
-                            className={`context-minimap-bar ${contextNodeClassName(message.role)} weight-${stats.weightClass} ${hoveredIndex === index ? 'hovered' : ''} ${selectedIndexes.has(index) ? 'selected' : ''} ${stats.internalKind ? 'locked' : ''}`}
-                            key={`minimap-${message.role}-${index}`}
-                            type="button"
-                            style={{
-                              top: `${layout?.topPx ?? MINIMAP_CONTENT_PADDING_PX}px`,
-                              height: `${layout?.heightPx ?? 4}px`,
-                            }}
-                            onMouseDown={(event) => {
-                              event.stopPropagation();
-                            }}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              scrollToNode(index);
-                            }}
-                            onMouseEnter={() => setHoveredIndex(index)}
-                            onMouseLeave={() => setHoveredIndex((previous) => (previous === index ? null : previous))}
-                            aria-label={sidebarText(
-                              uiLocale,
-                              `Scroll to node ${index + 1}, about ${stats.tokens} tokens`,
-                              `定位到第 ${index + 1} 个节点，约 ${stats.tokens} 个 token`,
-                            )}
-                          />
-                        );
-                      })}
-                      <div
-                        className="context-minimap-viewport"
-                        style={{
-                          top: `${minimapViewportTopPx}px`,
-                          height: `${minimapViewportHeightPx}px`,
-                        }}
-                      />
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
+            <ContextMinimap
+              messages={messages}
+              messageStats={messageStats}
+              minimapBars={minimapBars}
+              selectedIndexes={selectedIndexes}
+              hoveredIndex={hoveredIndex}
+              uiLocale={uiLocale}
+              minimapContentHeightPx={minimapContentHeightPx}
+              minimapViewportTopPx={minimapViewportTopPx}
+              minimapViewportHeightPx={minimapViewportHeightPx}
+              minimapRef={minimapRef}
+              minimapScrollRef={minimapScrollRef}
+              setHoveredIndex={setHoveredIndex}
+              onScrollToNode={scrollToNode}
+              onMinimapMouseDown={handleMinimapMouseDown}
+            />
           ) : null}
         </div>
       </div>
 
       <div className="extended-pane" data-localize-skip="true">
         <ContextWorkbench
-          messages={messages}
           messageTokenStats={messageStats}
           selectedNodeIndexes={selectedNodeIndexes}
           criticalNodeIndexes={criticalNodeIndexes}
@@ -1087,15 +743,11 @@ export default function ContextMapSidebar({
           sessionId={sessionId}
           isMainChatBusy={isMainChatBusy}
           history={contextWorkbenchHistory}
-          revisions={contextRevisionHistory}
-          pendingRestore={pendingContextRestore}
           reasoningOptions={reasoningOptions}
           proxyUsageSummary={proxyUsageSummary}
           uiLocale={uiLocale}
           onHistoryChange={onContextWorkbenchHistoryChange}
           onConversationChange={onContextWorkbenchConversationChange}
-          onRevisionHistoryChange={onContextRevisionHistoryChange}
-          onPendingRestoreChange={onPendingContextRestoreChange}
           onProxyUsageSummaryChange={onProxyUsageSummaryChange}
           onEnsureSession={onEnsureSession}
           onTokenThresholdsChange={setTokenThresholds}

@@ -20,7 +20,7 @@ npm run dist:win
 release/Codex Context Proxy Setup 0.3.0.exe
 ```
 
-安装包会带上 Electron 前端、React 构建产物、`web_server.py`、`proxy_server.py` 以及打包后的 Python exe。用户不需要自己安装 Node 或 Python。
+安装包会带上 Electron 前端、React 构建产物、`backend/web_server.py`、`backend/proxy_server.py` 以及打包后的 Python exe。用户不需要自己安装 Node 或 Python。
 
 ## 用户怎么用
 

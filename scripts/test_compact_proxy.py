@@ -17,8 +17,8 @@ import zstandard
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import proxy_server
-import web_server
+from backend import proxy_server
+from backend import web_server
 
 
 SESSION_ID = "fake-codex-session"

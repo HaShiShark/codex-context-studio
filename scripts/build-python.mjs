@@ -77,5 +77,5 @@ removeWorkspacePath(pythonDist);
 removeWorkspacePath(webWork);
 removeWorkspacePath(proxyWork);
 
-run(venvPython, pyInstallerArgs('hash-web-server', path.join(root, 'web_server.py'), webWork));
-run(venvPython, pyInstallerArgs('hash-proxy-server', path.join(root, 'proxy_server.py'), proxyWork));
+run(venvPython, pyInstallerArgs('hash-web-server', path.join(root, 'backend', 'web_server.py'), webWork));
+run(venvPython, pyInstallerArgs('hash-proxy-server', path.join(root, 'backend', 'proxy_server.py'), proxyWork));
