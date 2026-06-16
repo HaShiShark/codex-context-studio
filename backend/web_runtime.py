@@ -67,6 +67,7 @@ def context_workbench_settings_payload(settings: Settings) -> dict[str, object]:
         "context_token_warning_threshold": int(settings.context_token_warning_threshold or 5000),
         "context_token_critical_threshold": int(settings.context_token_critical_threshold or 10000),
         "user_locale": sanitize_text(settings.user_locale or "").strip() or "en-US",
+        "theme_mode": "dark" if sanitize_text(settings.theme_mode or "").strip() == "dark" else "light",
         "ui_font": sanitize_text(settings.ui_font or "").strip() or "Noto Serif SC",
         "ui_font_size": int(settings.ui_font_size or 15),
     }

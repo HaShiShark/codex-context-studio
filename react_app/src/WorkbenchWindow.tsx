@@ -165,11 +165,13 @@ const WINDOW_RESIZE_CURSORS: Record<WindowResizeEdge, string> = {
   'bottom-left': 'nesw-resize',
 };
 
-function resizeEdgeAt(x: number, y: number, width: number, height: number): WindowResizeEdge | null {
-  const top = y <= WINDOW_RESIZE_EDGE_PX;
-  const bottom = y >= height - WINDOW_RESIZE_EDGE_PX;
-  const left = x <= WINDOW_RESIZE_EDGE_PX;
-  const right = x >= width - WINDOW_RESIZE_EDGE_PX;
+function resizeEdgeAt(x: number, y: number, rect: DOMRect): WindowResizeEdge | null {
+  const insideVerticalRange = y >= rect.top - WINDOW_RESIZE_EDGE_PX && y <= rect.bottom + WINDOW_RESIZE_EDGE_PX;
+  const insideHorizontalRange = x >= rect.left - WINDOW_RESIZE_EDGE_PX && x <= rect.right + WINDOW_RESIZE_EDGE_PX;
+  const top = insideHorizontalRange && Math.abs(y - rect.top) <= WINDOW_RESIZE_EDGE_PX;
+  const bottom = insideHorizontalRange && Math.abs(y - rect.bottom) <= WINDOW_RESIZE_EDGE_PX;
+  const left = insideVerticalRange && Math.abs(x - rect.left) <= WINDOW_RESIZE_EDGE_PX;
+  const right = insideVerticalRange && Math.abs(x - rect.right) <= WINDOW_RESIZE_EDGE_PX;
 
   if (top && left) return 'top-left';
   if (top && right) return 'top-right';
@@ -192,12 +194,16 @@ function installWindowChrome() {
 
   const root = document.documentElement;
   let active = false;
+  let isMaximized = false;
+
+  const frameRect = () => document.querySelector('.workbench-window-frame')?.getBoundingClientRect() || null;
 
   const updateHoverCursor = (event: PointerEvent) => {
     if (active) {
       return;
     }
-    const edge = resizeEdgeAt(event.clientX, event.clientY, window.innerWidth, window.innerHeight);
+    const rect = frameRect();
+    const edge = !isMaximized && rect ? resizeEdgeAt(event.clientX, event.clientY, rect) : null;
     if (edge) {
       root.style.cursor = WINDOW_RESIZE_CURSORS[edge];
     } else if (root.style.cursor) {
@@ -210,7 +216,8 @@ function installWindowChrome() {
       return;
     }
 
-    const edge = resizeEdgeAt(event.clientX, event.clientY, window.innerWidth, window.innerHeight);
+    const rect = frameRect();
+    const edge = !isMaximized && rect ? resizeEdgeAt(event.clientX, event.clientY, rect) : null;
     const target = event.target as Element | null;
     const onDragSurface = Boolean(
       target && target.closest(WINDOW_DRAG_SURFACE_SELECTOR) && !target.closest(WINDOW_DRAG_BLOCK_SELECTOR),
@@ -267,6 +274,19 @@ function installWindowChrome() {
 
   window.addEventListener('pointermove', updateHoverCursor, true);
   window.addEventListener('pointerdown', onPointerDown, true);
+
+  void window.electronAPI.isWindowMaximized?.().then((nextIsMaximized) => {
+    isMaximized = Boolean(nextIsMaximized);
+    root.dataset.workbenchWindowMaximized = isMaximized ? 'true' : 'false';
+  });
+
+  window.electronAPI.onWindowMaximizedChange?.((nextIsMaximized) => {
+    isMaximized = nextIsMaximized;
+    root.dataset.workbenchWindowMaximized = isMaximized ? 'true' : 'false';
+    if (isMaximized) {
+      root.style.cursor = '';
+    }
+  });
 }
 
 function WorkbenchWindowChrome() {
@@ -321,6 +341,7 @@ export default function WorkbenchWindow() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [uiLocale, setUiLocale] = useState(normalizeSupportedLocale('en-US'));
+  const [themeMode, setThemeMode] = useState<'light' | 'dark'>('light');
   const [uiFont, setUiFont] = useState('Noto Serif SC');
   const [uiFontSize, setUiFontSize] = useState(15);
   const [session, setSession] = useState<SessionSummary | null>(null);
@@ -420,6 +441,7 @@ export default function WorkbenchWindow() {
       }
       if (!options.silent || options.refreshSettings) {
         setUiLocale(normalizeSupportedLocale(payload.settings?.user_locale));
+        setThemeMode(payload.settings?.theme_mode === 'dark' ? 'dark' : 'light');
       }
 
       const activeProxyTranscript = activeProxySession?.active_transcript || activeProxySession?.transcript || [];
@@ -536,6 +558,16 @@ export default function WorkbenchWindow() {
   useEffect(() => {
     document.documentElement.lang = uiLocale === 'en-US' ? 'en' : 'zh-CN';
   }, [uiLocale]);
+
+  useEffect(() => {
+    if (themeMode === 'dark') {
+      document.documentElement.dataset.themeMode = 'dark';
+      window.electronAPI?.setWindowThemeMode?.('dark');
+      return;
+    }
+    delete document.documentElement.dataset.themeMode;
+    window.electronAPI?.setWindowThemeMode?.('light');
+  }, [themeMode]);
 
   useEffect(() => {
     const fontStack = uiFont.trim()
@@ -708,6 +740,7 @@ export default function WorkbenchWindow() {
           reasoningOptions={reasoningOptions}
           proxyUsageSummary={proxyUsageSummary}
           uiLocale={uiLocale}
+          themeMode={themeMode}
           onContextWorkbenchHistoryChange={(changedSessionId, history) => {
             setHistories((current) => ({ ...current, [changedSessionId]: history }));
           }}
@@ -716,6 +749,7 @@ export default function WorkbenchWindow() {
           onEnsureSession={ensureSession}
           onUiLocaleChange={(locale) => setUiLocale(normalizeSupportedLocale(locale))}
           onUiFontChange={(font, size) => { setUiFont(font); setUiFontSize(size); }}
+          onThemeModeChange={(mode: 'light' | 'dark') => setThemeMode(mode)}
         />
       </div>
     </main>

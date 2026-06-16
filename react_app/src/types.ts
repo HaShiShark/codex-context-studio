@@ -150,7 +150,7 @@ export interface OpenAISettings {
   user_timezone: string;
   user_profile: string;
   theme_color: string;
-  theme_mode: 'light' | 'dark' | 'system';
+  theme_mode: 'light' | 'dark';
   background_color: string;
   ui_font: string;
   code_font: string;
@@ -372,6 +372,7 @@ export interface ContextWorkbenchSettingsResponse {
     context_token_warning_threshold: number;
     context_token_critical_threshold: number;
     user_locale?: string;
+    theme_mode?: 'light' | 'dark';
     ui_font?: string;
     ui_font_size?: number;
   };

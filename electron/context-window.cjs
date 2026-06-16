@@ -18,6 +18,8 @@ const CONTROL_PORT = readPort('HASH_CONTEXT_CONTROL_PORT', 8790);
 const USE_VITE_FRONTEND = !app.isPackaged && process.env.HASH_CONTEXT_USE_BUILT_FRONTEND !== '1';
 const MIN_WINDOW_WIDTH = 600;
 const MIN_WINDOW_HEIGHT = 360;
+const LIGHT_WINDOW_ACCENT_COLOR = '#f8f5f1';
+const DARK_WINDOW_ACCENT_COLOR = '#211c18';
 
 app.setPath('userData', path.join(app.getPath('appData'), 'hash-context-codex-lab'));
 
@@ -453,14 +455,17 @@ function normalizeWindowBounds(bounds) {
 function createWindow(root) {
   writeLog('creating window');
   mainWindow = new BrowserWindow({
-    width: 800,
-    height: 600,
+    width: 1200,
+    height: 800,
     minWidth: MIN_WINDOW_WIDTH,
     minHeight: MIN_WINDOW_HEIGHT,
-    backgroundColor: '#00000000',
-    transparent: true,
+    backgroundColor: '#f8f5f1',
+    transparent: false,
     frame: false,
+    hasShadow: true,
     roundedCorners: true,
+    thickFrame: true,
+    accentColor: LIGHT_WINDOW_ACCENT_COLOR,
     resizable: true,
     show: false,
     title: 'Codex Context Proxy',
@@ -472,6 +477,23 @@ function createWindow(root) {
       sandbox: false,
     },
   });
+
+  const publishWindowMaximizedState = () => {
+    if (!mainWindow || mainWindow.webContents.isDestroyed()) {
+      return;
+    }
+
+    mainWindow.webContents.send(
+      'window:maximized-change',
+      mainWindow.isMaximized() || mainWindow.isFullScreen(),
+    );
+  };
+
+  mainWindow.on('maximize', publishWindowMaximizedState);
+  mainWindow.on('unmaximize', publishWindowMaximizedState);
+  mainWindow.on('enter-full-screen', publishWindowMaximizedState);
+  mainWindow.on('leave-full-screen', publishWindowMaximizedState);
+  mainWindow.on('restore', publishWindowMaximizedState);
 
   mainWindow.once('ready-to-show', () => {
     if (process.env.HASH_CONTEXT_START_HIDDEN === '1') {
@@ -546,8 +568,7 @@ async function boot() {
   const root = appRoot();
 
   writeLog(`boot root=${root}`);
-  await startProxy(root);
-  await startBackend(root);
+  await Promise.all([startProxy(root), startBackend(root)]);
   await warmContextWorkbenchModels();
   if (USE_VITE_FRONTEND) {
     await startFrontend(root);
@@ -606,6 +627,20 @@ ipcMain.on('window:close', () => {
 
 ipcMain.handle('window:get-bounds', () => {
   return mainWindow?.getBounds() || null;
+});
+
+ipcMain.handle('window:is-maximized', () => {
+  return Boolean(mainWindow && (mainWindow.isMaximized() || mainWindow.isFullScreen()));
+});
+
+ipcMain.on('window:set-theme-mode', (_event, themeMode) => {
+  if (!mainWindow) {
+    return;
+  }
+
+  const isDark = themeMode === 'dark';
+  mainWindow.setBackgroundColor(isDark ? DARK_WINDOW_ACCENT_COLOR : LIGHT_WINDOW_ACCENT_COLOR);
+  mainWindow.setAccentColor(isDark ? DARK_WINDOW_ACCENT_COLOR : LIGHT_WINDOW_ACCENT_COLOR);
 });
 
 ipcMain.on('window:set-bounds', (_event, bounds) => {

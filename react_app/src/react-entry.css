@@ -1739,160 +1739,160 @@ textarea {
     justify-content: flex-start;
   }
 }
-html[data-theme-mode] .right-panel {
+html[data-theme-mode="dark"] .right-panel {
   background: var(--bg-main);
   color: var(--text-primary);
   border-color: var(--border-subtle);
   box-shadow: -18px 0 34px var(--shadow-color);
 }
 
-html[data-theme-mode] .right-panel:not(.stage-0) {
+html[data-theme-mode="dark"] .right-panel:not(.stage-0) {
   filter: var(--app-contrast-filter);
 }
 
-html[data-theme-mode] .right-panel::before {
+html[data-theme-mode="dark"] .right-panel::before {
   box-shadow: -10px 0 20px 5px var(--shadow-color);
 }
 
-html[data-theme-mode] .dropdown-menu {
+html[data-theme-mode="dark"] .dropdown-menu {
   background: var(--bg-input);
   color: var(--text-primary);
   border-color: var(--border-subtle);
   box-shadow: 0 14px 34px var(--shadow-color);
 }
 
-html[data-theme-mode] .manual-workbench-input {
+html[data-theme-mode="dark"] .manual-workbench-input {
   color: var(--text-primary);
 }
 
-html[data-theme-mode] .manual-workbench-input::placeholder {
+html[data-theme-mode="dark"] .manual-workbench-input::placeholder {
   color: var(--text-muted);
 }
 
-html[data-theme-mode] .extended-page-scroll::-webkit-scrollbar-thumb,
-html[data-theme-mode] .manual-workbench-list::-webkit-scrollbar-thumb {
+html[data-theme-mode="dark"] .extended-page-scroll::-webkit-scrollbar-thumb,
+html[data-theme-mode="dark"] .manual-workbench-list::-webkit-scrollbar-thumb {
   background: var(--scrollbar-thumb);
   background-clip: padding-box;
 }
 
-html[data-theme-mode] .extended-page-scroll::-webkit-scrollbar-thumb:hover,
-html[data-theme-mode] .manual-workbench-list::-webkit-scrollbar-thumb:hover {
+html[data-theme-mode="dark"] .extended-page-scroll::-webkit-scrollbar-thumb:hover,
+html[data-theme-mode="dark"] .manual-workbench-list::-webkit-scrollbar-thumb:hover {
   background: var(--scrollbar-thumb-hover);
   background-clip: padding-box;
 }
 
-html[data-theme-mode] .extended-tab {
+html[data-theme-mode="dark"] .extended-tab {
   color: var(--text-secondary);
 }
 
-html[data-theme-mode] .extended-tab:hover,
-html[data-theme-mode] .extended-tab.active {
+html[data-theme-mode="dark"] .extended-tab:hover,
+html[data-theme-mode="dark"] .extended-tab.active {
   color: var(--text-primary);
   background: var(--item-hover);
 }
 
-html[data-theme-mode] .extended-page-scroll,
-html[data-theme-mode] .manual-workbench-list {
+html[data-theme-mode="dark"] .extended-page-scroll,
+html[data-theme-mode="dark"] .manual-workbench-list {
   scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 
-html[data-theme-mode] .workbench-panel-title,
-html[data-theme-mode] .suggestion-card-value,
-html[data-theme-mode] .suggestion-row-title,
-html[data-theme-mode] .manual-workbench-empty-title,
-html[data-theme-mode] .workbench-setting-title,
-html[data-theme-mode] .workbench-tool-card-title {
+html[data-theme-mode="dark"] .workbench-panel-title,
+html[data-theme-mode="dark"] .suggestion-card-value,
+html[data-theme-mode="dark"] .suggestion-row-title,
+html[data-theme-mode="dark"] .manual-workbench-empty-title,
+html[data-theme-mode="dark"] .workbench-setting-title,
+html[data-theme-mode="dark"] .workbench-tool-card-title {
   color: var(--text-primary);
 }
 
-html[data-theme-mode] .workbench-panel-desc,
-html[data-theme-mode] .suggestion-card-label,
-html[data-theme-mode] .suggestion-card-note,
-html[data-theme-mode] .suggestion-row-body,
-html[data-theme-mode] .suggestion-row-meta,
-html[data-theme-mode] .manual-workbench-empty-body,
-html[data-theme-mode] .workbench-setting-provider-hint,
-html[data-theme-mode] .workbench-setting-desc,
-html[data-theme-mode] .workbench-tool-card-desc {
+html[data-theme-mode="dark"] .workbench-panel-desc,
+html[data-theme-mode="dark"] .suggestion-card-label,
+html[data-theme-mode="dark"] .suggestion-card-note,
+html[data-theme-mode="dark"] .suggestion-row-body,
+html[data-theme-mode="dark"] .suggestion-row-meta,
+html[data-theme-mode="dark"] .manual-workbench-empty-body,
+html[data-theme-mode="dark"] .workbench-setting-provider-hint,
+html[data-theme-mode="dark"] .workbench-setting-desc,
+html[data-theme-mode="dark"] .workbench-tool-card-desc {
   color: var(--text-secondary);
 }
 
-html[data-theme-mode] .suggestion-card,
-html[data-theme-mode] .suggestion-row,
-html[data-theme-mode] .manual-workbench-composer-shell,
-html[data-theme-mode] .manual-workbench-reference-chip,
-html[data-theme-mode] .workbench-setting-card,
-html[data-theme-mode] .workbench-tool-card,
-html[data-theme-mode] .manual-workbench-clear {
+html[data-theme-mode="dark"] .suggestion-card,
+html[data-theme-mode="dark"] .suggestion-row,
+html[data-theme-mode="dark"] .manual-workbench-composer-shell,
+html[data-theme-mode="dark"] .manual-workbench-reference-chip,
+html[data-theme-mode="dark"] .workbench-setting-card,
+html[data-theme-mode="dark"] .workbench-tool-card,
+html[data-theme-mode="dark"] .manual-workbench-clear {
   background: var(--surface-bg);
   border-color: var(--border-subtle);
   color: var(--text-primary);
 }
 
-html[data-theme-mode] .manual-workbench-empty-title,
-html[data-theme-mode] .manual-workbench-empty-body {
+html[data-theme-mode="dark"] .manual-workbench-empty-title,
+html[data-theme-mode="dark"] .manual-workbench-empty-body {
   color: color-mix(in srgb, var(--text-primary) 54%, transparent);
 }
 
-html[data-theme-mode] .manual-workbench-message.user .manual-workbench-bubble {
+html[data-theme-mode="dark"] .manual-workbench-message.user .manual-workbench-bubble {
   background: var(--bg-input);
   color: var(--text-primary);
   box-shadow: 0 8px 22px var(--shadow-color);
 }
 
-html[data-theme-mode] .manual-workbench-user-text,
-html[data-theme-mode] .manual-workbench-message .markdown-body {
+html[data-theme-mode="dark"] .manual-workbench-user-text,
+html[data-theme-mode="dark"] .manual-workbench-message .markdown-body {
   color: var(--text-primary);
 }
 
-html[data-theme-mode] .manual-workbench-clear:hover {
+html[data-theme-mode="dark"] .manual-workbench-clear:hover {
   background: var(--item-hover);
   border-color: var(--border-color);
 }
 
-html[data-theme-mode] .context-node-gutter {
+html[data-theme-mode="dark"] .context-node-gutter {
   color: var(--text-secondary);
 }
 
-html[data-theme-mode] .context-node-gutter:hover,
-html[data-theme-mode] .context-node-gutter:focus-visible {
+html[data-theme-mode="dark"] .context-node-gutter:hover,
+html[data-theme-mode="dark"] .context-node-gutter:focus-visible {
   color: var(--text-primary);
   background: var(--item-hover);
 }
 
-html[data-theme-mode] .context-node-row.hovered .context-map-item-button,
-html[data-theme-mode] .context-map-item-button:hover {
+html[data-theme-mode="dark"] .context-node-row.hovered .context-map-item-button,
+html[data-theme-mode="dark"] .context-map-item-button:hover {
   background: var(--item-hover);
   box-shadow: inset 0 0 0 1px var(--border-subtle);
 }
 
-html[data-theme-mode] .context-node-row.selected .context-map-item-button,
-html[data-theme-mode] .context-map-item.expanded,
-html[data-theme-mode] .context-node-row.hovered .context-map-item.expanded,
-html[data-theme-mode] .context-node-row.selected .context-map-item.expanded {
+html[data-theme-mode="dark"] .context-node-row.selected .context-map-item-button,
+html[data-theme-mode="dark"] .context-map-item.expanded,
+html[data-theme-mode="dark"] .context-node-row.hovered .context-map-item.expanded,
+html[data-theme-mode="dark"] .context-node-row.selected .context-map-item.expanded {
   background: var(--surface-bg);
   box-shadow: inset 0 0 0 1px rgba(var(--an-theme-rgb), 0.2);
 }
 
-html[data-theme-mode] .map-bubble,
-html[data-theme-mode] .context-map-expanded-content {
+html[data-theme-mode="dark"] .map-bubble,
+html[data-theme-mode="dark"] .context-map-expanded-content {
   color: var(--text-primary);
 }
 
-html[data-theme-mode] .map-metadata,
-html[data-theme-mode] .map-preview-text,
-html[data-theme-mode] .context-map-expand-icon {
+html[data-theme-mode="dark"] .map-metadata,
+html[data-theme-mode="dark"] .map-preview-text,
+html[data-theme-mode="dark"] .context-map-expand-icon {
   color: var(--text-secondary);
 }
 
-html[data-theme-mode] .markdown-body {
+html[data-theme-mode="dark"] .markdown-body {
   color: inherit;
 }
 
-html[data-theme-mode] .markdown-body blockquote,
-html[data-theme-mode] .markdown-body .markdown-alert,
-html[data-theme-mode] .markdown-table-wrap th,
-html[data-theme-mode] .markdown-table-wrap td {
+html[data-theme-mode="dark"] .markdown-body blockquote,
+html[data-theme-mode="dark"] .markdown-body .markdown-alert,
+html[data-theme-mode="dark"] .markdown-table-wrap th,
+html[data-theme-mode="dark"] .markdown-table-wrap td {
   border-color: var(--border-subtle);
 }
 

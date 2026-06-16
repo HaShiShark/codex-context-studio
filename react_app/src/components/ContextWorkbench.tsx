@@ -68,6 +68,7 @@ interface ContextWorkbenchProps {
   reasoningOptions: ReasoningOption[];
   proxyUsageSummary: ProxyUsageSummary | null;
   uiLocale: UiLocale;
+  themeMode: 'light' | 'dark';
   onHistoryChange: (sessionId: string, history: ContextWorkbenchHistoryEntry[]) => void;
   onConversationChange: (
     sessionId: string,
@@ -79,6 +80,7 @@ interface ContextWorkbenchProps {
   onTokenThresholdsChange: (thresholds: ContextTokenThresholds) => void;
   onUiLocaleChange?: (locale: UiLocale) => void;
   onUiFontChange?: (font: string, fontSize: number) => void;
+  onThemeModeChange?: (themeMode: 'light' | 'dark') => void;
 }
 
 interface ManualMessageItemProps {
@@ -190,6 +192,7 @@ export default function ContextWorkbench({
   reasoningOptions,
   proxyUsageSummary,
   uiLocale,
+  themeMode,
   onHistoryChange,
   onConversationChange,
   onProxyUsageSummaryChange,
@@ -197,6 +200,7 @@ export default function ContextWorkbench({
   onTokenThresholdsChange,
   onUiLocaleChange,
   onUiFontChange,
+  onThemeModeChange,
 }: ContextWorkbenchProps) {
   const [activeTab, setActiveTab] = useState<WorkbenchTab>('manual');
   const [manualDraft, setManualDraft] = useState('');
@@ -214,6 +218,7 @@ export default function ContextWorkbench({
   const [workbenchModelDraft, setWorkbenchModelDraft] = useState(DEFAULT_WORKBENCH_MODELS[0]);
   const [workbenchProviderDraft, setWorkbenchProviderDraft] = useState(DEFAULT_WORKBENCH_PROVIDER_ID);
   const [uiLocaleDraft, setUiLocaleDraft] = useState<UiLocale>(uiLocale);
+  const [themeModeDraft, setThemeModeDraft] = useState<'light' | 'dark'>(themeMode);
   const [isWorkbenchModelOpen, setIsWorkbenchModelOpen] = useState(false);
   const [tokenWarningThresholdDraft, setTokenWarningThresholdDraft] = useState(
     String(DEFAULT_CONTEXT_TOKEN_THRESHOLDS.warningThreshold),
@@ -323,6 +328,10 @@ export default function ContextWorkbench({
   }, [uiLocale]);
 
   useEffect(() => {
+    setThemeModeDraft(themeMode);
+  }, [themeMode]);
+
+  useEffect(() => {
     let cancelled = false;
 
     async function loadWorkbenchSettings() {
@@ -351,6 +360,9 @@ export default function ContextWorkbench({
           : uiLocale;
         setUiLocaleDraft(loadedLocale);
         onUiLocaleChange?.(loadedLocale);
+        const loadedThemeMode = response.settings.theme_mode === 'dark' ? 'dark' : 'light';
+        setThemeModeDraft(loadedThemeMode);
+        onThemeModeChange?.(loadedThemeMode);
         const nextThresholds = normalizeContextTokenThresholds({
           warningThreshold: response.settings.context_token_warning_threshold,
           criticalThreshold: response.settings.context_token_critical_threshold,
@@ -531,6 +543,21 @@ export default function ContextWorkbench({
     } catch (error) {
       setUiLocaleDraft(previousLocale);
       onUiLocaleChange?.(previousLocale);
+      setSettingsError(getThrownMessage(error));
+    }
+  }
+
+  async function handleSaveThemeMode(nextThemeMode: 'light' | 'dark') {
+    if (nextThemeMode === themeModeDraft) return;
+    const previousThemeMode = themeModeDraft;
+    setThemeModeDraft(nextThemeMode);
+    onThemeModeChange?.(nextThemeMode);
+    setSettingsError('');
+    try {
+      await saveContextWorkbenchSettingsRequest({ theme_mode: nextThemeMode });
+    } catch (error) {
+      setThemeModeDraft(previousThemeMode);
+      onThemeModeChange?.(previousThemeMode);
       setSettingsError(getThrownMessage(error));
     }
   }
@@ -1090,6 +1117,27 @@ export default function ContextWorkbench({
                         }}
                       >
                         {uiLanguageLabel(option.value, uiLocaleDraft)}
+                      </button>
+                    ))}
+                  </div>
+                </SettingsRow>
+
+                <SettingsRow title={uiText(uiLocaleDraft, 'Theme', '主题')}>
+                  <div className="workbench-language-toggle" role="group" aria-label={uiText(uiLocaleDraft, 'Theme', '主题')}>
+                    {(['light', 'dark'] as const).map((option) => (
+                      <button
+                        key={option}
+                        type="button"
+                        className={`workbench-language-btn${themeModeDraft === option ? ' is-active' : ''}`}
+                        disabled={isSettingsLoading}
+                        aria-pressed={themeModeDraft === option}
+                        onClick={() => {
+                          void handleSaveThemeMode(option);
+                        }}
+                      >
+                        {option === 'light'
+                          ? uiText(uiLocaleDraft, 'Light', '浅色')
+                          : uiText(uiLocaleDraft, 'Dark', '深色')}
                       </button>
                     ))}
                   </div>

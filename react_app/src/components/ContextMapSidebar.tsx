@@ -58,6 +58,7 @@ interface ContextMapSidebarProps {
   reasoningOptions: ReasoningOption[];
   proxyUsageSummary: ProxyUsageSummary | null;
   uiLocale: 'zh-CN' | 'en-US';
+  themeMode: 'light' | 'dark';
   onContextWorkbenchHistoryChange: (sessionId: string, history: ContextWorkbenchHistoryEntry[]) => void;
   onContextWorkbenchConversationChange: (
     sessionId: string,
@@ -68,6 +69,7 @@ interface ContextMapSidebarProps {
   onEnsureSession: () => Promise<string>;
   onUiLocaleChange?: (locale: 'zh-CN' | 'en-US') => void;
   onUiFontChange?: (font: string, fontSize: number) => void;
+  onThemeModeChange?: (themeMode: 'light' | 'dark') => void;
 }
 
 export default function ContextMapSidebar({
@@ -81,12 +83,14 @@ export default function ContextMapSidebar({
   reasoningOptions,
   proxyUsageSummary,
   uiLocale,
+  themeMode,
   onContextWorkbenchHistoryChange,
   onContextWorkbenchConversationChange,
   onProxyUsageSummaryChange,
   onEnsureSession,
   onUiLocaleChange,
   onUiFontChange,
+  onThemeModeChange,
 }: ContextMapSidebarProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const minimapRef = useRef<HTMLDivElement>(null);
@@ -748,6 +752,7 @@ export default function ContextMapSidebar({
           reasoningOptions={reasoningOptions}
           proxyUsageSummary={proxyUsageSummary}
           uiLocale={uiLocale}
+          themeMode={themeMode}
           onHistoryChange={onContextWorkbenchHistoryChange}
           onConversationChange={onContextWorkbenchConversationChange}
           onProxyUsageSummaryChange={onProxyUsageSummaryChange}
@@ -755,6 +760,7 @@ export default function ContextMapSidebar({
           onTokenThresholdsChange={setTokenThresholds}
           onUiLocaleChange={onUiLocaleChange}
           onUiFontChange={onUiFontChange}
+          onThemeModeChange={onThemeModeChange}
         />
       </div>
     </aside>

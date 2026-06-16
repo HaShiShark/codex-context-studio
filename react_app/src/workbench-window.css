@@ -1,8 +1,15 @@
 html,
 body,
 #root {
-  background: transparent !important;
-  background-color: transparent !important;
+  background: #f8f5f1 !important;
+  background-color: #f8f5f1 !important;
+}
+
+html[data-theme-mode="dark"],
+html[data-theme-mode="dark"] body,
+html[data-theme-mode="dark"] #root {
+  background: #211c18 !important;
+  background-color: #211c18 !important;
 }
 
 body {
@@ -33,12 +40,29 @@ body,
   position: relative;
   width: 100vw;
   height: 100dvh;
-  padding: 12px 24px 28px;
+  padding: 0;
   box-sizing: border-box;
   overflow: hidden;
-  background: transparent;
+  background: var(--bg-main);
   font-family: var(--ui-font-family) !important;
   font-size: var(--ui-font-size);
+}
+
+html[data-workbench-window-maximized="true"] .workbench-window-shell,
+html[data-workbench-window-maximized="true"] .workbench-window-shell.loading {
+  padding: 0;
+}
+
+html[data-workbench-window-maximized="true"] .workbench-window-frame {
+  border-radius: 0;
+}
+
+html[data-workbench-window-maximized="true"] .workbench-window-controls {
+  border-top-right-radius: 0;
+}
+
+html[data-workbench-window-maximized="true"] .workbench-window-control-btn.close {
+  border-top-right-radius: 0;
 }
 
 .workbench-window-shell :where(:not(i, .ph, .ph-light, .ph-bold, .codicon, svg, svg *)) {
@@ -66,9 +90,9 @@ body,
   height: 100%;
   overflow: hidden;
   isolation: isolate;
-  border-radius: var(--panel-radius, 12px);
+  border-radius: 0;
   background: var(--bg-main);
-  box-shadow: var(--shadow-window);
+  box-shadow: none;
 }
 
 .workbench-window-shell .right-panel {
@@ -298,9 +322,6 @@ html[data-workbench-window-moving] {
   --paper-sunken: rgba(255, 255, 255, 0.42);
   --divider: transparent;
   --shadow-soft: 0 18px 48px rgba(96, 61, 45, 0.14);
-  --shadow-window:
-    0 12px 28px rgba(96, 61, 45, 0.08),
-    0 2px 8px rgba(96, 61, 45, 0.04);
   --tool-surface: #f3eee8;
   --tool-surface-strong: #ebe3da;
   --tool-text: #3d302b;
@@ -959,6 +980,362 @@ html[data-workbench-window-moving] {
   background: transparent;
   border: 0;
   box-shadow: none;
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell {
+  --bg-main: #211c18;
+  --bg-input: #2b2520;
+  --bg-input-hover: #362d27;
+  --surface-bg: #2e2722;
+  --bg-capsule: #332b25;
+  --text-primary: #f0e7dd;
+  --text-secondary: #b9aa9d;
+  --text-muted: rgba(240, 231, 221, 0.5);
+  --border-color: rgba(239, 222, 208, 0.12);
+  --border-subtle: rgba(239, 222, 208, 0.08);
+  --item-hover: rgba(184, 121, 98, 0.14);
+  --scrollbar-thumb: rgba(222, 199, 181, 0.2);
+  --scrollbar-thumb-hover: rgba(222, 199, 181, 0.32);
+  --shadow-color: rgba(11, 8, 6, 0.36);
+  --app-contrast-filter: contrast(100%);
+  --an-theme: #b87962;
+  --an-theme-rgb: 184, 121, 98;
+  --accent-strong: #d09a82;
+  --accent-soft: rgba(184, 121, 98, 0.16);
+  --paper-raised: #302923;
+  --paper-soft: rgba(58, 50, 43, 0.62);
+  --paper-sunken: rgba(42, 36, 31, 0.72);
+  --divider: transparent;
+  --shadow-soft: 0 18px 48px rgba(96, 61, 45, 0.14);
+  --tool-surface: #27211d;
+  --tool-surface-strong: #342c26;
+  --tool-text: #eadfd4;
+  --tool-muted: rgba(234, 223, 212, 0.58);
+  color-scheme: dark;
+}
+
+html[data-theme-mode="dark"] .workbench-window-frame,
+html[data-theme-mode="dark"] .workbench-window-shell .right-panel,
+html[data-theme-mode="dark"] .workbench-window-shell .context-map-pane,
+html[data-theme-mode="dark"] .workbench-window-shell .extended-pane,
+html[data-theme-mode="dark"] .workbench-window-shell .context-map-header,
+html[data-theme-mode="dark"] .workbench-window-shell .extended-header,
+html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench,
+html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-list,
+html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-composer,
+html[data-theme-mode="dark"] .workbench-window-shell .extended-page-scroll {
+  background: var(--bg-main);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .right-panel {
+  box-shadow: none;
+  filter: none;
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .right-panel::before {
+  display: none;
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .context-map-title,
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-panel-title,
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-setting-title,
+html[data-theme-mode="dark"] .workbench-window-shell .suggestion-row-title,
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-tool-card-title,
+html[data-theme-mode="dark"] .workbench-window-shell .suggestion-card-value,
+html[data-theme-mode="dark"] .workbench-window-shell .usage-summary-item strong,
+html[data-theme-mode="dark"] .workbench-window-shell .usage-cost-row strong,
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-window-title {
+  color: var(--text-primary);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-panel-desc,
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-setting-desc,
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-setting-provider-hint,
+html[data-theme-mode="dark"] .workbench-window-shell .suggestion-card-label,
+html[data-theme-mode="dark"] .workbench-window-shell .suggestion-card-note,
+html[data-theme-mode="dark"] .workbench-window-shell .suggestion-row-body,
+html[data-theme-mode="dark"] .workbench-window-shell .suggestion-row-meta,
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-tool-card-desc,
+html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-empty-title,
+html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-empty-body,
+html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-reasoning,
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-settings-row-meta,
+html[data-theme-mode="dark"] .workbench-window-shell .map-metadata,
+html[data-theme-mode="dark"] .workbench-window-shell .map-preview-text,
+html[data-theme-mode="dark"] .workbench-window-shell .context-map-expand-icon,
+html[data-theme-mode="dark"] .workbench-window-shell .usage-summary-item span,
+html[data-theme-mode="dark"] .workbench-window-shell .usage-cost-row span,
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-language-btn,
+html[data-theme-mode="dark"] .workbench-window-shell .dropdown-item-left small {
+  color: var(--text-secondary);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .context-node-gutter {
+  color: rgba(185, 170, 157, 0.72);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .context-node-gutter:hover,
+html[data-theme-mode="dark"] .workbench-window-shell .context-node-gutter:focus-visible,
+html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.hovered .context-node-gutter,
+html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.expanded .context-node-gutter {
+  color: var(--accent-strong);
+  background: var(--item-hover);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.selected .context-node-gutter span,
+html[data-theme-mode="dark"] .workbench-window-shell .extended-tab.active,
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-language-btn.is-active,
+html[data-theme-mode="dark"] .workbench-window-shell .tool-btn-primary,
+html[data-theme-mode="dark"] .workbench-window-shell .send-btn {
+  color: #fff6ee;
+  background: var(--an-theme);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .extended-tab:hover,
+html[data-theme-mode="dark"] .workbench-window-shell .context-map-item-button:hover,
+html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.hovered .context-map-item-button,
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-language-btn:hover:not(:disabled),
+html[data-theme-mode="dark"] .workbench-window-shell .tool-btn-capsule:hover,
+html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-clear:hover,
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-window-button:hover,
+html[data-theme-mode="dark"] .workbench-window-control-btn:hover {
+  color: var(--text-primary);
+  background: var(--item-hover);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .context-map-item.expanded,
+html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.hovered .context-map-item.expanded,
+html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.selected .context-map-item-button,
+html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.selected .context-map-item.expanded,
+html[data-theme-mode="dark"] .workbench-window-shell .context-map-item.expanded .context-map-item-button,
+html[data-theme-mode="dark"] .workbench-window-shell .context-map-item.expanded .context-map-item-button:hover,
+html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.hovered .context-map-item.expanded .context-map-item-button,
+html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.selected .context-map-item.expanded .context-map-item-button,
+html[data-theme-mode="dark"] .workbench-window-shell .context-map-expanded-shell.open,
+html[data-theme-mode="dark"] .workbench-window-shell .context-map-expanded-content,
+html[data-theme-mode="dark"] .workbench-window-shell .context-map-item.assistant .map-bubble,
+html[data-theme-mode="dark"] .workbench-window-shell .context-map-item.user .map-bubble {
+  background: var(--paper-raised);
+  color: var(--text-primary);
+  box-shadow: 0 8px 20px rgba(11, 8, 6, 0.2);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-message.user .manual-workbench-bubble,
+html[data-theme-mode="dark"] .workbench-window-shell .message.user .content,
+html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-message.assistant .manual-workbench-bubble,
+html[data-theme-mode="dark"] .workbench-window-shell .message.an .content {
+  color: var(--text-primary);
+  background: var(--paper-raised);
+  box-shadow: 0 8px 20px rgba(11, 8, 6, 0.2);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .context-map-expanded-content,
+html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-user-text,
+html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-message .markdown-body,
+html[data-theme-mode="dark"] .workbench-window-shell .markdown-body {
+  color: var(--text-primary);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .suggestion-card,
+html[data-theme-mode="dark"] .workbench-window-shell .suggestion-row,
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-setting-card,
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-tool-card,
+html[data-theme-mode="dark"] .workbench-window-shell .usage-summary-item,
+html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-composer-shell,
+html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-reference-chip,
+html[data-theme-mode="dark"] .workbench-window-shell .message-attachment-card,
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-settings-panel {
+  border: 0;
+  background: var(--paper-raised);
+  color: var(--text-primary);
+  box-shadow: 0 8px 22px rgba(11, 8, 6, 0.14);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .usage-summary-item,
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-tool-card,
+html[data-theme-mode="dark"] .workbench-window-shell .suggestion-row {
+  background: var(--paper-soft);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-settings-row + .workbench-settings-row {
+  border-top-color: rgba(239, 222, 208, 0.07);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .settings-input,
+html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-input,
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-language-toggle {
+  color: var(--text-primary);
+  border-color: transparent;
+  background: var(--bg-input);
+  color-scheme: dark;
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .settings-input:focus {
+  border-color: transparent;
+  box-shadow: 0 0 0 2px rgba(184, 121, 98, 0.24);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-input::placeholder,
+html[data-theme-mode="dark"] .workbench-window-shell .settings-input::placeholder {
+  color: var(--text-muted);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .tool-btn-capsule,
+html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-clear,
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-window-button {
+  border: 0;
+  color: var(--text-secondary);
+  background: rgba(58, 50, 43, 0.58);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .tool-btn-primary:hover,
+html[data-theme-mode="dark"] .workbench-window-shell .send-btn:hover {
+  color: #fff6ee;
+  background: #c98d75;
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-clear,
+html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-send {
+  box-shadow: none;
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .dropdown-menu {
+  border: 0;
+  background: #2d261f;
+  color: var(--text-primary);
+  box-shadow: 0 14px 34px rgba(11, 8, 6, 0.34);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .dropdown-item {
+  color: var(--text-primary);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .dropdown-item:hover,
+html[data-theme-mode="dark"] .workbench-window-shell .dropdown-item.selected {
+  background: var(--item-hover);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-tool-status.available,
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-setting-feedback {
+  color: #a9c09a;
+  background: transparent;
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-tool-status.preview {
+  color: #d0ad75;
+  background: rgba(208, 173, 117, 0.12);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-setting-feedback.error,
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-window-error,
+html[data-theme-mode="dark"] .workbench-window-shell .markdown-mermaid-error {
+  color: #e09b8d;
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .markdown-body a,
+html[data-theme-mode="dark"] .workbench-window-shell .message-attachment-open,
+html[data-theme-mode="dark"] .workbench-window-shell .thinking-inline-text,
+html[data-theme-mode="dark"] .workbench-window-shell .reasoning-block.streaming .reasoning-block-label {
+  color: var(--accent-strong);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .inline-tool-call-count,
+html[data-theme-mode="dark"] .workbench-window-shell .inline-tool-summary,
+html[data-theme-mode="dark"] .workbench-window-shell .inline-tool-command-preview,
+html[data-theme-mode="dark"] .workbench-window-shell .inline-tool-detail-text,
+html[data-theme-mode="dark"] .workbench-window-shell .reasoning-block,
+html[data-theme-mode="dark"] .workbench-window-shell .reasoning-block-toggle,
+html[data-theme-mode="dark"] .workbench-window-shell .reasoning-block-content {
+  color: var(--text-secondary);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .inline-tool-call-count:hover,
+html[data-theme-mode="dark"] .workbench-window-shell .inline-tool-call-count.open,
+html[data-theme-mode="dark"] .workbench-window-shell .inline-tool-summary:hover,
+html[data-theme-mode="dark"] .workbench-window-shell .inline-tool-summary.open,
+html[data-theme-mode="dark"] .workbench-window-shell .reasoning-block-toggle:hover,
+html[data-theme-mode="dark"] .workbench-window-shell .reasoning-block.open .reasoning-block-toggle,
+html[data-theme-mode="dark"] .workbench-window-shell .inline-tool-summary:hover .inline-tool-command-preview,
+html[data-theme-mode="dark"] .workbench-window-shell .inline-tool-summary.open .inline-tool-command-preview {
+  color: var(--text-primary);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .markdown-alert,
+html[data-theme-mode="dark"] .workbench-window-shell .markdown-table-wrap {
+  border: 0;
+  background: rgba(58, 50, 43, 0.54);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .markdown-body blockquote {
+  color: var(--text-secondary);
+  border-left-color: rgba(184, 121, 98, 0.62);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .markdown-body :not(pre) > code {
+  color: #e1b09b;
+  background: rgba(184, 121, 98, 0.14);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .markdown-code-block,
+html[data-theme-mode="dark"] .workbench-window-shell .markdown-mermaid,
+html[data-theme-mode="dark"] .workbench-window-shell .markdown-mermaid-fallback,
+html[data-theme-mode="dark"] .workbench-window-shell .tool-shell-box,
+html[data-theme-mode="dark"] .workbench-window-shell .tool-json-box {
+  border: 0;
+  background: var(--tool-surface);
+  box-shadow: inset 0 0 0 1px rgba(239, 222, 208, 0.035);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .markdown-code-block-bar,
+html[data-theme-mode="dark"] .workbench-window-shell .tool-shell-box-label,
+html[data-theme-mode="dark"] .workbench-window-shell .tool-json-box-label {
+  color: var(--tool-muted);
+  background: var(--tool-surface-strong);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .tool-shell-command,
+html[data-theme-mode="dark"] .workbench-window-shell .tool-shell-scroll pre,
+html[data-theme-mode="dark"] .workbench-window-shell .tool-json-scroll pre,
+html[data-theme-mode="dark"] .workbench-window-shell .markdown-code-block code.hljs {
+  color: var(--tool-text);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .tool-shell-scroll,
+html[data-theme-mode="dark"] .workbench-window-shell .tool-json-scroll,
+html[data-theme-mode="dark"] .workbench-window-shell .extended-page-scroll,
+html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-list {
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .context-minimap-bar.weight-light {
+  background: #76906e;
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .context-minimap-bar.weight-medium {
+  background: #b8915d;
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .context-minimap-bar.weight-heavy {
+  background: #b66d60;
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .context-minimap-bar.weight-neutral {
+  background: rgba(222, 199, 181, 0.22);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .context-minimap-viewport {
+  border: 0;
+  background: rgba(184, 121, 98, 0.16);
+  box-shadow: none;
+}
+
+html[data-theme-mode="dark"] .workbench-window-control-btn {
+  color: rgba(240, 231, 221, 0.66);
+}
+
+html[data-theme-mode="dark"] .workbench-window-control-btn.close:hover {
+  color: #fff6ee;
+  background: #a94c43;
 }
 
 @media (max-width: 920px) {
