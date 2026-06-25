@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -95,6 +96,7 @@ export default function ContextMapSidebar({
   const scrollRef = useRef<HTMLDivElement>(null);
   const minimapRef = useRef<HTMLDivElement>(null);
   const minimapScrollRef = useRef<HTMLDivElement>(null);
+  const minimapViewportRef = useRef<HTMLDivElement>(null);
   const nodeRefs = useRef<Array<HTMLDivElement | null>>([]);
   const minimapDragRef = useRef<{
     offsetPx: number;
@@ -109,10 +111,10 @@ export default function ContextMapSidebar({
     hasMoved: boolean;
   } | null>(null);
   const selectionAutoScrollFrameRef = useRef<number | null>(null);
+  const minimapScrollFrameRef = useRef<number | null>(null);
   const lastContentSignatureRef = useRef('');
   const [expandedIndexes, setExpandedIndexes] = useState<Set<number>>(new Set());
   const [selectedIndexes, setSelectedIndexes] = useState<Set<number>>(new Set());
-  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const [nodeLayouts, setNodeLayouts] = useState<NodeLayout[]>([]);
   const [previewTruncatedIndexes, setPreviewTruncatedIndexes] = useState<Set<number>>(new Set());
   const [scrollMetrics, setScrollMetrics] = useState<ScrollMetrics>(DEFAULT_SCROLL_METRICS);
@@ -130,8 +132,9 @@ export default function ContextMapSidebar({
     [messages, nodeMeta, tokenThresholds],
   );
 
+  const currentScrollTop = scrollRef.current?.scrollTop ?? scrollMetrics.scrollTop;
   const scrollRange = Math.max(scrollMetrics.scrollHeight - scrollMetrics.clientHeight, 0);
-  const scrollRatio = scrollRange <= 0 ? 0 : scrollMetrics.scrollTop / scrollRange;
+  const scrollRatio = scrollRange <= 0 ? 0 : currentScrollTop / scrollRange;
   const fallbackMinimapBars: MinimapBarLayout[] = useMemo(
     () => buildFallbackMinimapBars(messages, messageStats),
     [messageStats, messages],
@@ -180,10 +183,49 @@ export default function ContextMapSidebar({
     ],
   );
 
+  const getMinimapViewportTopPx = useCallback((scrollTop: number) => {
+    const container = scrollRef.current;
+    const clientHeight = container?.clientHeight || scrollMetrics.clientHeight || 1;
+    const scrollHeight = container?.scrollHeight || scrollMetrics.scrollHeight || 1;
+    const range = Math.max(scrollHeight - clientHeight, 0);
+    const ratio = range <= 0 ? 0 : scrollTop / range;
+    return MINIMAP_CONTENT_PADDING_PX + ratio * minimapViewportTravelPx;
+  }, [minimapViewportTravelPx, scrollMetrics.clientHeight, scrollMetrics.scrollHeight]);
+
+  const applyMinimapViewport = useCallback((scrollTop?: number) => {
+    const container = scrollRef.current;
+    const viewport = minimapViewportRef.current;
+    const nextScrollTop = scrollTop ?? container?.scrollTop ?? scrollMetrics.scrollTop;
+    const nextViewportTopPx = getMinimapViewportTopPx(nextScrollTop);
+
+    if (viewport) {
+      viewport.style.transform = `translateY(${nextViewportTopPx}px)`;
+    }
+
+    const minimapScroller = minimapScrollRef.current;
+    if (minimapScroller) {
+      const maxScroll = Math.max(minimapContentHeightPx - minimapScroller.clientHeight, 0);
+      minimapScroller.scrollTop = Math.min(
+        Math.max(nextViewportTopPx - MINIMAP_VIEWPORT_KEEP_OFFSET_PX, 0),
+        maxScroll,
+      );
+    }
+  }, [getMinimapViewportTopPx, minimapContentHeightPx, scrollMetrics.scrollTop]);
+
+  const scheduleMinimapViewportSync = useCallback(() => {
+    if (minimapScrollFrameRef.current !== null) {
+      return;
+    }
+
+    minimapScrollFrameRef.current = window.requestAnimationFrame(() => {
+      minimapScrollFrameRef.current = null;
+      applyMinimapViewport();
+    });
+  }, [applyMinimapViewport]);
+
   useEffect(() => {
     setExpandedIndexes(new Set());
     setSelectedIndexes(new Set());
-    setHoveredIndex(null);
     selectionDragRef.current = null;
     minimapDragRef.current = null;
     nodeRefs.current = [];
@@ -207,7 +249,6 @@ export default function ContextMapSidebar({
     lastContentSignatureRef.current = contentSignature;
     setExpandedIndexes(new Set());
     setSelectedIndexes(new Set());
-    setHoveredIndex(null);
     selectionDragRef.current = null;
     minimapDragRef.current = null;
     nodeRefs.current = [];
@@ -281,9 +322,19 @@ export default function ContextMapSidebar({
       ));
     }
 
-    const frameId = window.requestAnimationFrame(measureNodes);
+    let frameId: number | null = null;
+    const scheduleMeasureNodes = () => {
+      if (frameId !== null) {
+        return;
+      }
+
+      frameId = window.requestAnimationFrame(() => {
+        frameId = null;
+        measureNodes();
+      });
+    };
     const resizeObserver =
-      typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => measureNodes()) : null;
+      typeof ResizeObserver !== 'undefined' ? new ResizeObserver(scheduleMeasureNodes) : null;
 
     if (scrollRef.current && resizeObserver) {
       resizeObserver.observe(scrollRef.current);
@@ -295,11 +346,14 @@ export default function ContextMapSidebar({
       }
     });
 
-    window.addEventListener('resize', measureNodes);
+    scheduleMeasureNodes();
+    window.addEventListener('resize', scheduleMeasureNodes);
 
     return () => {
-      window.cancelAnimationFrame(frameId);
-      window.removeEventListener('resize', measureNodes);
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+      }
+      window.removeEventListener('resize', scheduleMeasureNodes);
       resizeObserver?.disconnect();
     };
   }, [messages.length, expandedIndexes, stage]);
@@ -323,27 +377,17 @@ export default function ContextMapSidebar({
     }
 
     syncScrollMetrics();
-    activeContainer.addEventListener('scroll', syncScrollMetrics, { passive: true });
+    applyMinimapViewport(activeContainer.scrollTop);
+    activeContainer.addEventListener('scroll', scheduleMinimapViewportSync, { passive: true });
 
     return () => {
-      activeContainer.removeEventListener('scroll', syncScrollMetrics);
+      activeContainer.removeEventListener('scroll', scheduleMinimapViewportSync);
     };
-  }, [messages.length, stage]);
+  }, [applyMinimapViewport, messages.length, scheduleMinimapViewportSync, stage]);
 
   useEffect(() => {
-    const minimapScroller = minimapScrollRef.current;
-    if (!minimapScroller) {
-      return;
-    }
-
-    const maxScroll = Math.max(minimapContentHeightPx - minimapScroller.clientHeight, 0);
-    const desiredScrollTop = Math.min(
-      Math.max(minimapViewportTopPx - MINIMAP_VIEWPORT_KEEP_OFFSET_PX, 0),
-      maxScroll,
-    );
-
-    minimapScroller.scrollTop = desiredScrollTop;
-  }, [minimapContentHeightPx, minimapViewportTopPx, stage, messages.length]);
+    applyMinimapViewport();
+  }, [applyMinimapViewport, minimapContentHeightPx, minimapViewportHeightPx, stage, messages.length]);
 
   useEffect(() => {
     function handleWindowMouseMove(event: MouseEvent) {
@@ -371,10 +415,13 @@ export default function ContextMapSidebar({
       if (selectionAutoScrollFrameRef.current !== null) {
         window.cancelAnimationFrame(selectionAutoScrollFrameRef.current);
       }
+      if (minimapScrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(minimapScrollFrameRef.current);
+      }
     };
   }, []);
 
-  function toggleMessage(index: number) {
+  const toggleMessage = useCallback((index: number) => {
     setExpandedIndexes((previous) => {
       const next = new Set(previous);
       if (next.has(index)) {
@@ -384,11 +431,11 @@ export default function ContextMapSidebar({
       }
       return next;
     });
-  }
+  }, []);
 
-  function setNodeRef(index: number, node: HTMLDivElement | null) {
+  const setNodeRef = useCallback((index: number, node: HTMLDivElement | null) => {
     nodeRefs.current[index] = node;
-  }
+  }, []);
 
   function getNodeIndexFromClientY(clientY: number) {
     const container = scrollRef.current;
@@ -547,7 +594,7 @@ export default function ContextMapSidebar({
     stopSelectionAutoScroll();
   }
 
-  function handleGutterMouseDown(index: number, event: ReactMouseEvent<HTMLButtonElement>) {
+  const handleGutterMouseDown = useCallback((index: number, event: ReactMouseEvent<HTMLButtonElement>) => {
     if (event.button !== 0) {
       return;
     }
@@ -568,9 +615,9 @@ export default function ContextMapSidebar({
       mode: additive ? 'add' : 'replace',
       hasMoved: false,
     };
-  }
+  }, [selectableIndexes, selectedIndexes]);
 
-  function handleGutterKeyDown(index: number, event: ReactKeyboardEvent<HTMLButtonElement>) {
+  const handleGutterKeyDown = useCallback((index: number, event: ReactKeyboardEvent<HTMLButtonElement>) => {
     if (event.key !== 'Enter' && event.key !== ' ') {
       return;
     }
@@ -600,9 +647,9 @@ export default function ContextMapSidebar({
 
       return new Set([index]);
     });
-  }
+  }, [selectableIndexes]);
 
-  function scrollToNode(index: number) {
+  const scrollToNode = useCallback((index: number) => {
     const container = scrollRef.current;
     const layout = nodeLayouts[index];
 
@@ -615,7 +662,7 @@ export default function ContextMapSidebar({
       top: nextTop,
       behavior: 'smooth',
     });
-  }
+  }, [nodeLayouts]);
 
   function syncScrollFromMinimap(clientY: number) {
     const dragState = minimapDragRef.current;
@@ -641,6 +688,7 @@ export default function ContextMapSidebar({
           Math.max(container.scrollHeight - container.clientHeight, 0);
 
     container.scrollTop = nextScrollTop;
+    applyMinimapViewport(nextScrollTop);
   }
 
   function handleMinimapMouseDown(event: ReactMouseEvent<HTMLDivElement>) {
@@ -655,11 +703,12 @@ export default function ContextMapSidebar({
 
     const rect = minimap.getBoundingClientRect();
     const pointerContentY = minimapScroller.scrollTop + event.clientY - rect.top;
+    const currentViewportTopPx = getMinimapViewportTopPx(scrollRef.current?.scrollTop ?? scrollMetrics.scrollTop);
 
     const target = event.target as HTMLElement;
     const pressedViewport = target.closest('.context-minimap-viewport');
     const offsetPx = pressedViewport
-      ? pointerContentY - minimapViewportTopPx
+      ? pointerContentY - currentViewportTopPx
       : minimapViewportHeightPx / 2;
     minimapDragRef.current = {
       offsetPx,
@@ -707,11 +756,9 @@ export default function ContextMapSidebar({
             messageStats={messageStats}
             expandedIndexes={expandedIndexes}
             selectedIndexes={selectedIndexes}
-            hoveredIndex={hoveredIndex}
             previewTruncatedIndexes={previewTruncatedIndexes}
             uiLocale={uiLocale}
             scrollRef={scrollRef}
-            setHoveredIndex={setHoveredIndex}
             setNodeRef={setNodeRef}
             onToggleMessage={toggleMessage}
             onJumpToMessage={onJumpToMessage}
@@ -725,14 +772,13 @@ export default function ContextMapSidebar({
               messageStats={messageStats}
               minimapBars={minimapBars}
               selectedIndexes={selectedIndexes}
-              hoveredIndex={hoveredIndex}
               uiLocale={uiLocale}
               minimapContentHeightPx={minimapContentHeightPx}
               minimapViewportTopPx={minimapViewportTopPx}
               minimapViewportHeightPx={minimapViewportHeightPx}
               minimapRef={minimapRef}
               minimapScrollRef={minimapScrollRef}
-              setHoveredIndex={setHoveredIndex}
+              minimapViewportRef={minimapViewportRef}
               onScrollToNode={scrollToNode}
               onMinimapMouseDown={handleMinimapMouseDown}
             />

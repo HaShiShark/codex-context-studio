@@ -51,8 +51,6 @@ from backend.web_context import (
     blocks_from_text_and_tools,
     consume_context_edit_marker,
     codex_local_session_transcript,
-    context_pending_restore_payload,
-    context_revision_summaries,
     context_workbench_suggestions_payload,
     editable_context_node_count,
     message_blocks_have_reasoning,
@@ -321,8 +319,7 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
                 "session": self.app_state.session_payload(session),
                 "conversation": sanitize_value(session.transcript),
                 "context_workbench_history": sanitize_value(session.context_workbench_history),
-                "context_revision_history": context_revision_summaries(session.context_revisions),
-                "pending_context_restore": context_pending_restore_payload(session.pending_context_restore),
+
                 **self.app_state.sidebar_payload(),
             }
         )
@@ -362,8 +359,7 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
                 "session": self.app_state.session_payload(session),
                 "conversation": sanitize_value(session.transcript),
                 "context_workbench_history": sanitize_value(session.context_workbench_history),
-                "context_revision_history": context_revision_summaries(session.context_revisions),
-                "pending_context_restore": context_pending_restore_payload(session.pending_context_restore),
+
                 **self.app_state.sidebar_payload(),
             }
         )
@@ -870,7 +866,7 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
 
         request_id = self.app_state.acquire_session_request(session, "context")
         try:
-            conversation, history, revisions, pending_restore = self.app_state.restore_context_revision(
+            conversation, history = self.app_state.restore_context_revision(
                 session,
                 revision_id,
             )
@@ -879,8 +875,6 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
                 {
                     "conversation": conversation,
                     "history": history,
-                    "revisions": revisions,
-                    "pending_restore": pending_restore,
                     "proxy_override": proxy_override,
                 }
             )
@@ -896,7 +890,7 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
         except (TypeError, ValueError) as exc:
             raise ValueError("message_index must be a number") from exc
 
-        conversation, history, revisions, pending_restore = self.app_state.delete_context_workbench_history_message(
+        conversation, history = self.app_state.delete_context_workbench_history_message(
             session,
             message_index=message_index,
         )
@@ -904,23 +898,19 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
             {
                 "conversation": conversation,
                 "history": history,
-                "revisions": revisions,
-                "pending_restore": pending_restore,
             }
         )
         return
 
     def _handle_context_workbench_history_clear_post(self, payload: dict[str, object]) -> None:
         session = self.app_state.get_session(payload.get("session_id"))
-        conversation, history, revisions, pending_restore = self.app_state.clear_context_workbench_history(
+        conversation, history = self.app_state.clear_context_workbench_history(
             session,
         )
         self._send_json(
             {
                 "conversation": conversation,
                 "history": history,
-                "revisions": revisions,
-                "pending_restore": pending_restore,
             }
         )
         return
@@ -929,14 +919,12 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
         session = self.app_state.get_session(payload.get("session_id"))
         request_id = self.app_state.acquire_session_request(session, "context")
         try:
-            conversation, history, revisions, pending_restore = self.app_state.undo_context_restore(session)
+            conversation, history = self.app_state.undo_context_restore(session)
             proxy_override = safe_sync_proxy_session_override_if_known(session, conversation)
             self._send_json(
                 {
                     "conversation": conversation,
                     "history": history,
-                    "revisions": revisions,
-                    "pending_restore": pending_restore,
                     "proxy_override": proxy_override,
                 }
             )

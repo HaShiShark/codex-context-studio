@@ -553,7 +553,7 @@ class AppState:
         session: SessionState,
         *,
         message_index: int,
-    ) -> tuple[list[dict[str, object]], list[dict[str, str]], list[dict[str, object]], dict[str, object] | None]:
+    ) -> tuple[list[dict[str, object]], list[dict[str, str]]]:
         with self.lock:
             normalized_history = normalize_context_chat_history(session.context_workbench_history)
             if not normalized_history:
@@ -574,14 +574,12 @@ class AppState:
             return (
                 sanitize_value(session.transcript),
                 sanitize_value(session.context_workbench_history),
-                context_revision_summaries(session.context_revisions),
-                None,
             )
 
     def clear_context_workbench_history(
         self,
         session: SessionState,
-    ) -> tuple[list[dict[str, object]], list[dict[str, str]], list[dict[str, object]], dict[str, object] | None]:
+    ) -> tuple[list[dict[str, object]], list[dict[str, str]]]:
         with self.lock:
             session.context_workbench_history = []
             session.pending_context_restore = None
@@ -590,8 +588,6 @@ class AppState:
             return (
                 sanitize_value(session.transcript),
                 [],
-                context_revision_summaries(session.context_revisions),
-                None,
             )
 
     def apply_context_workbench_mutation(
@@ -631,7 +627,7 @@ class AppState:
         self,
         session: SessionState,
         revision_id: str,
-    ) -> tuple[list[dict[str, object]], list[dict[str, str]], list[dict[str, object]], dict[str, object]]:
+    ) -> tuple[list[dict[str, object]], list[dict[str, str]]]:
         with self.lock:
             safe_revision_id = sanitize_text(revision_id).strip()
             target = next(
@@ -671,14 +667,12 @@ class AppState:
             return (
                 sanitize_value(session.transcript),
                 sanitize_value(session.context_workbench_history),
-                context_revision_summaries(session.context_revisions),
-                context_pending_restore_payload(session.pending_context_restore),
             )
 
     def undo_context_restore(
         self,
         session: SessionState,
-    ) -> tuple[list[dict[str, object]], list[dict[str, str]], list[dict[str, object]], dict[str, object] | None]:
+    ) -> tuple[list[dict[str, object]], list[dict[str, str]]]:
         with self.lock:
             pending_restore = session.pending_context_restore
             if not isinstance(pending_restore, dict):
@@ -699,8 +693,6 @@ class AppState:
             return (
                 sanitize_value(session.transcript),
                 sanitize_value(session.context_workbench_history),
-                context_revision_summaries(session.context_revisions),
-                None,
             )
 
     def append_turn(

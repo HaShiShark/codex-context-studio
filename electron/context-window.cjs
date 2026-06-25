@@ -330,7 +330,7 @@ async function startBackend(root) {
   }
 
   writeLog('starting backend');
-  const serverCommand = pythonServerCommand(root, path.join('backend', 'web_server.py'), 'hash-web-server');
+  const serverCommand = pythonServerCommand(root, path.join('backend', 'proxy_server.py'), 'hash-web-server');
   backendProcess = spawn(serverCommand.command, serverCommand.args, {
     cwd: root,
     env: cleanEnv({
@@ -426,8 +426,10 @@ async function warmContextWorkbenchModels() {
 function iconPath(root) {
   const iconName = process.platform === 'win32' ? 'hash-icon.ico' : 'hash-icon.png';
   const localIcon = path.join(root, 'electron', 'assets', iconName);
-  const copiedIcon = path.join(root, 'assets', 'hash-icon.png');
-  return fs.existsSync(localIcon) ? localIcon : copiedIcon;
+  if (fs.existsSync(localIcon)) return localIcon;
+  const localPng = path.join(root, 'electron', 'assets', 'hash-icon.png');
+  if (fs.existsSync(localPng)) return localPng;
+  return path.join(root, 'assets', 'hash-icon.png');
 }
 
 function normalizeWindowBounds(bounds) {

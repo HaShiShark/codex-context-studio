@@ -145,7 +145,11 @@ def build_context_chat_runtime(
     safe_selected_indexes = normalize_selected_node_indexes(selected_indexes or [], len(session.transcript))
     draft = ContextWorkbenchDraft(normalize_transcript(session.transcript), safe_selected_indexes)
     snapshot = build_context_workspace_snapshot(session, selected_indexes=safe_selected_indexes)
-    tool_registry = ContextWorkbenchToolRegistry(draft)
+    tool_registry = ContextWorkbenchToolRegistry(
+        draft,
+        session_title=sanitize_text(session.title or ""),
+        session_scope=sanitize_text(session.scope or ""),
+    )
     history = prepare_context_chat_history_for_model(session.context_workbench_history)
 
     context_input: list[dict[str, Any]] = []
@@ -180,71 +184,52 @@ def build_context_chat_runtime(
     request_model = sanitize_text(
         session.agent.settings.context_workbench_model or session.agent.settings.model
     ).strip() or "gpt-5.5"
-    instructions = "\n".join(
-        [
-            "你是主 Codex 对话的上下文维护助手，运行在右侧手动页中。",
-            "",
-            "你的目标是维护、查看、压缩、删除或改写当前主 Codex 上下文。",
-            "不要搞混你自己的右侧手动页聊天历史和主 Codex 的聊天历史。",
-            "不要继续进行主 Codex 的任务；用户让你处理的是“当前主 Codex 上下文”。",
-            "",
-            "你会看到一条最新的 developer 消息，标题为：",
-            "# 当前主 Codex 上下文快照",
-            "",
-            "这份快照是本轮唯一可信的主 Codex 上下文来源。",
-            "右侧手动页历史只是你和用户关于上下文维护的对话，可能提到旧节点、旧内容或旧选择；定位节点、回答当前上下文、执行编辑时，都以最新快照为准。",
-            "",
-            "快照中的 Node # 只在当前这份快照中有效。",
-            "user 节点通常在快照里给全文。",
-            "assistant 节点通常只给首句预览；预览后面的内容你不可见。",
-            "如果任务需要理解、压缩或精确修改 assistant 节点的完整内容，先调用 get_context_node_details。",
-            "",
-            "工具能力：",
-            "",
-            "- get_context_node_details(node_numbers)",
-            "  展开一个或多个节点的完整详情。",
-            "  返回 node_detail_list.nodes，完整内容只在每个 node 的 blocks 内出现一次；文本块用 content，工具块用 arguments/output。"
-            "  block 上会给 item_number/item_ref，精细编辑时用这些引用回写当前 transcript。",
-            "",
-            "- compress_context_nodes(node_numbers, summary_markdown, title?, style?)",
-            "  用一个摘要节点替换一个或多个完整节点。",
-            "  返回 mutation_delta，只描述本次变化，不会重复返回完整快照。",
-            "  适合压缩一段讨论、一个主题、一个范围内的节点，或包含工具输出的大 assistant 节点。",
-            "",
-            "- delete_context_nodes(node_numbers, reason?)",
-            "  删除一个或多个完整节点。",
-            "  返回 mutation_delta。",
-            "  删除通常不需要先展开详情，除非用户要求你先核实内容。",
-            "",
-            "- delete_context_item(node_numbers, item_number / item_numbers, reason?)",
-            "- replace_context_item(node_numbers, item_number, replacement_item, reason?)",
-            "- compress_context_item(node_numbers, item_number, compressed_content, style?)",
-            "  这些是精细 item 级编辑工具。",
-            "  只在用户明确要求处理某个 content item、某段 assistant 文本、某个工具调用或某个工具输出时使用。",
-            "  一般先 get_context_node_details，确认 item # 后再调用。",
-            "  默认不要把模糊的压缩/删除请求理解成 item 级编辑。",
-            "",
-            "- confirm_working_snapshot()",
-            "  所有计划内编辑完成后，用它确认最终 working snapshot。",
-            "  返回 final_working_snapshot。",
-            "",
-            "- set_context_revision_summary(summary)",
-            "  编辑完成并确认后，保存一句恢复页可读的变更摘要。",
-            "  摘要要说明改了什么具体上下文内容，不要只说“修改了节点”。",
-            "",
-            "推荐工作方式：",
-            "",
-            "- 用户只是问“现在看到什么 / 有哪些节点 / 选中了什么”：优先基于快照直接回答，不必展开详情。",
-            "- 用户说“删除 3-50”“删掉节点 3 到 50”：把它理解为 Node #3 到 Node #50 的范围，通常直接 delete_context_nodes。",
-            "- 用户说“压缩 3-50”“压缩这些节点”：把它理解为节点级压缩；如果范围内包含 assistant 节点，先 get_context_node_details，再 compress_context_nodes。",
-            "- 用户说“压缩有关前端的讨论”“删掉关于某主题的部分”：先根据快照定位相关节点；能判断就直接处理，范围不明确才简短确认。",
-            "- 用户说“压缩这个 assistant 节点”“压缩工具输出很多的那轮”：先 get_context_node_details，再基于完整内容写 summary_markdown。",
-            "- 用户说“只删某个工具输出 / 改某个工具调用 / 保留节点但缩短某个 item”：走 item 级工具。",
-            "- 模糊请求默认按节点级或主题级的大方向处理，不要过早拆到 content item。",
-            "- 选择最少、最直接的工具路径。不要重复展开同一个节点，不要反复确认显而易见的范围，不要啰嗦解释内部流程。",
-            "- 如果工具返回 target_resolution 或 item_resolution，说明目标不明确；根据返回信息重新明确 node_numbers 或 item #，必要时再问用户。",
-            "- 只要本轮做过编辑，结束前先 confirm_working_snapshot，再 set_context_revision_summary，最后用用户的语言简短说明结果。",
-        ]
+    instructions = (
+        "你是主 Codex 对话的上下文维护助手，运行在右侧手动页中。\n"
+        "目标：维护、查看、压缩或删除主 Codex 的上下文节点。\n"
+        "不要搞混你自己的右侧手动页聊天历史和主 Codex 的聊天历史。\n"
+        "不要继续进行主 Codex 的任务；用户让你处理的是当前主 Codex 上下文。\n"
+        "\n"
+        "你会收到一条 developer 消息，标题为：# 当前主 Codex 上下文快照\n"
+        "这份快照是本轮唯一可信来源。右侧手动页历史仅供参考，节点编号以最新快照为准。\n"
+        "\n"
+        "快照规则：\n"
+        "- user/developer 节点已给全文，assistant 节点只给首句预览。\n"
+        "- 处理 assistant 节点内容前，先用 get_nodes 展开完整 items。\n"
+        "- 纯删除不需要展开。\n"
+        "\n"
+        "工具：\n"
+        "\n"
+        "- get_nodes(node_numbers)\n"
+        "  展开一个或多个节点的完整 item 结构。\n"
+        "  只对 assistant 节点调用；非 assistant 节点全文已在快照中。\n"
+        "  返回 nodes 数组，每个节点含 items 列表，每个 item 有 item_number 和 content/arguments/output。\n"
+        "\n"
+        "- write_nodes(delete?, inserts?)\n"
+        "  节点级批量操作：删除和/或插入节点，一次调用完成所有变更。\n"
+        "  delete：要删除的节点编号列表，引用初始快照，可不连续。\n"
+        "  inserts：[{after: 锁点编号, role: user|assistant|developer, content: 新内容}]\n"
+        "    after 引用初始快照编号；即使该节点也被删除，位置游标仍然有效；after:0 = 插在最前。\n"
+        "  返回 updated_snapshot，直接用它向用户确认结果。无需额外 confirm 步骤。\n"
+        "  示例（删除 #5-7 替换为摘要，同时纯删 #8）：\n"
+        "  {delete:[5,6,7,8], inserts:[{after:7, role:assistant, content:5-7讨论了X...}]}\n"
+        "\n"
+        "- write_items(node_number, delete?, inserts?)\n"
+        "  节点内 item 级精细操作。先 get_nodes 拿到 item 编号，再调此工具。\n"
+        "  delete：item 编号列表；inserts：[{after: item编号, content: 新内容, kind?: text|tool}]。\n"
+        "  返回简短确认，不返回节点内容。\n"
+        "\n"
+        "推荐工作流：\n"
+        "1. 纯删除任意节点：直接 write_nodes，无需展开。\n"
+        "2. 压缩/替换 assistant 节点：先 get_nodes，再 write_nodes 一次完成所有变更。\n"
+        "3. 删某个 tool 输出：先 get_nodes，再 write_items。\n"
+        "4. write_nodes 返回 updated_snapshot 后直接回复用户，不需要额外确认。\n"
+        "\n"
+        "原则：\n"
+        "- 选最短工具路径，不重复展开，不反复确认显而易见的范围。\n"
+        "- 对于删除 3-50、压缩这些节点等范围指令，直接处理，不过度拆分。\n"
+        "- 模糊请求按节点级/主题级处理，不要默认拆到 item 级。\n"
+        "- 只用用户的语言简短说明操作结果。"
     )
     return instructions, request_model, draft, tool_registry, context_input
 
@@ -660,7 +645,7 @@ def run_context_chat_turn(
     context_agent = build_context_workbench_agent(session.agent.settings, context_provider_id)
     tool_events: list[ToolEvent] = []
     readonly_tool_result_cache: dict[str, str] = {}
-    readonly_tool_cache_names = {"get_context_node_details", "confirm_working_snapshot"}
+    readonly_tool_cache_names = {"get_nodes"}
 
     round_count = 0
     while True:
@@ -859,7 +844,7 @@ def build_context_chat_response_payload(
 ) -> dict[str, object]:
     proxy_override: dict[str, object] | None = None
     if draft.has_changes:
-        conversation, revisions, pending_restore = app_state.apply_context_workbench_mutation(
+        conversation, _revisions, _pending = app_state.apply_context_workbench_mutation(
             session,
             transcript=draft.committed_transcript(),
             revision_label=draft.revision_label(),
@@ -871,8 +856,6 @@ def build_context_chat_response_payload(
             answer = append_proxy_override_warning(answer, sanitize_text(proxy_override.get("error") or ""))
     else:
         conversation = sanitize_value(session.transcript)
-        revisions = context_revision_summaries(session.context_revisions)
-        pending_restore = None
 
     history = app_state.append_context_workbench_turn(
         session,
@@ -884,8 +867,6 @@ def build_context_chat_response_payload(
         "used_model": used_model,
         "history": history,
         "conversation": conversation,
-        "revisions": revisions,
-        "pending_restore": pending_restore,
     }
     if tool_events is not None:
         payload["tool_events"] = [serialize_tool_event(event) for event in tool_events]

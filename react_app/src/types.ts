@@ -273,16 +273,15 @@ export interface SettingsDraft {
 }
 
 export interface InitPayload {
-  project_name?: string;
-  project_root?: string;
-  default_model?: string;
-  models?: string[];
-  reasoning_options?: ReasoningOption[];
-  settings?: OpenAISettings;
-  projects?: ProjectSummary[];
-  chat_sessions?: SessionSummary[];
-  conversations?: Record<string, TranscriptRecord[]>;
-  context_workbench_histories?: Record<string, ContextWorkbenchHistoryEntry[]>;
+  settings?: {
+    workbench_model?: string;
+    theme_mode?: 'light' | 'dark';
+    ui_font?: string;
+    ui_font_size?: number;
+    user_locale?: string;
+  };
+  active_session_id?: string;
+  sessions?: Array<{ id: string; title: string; status: string; is_running?: boolean }>;
 }
 
 export interface SidebarPayload {

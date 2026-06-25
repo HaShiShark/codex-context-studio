@@ -17,6 +17,19 @@ interface ParsedToolOutput {
   exitCode?: number;
 }
 
+interface WebSearchAction {
+  type?: string;
+  query?: string;
+  queries?: unknown;
+  url?: string;
+  pattern?: string;
+  [key: string]: unknown;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
 function humanizeToolName(name?: string) {
   if (!name) {
     return '工具调用';
@@ -88,11 +101,106 @@ function truncateSingleLine(value: string, limit = 72) {
 }
 
 function isShellToolEvent(event: ToolEvent) {
+  if (isWebSearchEvent(event)) {
+    return false;
+  }
+
   return event.name === 'shell_command' || event.name === 'exec_command' || event.name === 'write_stdin';
+}
+
+function parseWebSearchAction(event: ToolEvent): WebSearchAction | null {
+  const { arguments: eventArguments } = event;
+  let value: unknown = eventArguments;
+
+  if (typeof eventArguments === 'string') {
+    const trimmed = eventArguments.trim();
+    if (!trimmed) {
+      return null;
+    }
+    try {
+      value = JSON.parse(trimmed) as unknown;
+    } catch {
+      return null;
+    }
+  }
+
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  return value as WebSearchAction;
+}
+
+function isWebSearchEvent(event: ToolEvent, action = parseWebSearchAction(event)) {
+  if (event.display_title === 'web_search' || event.name === 'web_search' || event.name === 'web_search_call') {
+    return true;
+  }
+
+  const actionType = typeof action?.type === 'string' ? action.type : '';
+  return actionType === 'search' || actionType === 'open_page' || actionType === 'find_in_page';
+}
+
+function webSearchQueriesText(queries: unknown) {
+  if (!Array.isArray(queries)) {
+    return '';
+  }
+
+  return queries
+    .map((query) => (typeof query === 'string' ? query.trim() : ''))
+    .filter(Boolean)
+    .join(', ');
+}
+
+function webSearchDetailText(event: ToolEvent, action: WebSearchAction | null) {
+  const detail = (event.display_detail || '').trim();
+  if (!action) {
+    return detail;
+  }
+
+  if (action.type === 'search') {
+    return action.query?.trim() || webSearchQueriesText(action.queries) || detail;
+  }
+
+  if (action.type === 'open_page') {
+    return action.url?.trim() || detail;
+  }
+
+  if (action.type === 'find_in_page') {
+    const pattern = action.pattern?.trim() || '';
+    const url = action.url?.trim() || '';
+    if (pattern && url) {
+      return `${pattern} in ${url}`;
+    }
+    return pattern || url || detail;
+  }
+
+  return action.query?.trim() || action.url?.trim() || detail || action.type || '';
+}
+
+function webSearchLabel(action: WebSearchAction | null) {
+  if (action?.type === 'open_page') {
+    return '已打开网页';
+  }
+  if (action?.type === 'find_in_page') {
+    return '页内查找';
+  }
+  return '已搜索网页';
+}
+
+function webSearchActionJson(action: WebSearchAction | null, detail: string) {
+  if (action) {
+    return JSON.stringify(action, null, 2);
+  }
+  return detail || 'web_search_call';
 }
 
 function toolGroupLabel(events: ToolEvent[]) {
   const allShellEvents = events.every(isShellToolEvent);
+  const allWebSearchEvents = events.every((event) => isWebSearchEvent(event));
+
+  if (allWebSearchEvents) {
+    return `网页搜索 ${events.length} 次`;
+  }
 
   if (allShellEvents) {
     return `已运行 ${events.length} 条命令`;
@@ -154,6 +262,17 @@ export function getMessagePreviewText(record: MessageRecord) {
   }
 
   if (record.toolEvents.length) {
+    const webSearchPreviews = record.toolEvents
+      .filter((event) => isWebSearchEvent(event))
+      .map((event) => webSearchDetailText(event, parseWebSearchAction(event)))
+      .filter(Boolean);
+
+    if (webSearchPreviews.length) {
+      return webSearchPreviews.length === 1
+        ? `网页搜索：${truncateSingleLine(webSearchPreviews[0], 96)}`
+        : `网页搜索 ${webSearchPreviews.length} 次：${truncateSingleLine(webSearchPreviews[0], 80)}`;
+    }
+
     return `调用了 ${record.toolEvents.length} 个工具`;
   }
 
@@ -271,11 +390,15 @@ function ToolInvocationItem({
   const title = event.display_title || humanizeToolName(event.name);
   const detail = (event.display_detail || '').trim();
   const isShell = isShellToolEvent(event);
+  const webSearchAction = parseWebSearchAction(event);
+  const isWebSearch = isWebSearchEvent(event, webSearchAction);
   const { prettyJson, shellOutput, exitCode } = parseToolOutput(event);
   const shellStatusText = event.status === 'error' ? '失败' : '成功';
   const safeShellOutput = shellOutput || event.display_result || '命令已执行，但没有输出。';
   const shellPreview = truncateSingleLine(detail);
-  const itemLabel = isShell ? '已运行' : title;
+  const webSearchDetail = webSearchDetailText(event, webSearchAction);
+  const webSearchPreview = truncateSingleLine(webSearchDetail);
+  const itemLabel = isWebSearch ? webSearchLabel(webSearchAction) : isShell ? '已运行' : title;
 
   return (
     <div className="inline-tool-item">
@@ -286,8 +409,8 @@ function ToolInvocationItem({
       >
         <span className="inline-tool-summary-left">
           <span>{itemLabel}</span>
-          {isShell && !isDetailOpen && detail ? (
-            <span className="inline-tool-command-preview">{shellPreview}</span>
+          {(isWebSearch || isShell) && !isDetailOpen && (isWebSearch ? webSearchDetail : detail) ? (
+            <span className="inline-tool-command-preview">{isWebSearch ? webSearchPreview : shellPreview}</span>
           ) : null}
         </span>
         <i className="ph-light ph-caret-right inline-tool-summary-chevron" />
@@ -295,9 +418,19 @@ function ToolInvocationItem({
 
       <div className={`inline-tool-detail-panel ${isDetailOpen ? 'open' : ''}`}>
         <div className="inline-tool-detail-inner">
-          {!isShell && detail ? <div className="inline-tool-detail-text">{detail}</div> : null}
+          {!isWebSearch && !isShell && detail ? <div className="inline-tool-detail-text">{detail}</div> : null}
 
-          {isShell ? (
+          {isWebSearch ? (
+            <>
+              {webSearchDetail ? <div className="inline-tool-detail-text">{webSearchDetail}</div> : null}
+              <div className="tool-json-box">
+                <div className="tool-json-box-label">action</div>
+                <div className="tool-json-scroll">
+                  <pre>{webSearchActionJson(webSearchAction, webSearchDetail)}</pre>
+                </div>
+              </div>
+            </>
+          ) : isShell ? (
             <div className="tool-shell-box">
               <div className="tool-shell-box-label">Shell</div>
               <div className="tool-shell-command">$ {detail || 'powershell command'}</div>

@@ -86,11 +86,13 @@
       "package.json"
     ],
     "win": {
+      "icon": "electron/assets/hash-icon.ico",
       "target": "nsis",
       "signAndEditExecutable": false,
       "forceCodeSigning": false
     },
     "mac": {
+      "icon": "electron/assets/hash-icon.icns",
       "target": [
         "dmg",
         "zip"
@@ -104,6 +106,8 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
+      "installerIcon": "electron/assets/hash-icon.ico",
+      "uninstallerIcon": "electron/assets/hash-icon.ico",
       "include": "build/installer.nsh"
     }
   }

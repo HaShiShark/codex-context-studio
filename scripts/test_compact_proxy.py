@@ -143,6 +143,26 @@ def message_text(item: dict[str, Any]) -> str:
     return proxy_server.read_message_text(item)
 
 
+def codex_ui_title_generation_body(user_prompt: str = "帮我找到我本机的antigravity的有关的文件夹") -> dict[str, Any]:
+    title_prompt = "\n".join(
+        [
+            "You are a helpful assistant. You will be presented with a user prompt, and your job is to provide a short title for a task that will be created from that prompt.",
+            "The tasks typically have to do with coding-related tasks. The title you generate will be shown in the UI to represent the prompt.",
+            "Generate a concise UI title (up to 36 characters) for this task.",
+            "Fill the structured title field with plain text.",
+            "Do not include quotes, markdown, formatting characters, or trailing punctuation in the title value.",
+            "Do NOT respond to the user, answer questions, or attempt to solve the problem; just write a title that can represent the user's query.",
+            "",
+            "User prompt:",
+            user_prompt,
+        ]
+    )
+    return {
+        "model": "gpt-test",
+        "input": [proxy_server.provider_message("user", title_prompt)],
+    }
+
+
 def test_drop_unpaired_tool_items_preserves_only_complete_pairs() -> None:
     valid_call_id = "call_valid"
     dangling_call_id = "call_without_output"
@@ -460,6 +480,177 @@ def test_proxy_store_can_save_only_one_session() -> None:
         assert saved_session_ids == ["session-one"]
 
 
+def test_proxy_store_v2_replaces_mutated_tail_without_full_snapshot() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        store = proxy_server.ProxyStore(Path(temp_dir) / "proxy_state.json")
+        first_assistant = proxy_server.transcript_record(
+            "assistant",
+            PRE_TOOL_TEXT,
+            [proxy_server.provider_message("assistant", PRE_TOOL_TEXT)],
+        )
+        store.sessions[SESSION_ID] = proxy_server.ProxySession(
+            id=SESSION_ID,
+            title="Codex fake",
+            transcript=[record("user", USER_PROMPT), first_assistant],
+        )
+        store.save()
+
+        updated_assistant = proxy_server.append_assistant_response_record(
+            [first_assistant],
+            PRE_TOOL_TEXT,
+            [
+                {
+                    "type": "function_call",
+                    "call_id": TOOL_CALL_ID,
+                    "name": "shell_command",
+                    "arguments": json.dumps({"command": "Get-ChildItem -Force"}),
+                }
+            ],
+        )[-1]
+        store.sessions[SESSION_ID].transcript = [record("user", USER_PROMPT), updated_assistant]
+        store.save(SESSION_ID)
+
+        session = store.sessions[SESSION_ID]
+        raw_path = store._v2_state_file(session, "raw")
+        legacy_raw_path = store._state_file(session, "raw")
+        events = [
+            json.loads(line)
+            for line in raw_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+        assert raw_path.exists()
+        assert not legacy_raw_path.exists()
+        assert [event["type"] for event in events] == ["append", "replace_from"]
+        assert len(events[0]["records"]) == 2
+        assert events[1]["index"] == 1
+        assert len(events[1]["records"]) == 1
+        assert proxy_server.load_jsonl_state(raw_path, []) == store.sessions[SESSION_ID].transcript
+
+
+def test_proxy_store_v2_optional_clear_reloads_as_absent_branch() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        state_path = Path(temp_dir) / "proxy_state.json"
+        store = proxy_server.ProxyStore(state_path)
+        store.sessions[SESSION_ID] = proxy_server.ProxySession(
+            id=SESSION_ID,
+            title="Codex fake",
+            transcript=[record("user", USER_PROMPT)],
+        )
+        store.save()
+        store.override(SESSION_ID, [record("user", EDITED_TEXT)])
+        store.reset(SESSION_ID)
+
+        reloaded = proxy_server.ProxyStore(state_path)
+        payload = reloaded.get_session(SESSION_ID)
+
+        assert payload is not None
+        assert payload["status"] == "mirror"
+        assert payload["has_override"] is False
+        assert payload["edited_transcript"] is None
+        assert payload["pending_transcript"] is None
+        assert provider_texts(payload["transcript"]) == [USER_PROMPT]
+
+
+def test_proxy_store_ignores_legacy_payloads_without_v2() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        state_path = Path(temp_dir) / "proxy_state.json"
+        store = proxy_server.ProxyStore(state_path)
+        legacy_session = proxy_server.ProxySession(
+            id=SESSION_ID,
+            title="Codex fake",
+            status="override",
+            created_at="2026-06-22T01:02:03Z",
+            updated_at="2026-06-22T01:02:03Z",
+        )
+        proxy_server.append_jsonl_line(
+            store._state_file(legacy_session, "raw"),
+            {
+                "type": "set",
+                "created_at": "2026-06-22T01:02:03Z",
+                "records": [record("user", USER_PROMPT)],
+            },
+        )
+        proxy_server.append_jsonl_line(
+            store._state_file(legacy_session, "edited"),
+            {
+                "type": "set",
+                "created_at": "2026-06-22T01:02:04Z",
+                "records": [record("user", EDITED_TEXT)],
+            },
+        )
+        with store._connect() as conn:
+            store._save_session_metadata_to_db(conn, legacy_session)
+
+        reloaded = proxy_server.ProxyStore(state_path)
+        reloaded_session = reloaded.sessions[SESSION_ID]
+        assert not reloaded._storage_manifest_file(reloaded_session).exists()
+        assert not reloaded._v2_state_file(reloaded_session, "raw").exists()
+        assert not reloaded._v2_state_file(reloaded_session, "edited").exists()
+
+        payload = reloaded.get_session(SESSION_ID)
+        assert payload is not None
+        assert payload["status"] == "mirror"
+        assert payload["has_override"] is False
+        assert payload["raw_transcript"] == []
+        assert payload["edited_transcript"] is None
+        assert payload["transcript"] == []
+
+        proxy_server.append_jsonl_line(
+            reloaded._state_file(reloaded_session, "raw"),
+            {
+                "type": "append",
+                "created_at": "2026-06-22T01:02:05Z",
+                "records": [record("user", "legacy mutation should be ignored")],
+            },
+        )
+        second_reload = proxy_server.ProxyStore(state_path)
+        reloaded_payload = second_reload.get_session(SESSION_ID)
+
+        assert reloaded_payload is not None
+        assert reloaded_payload["raw_transcript"] == []
+
+
+def test_proxy_store_lazy_mirror_request_persists_payload_after_reload() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        state_path = Path(temp_dir) / "proxy_state.json"
+        store = proxy_server.ProxyStore(state_path)
+        store.sessions[SESSION_ID] = proxy_server.ProxySession(
+            id=SESSION_ID,
+            title="Codex fake",
+            transcript=[record("user", "first request")],
+        )
+        store.save()
+
+        reloaded = proxy_server.ProxyStore(state_path)
+        assert reloaded.sessions[SESSION_ID].payloads_loaded is False
+
+        next_body = {
+            "input": [
+                proxy_server.provider_message("user", "first request"),
+                proxy_server.provider_message("assistant", "first answer"),
+                proxy_server.provider_message("user", "second request"),
+            ]
+        }
+        reloaded.begin_request(SESSION_ID, next_body, {"x-codex-session-id": SESSION_ID})
+        reloaded.complete_response(
+            SESSION_ID,
+            [proxy_server.provider_message("assistant", "second answer")],
+            "second answer",
+        )
+
+        second_reload = proxy_server.ProxyStore(state_path)
+        payload = second_reload.get_session(SESSION_ID)
+
+        assert payload is not None
+        assert provider_texts(payload["transcript"]) == [
+            "first request",
+            "first answer",
+            "second request",
+            "second answer",
+        ]
+
+
 def test_proxy_usage_update_does_not_rewrite_session_payload() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         store = proxy_server.ProxyStore(Path(temp_dir) / "proxy_state.json")
@@ -490,6 +681,130 @@ def test_proxy_usage_update_does_not_rewrite_session_payload() -> None:
         assert event_count == 1
         assert summary["request_count"] == 1
         assert summary["input_tokens"] == 7
+
+
+def test_proxy_store_lazy_loads_session_payloads_after_reload() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        state_path = Path(temp_dir) / "proxy_state.json"
+        store = proxy_server.ProxyStore(state_path)
+        store.sessions[SESSION_ID] = proxy_server.ProxySession(
+            id=SESSION_ID,
+            title="Codex fake",
+            transcript=[record("user", "hello from disk")],
+        )
+        store.save()
+
+        reloaded_store = proxy_server.ProxyStore(state_path)
+        session = reloaded_store.sessions[SESSION_ID]
+        assert session.payloads_loaded is False
+        assert session.transcript == []
+
+        listed = reloaded_store.list_sessions()["sessions"][0]
+        assert listed["id"] == SESSION_ID
+        assert "transcript" not in listed
+        assert reloaded_store.sessions[SESSION_ID].payloads_loaded is False
+
+        payload = reloaded_store.get_session(SESSION_ID)
+        assert payload is not None
+        assert payload["transcript"][0]["text"] == "hello from disk"
+        assert reloaded_store.sessions[SESSION_ID].payloads_loaded is True
+
+
+def test_title_generation_request_detection_is_precise() -> None:
+    assert proxy_server.is_title_generation_request(codex_ui_title_generation_body())
+
+    normal_title_question = {
+        "input": [
+            proxy_server.provider_message(
+                "user",
+                "Can you help me add a concise UI title field to this settings page?",
+            )
+        ]
+    }
+    assert not proxy_server.is_title_generation_request(normal_title_question)
+
+    hash_title_body = {
+        "instructions": "\n".join(proxy_server.HASH_CONTEXT_TITLE_INSTRUCTION_MARKERS),
+        "input": [
+            proxy_server.provider_message(
+                "user",
+                f"{proxy_server.HASH_CONTEXT_TITLE_PROMPT_MARKER}\n\n普通用户第一条消息",
+            )
+        ],
+        "tools": [],
+    }
+    assert proxy_server.is_title_generation_request(hash_title_body)
+
+
+def test_title_generation_request_is_forwarded_without_proxy_session() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        original_store = proxy_server.STORE
+        original_chatgpt_base_url = proxy_server.CHATGPT_UPSTREAM_BASE_URL
+        original_openai_base_url = proxy_server.OPENAI_UPSTREAM_BASE_URL
+        title_session_id = "title-generation-session"
+        real_session_id = "real-codex-session"
+        request_body = codex_ui_title_generation_body()
+        MockResponsesUpstream.requests = []
+        MockResponsesUpstream.response_event = {
+            "type": "response.completed",
+            "response": {
+                "model": "gpt-test",
+                "output": [proxy_server.provider_message("assistant", "定位 antigravity 文件夹")],
+                "usage": {
+                    "input_tokens": 50,
+                    "output_tokens": 5,
+                    "total_tokens": 55,
+                },
+            },
+        }
+        upstream = start_server(MockResponsesUpstream)
+        proxy = start_server(proxy_server.Handler)
+        proxy_server.STORE = proxy_server.ProxyStore(Path(temp_dir) / "proxy_state.json")
+        proxy_server.STORE.sessions[real_session_id] = proxy_server.ProxySession(
+            id=real_session_id,
+            title="Real session",
+            transcript=[record("user", USER_PROMPT)],
+        )
+        proxy_server.STORE.active_session_id = real_session_id
+        proxy_server.STORE.save()
+        proxy_server.CHATGPT_UPSTREAM_BASE_URL = f"http://127.0.0.1:{upstream.server_port}/backend-api/codex"
+        proxy_server.OPENAI_UPSTREAM_BASE_URL = f"http://127.0.0.1:{upstream.server_port}/v1"
+
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", proxy.server_port, timeout=20)
+            try:
+                conn.request(
+                    "POST",
+                    "/v1/responses",
+                    body=json.dumps(request_body).encode("utf-8"),
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": "Bearer real-token",
+                        "x-codex-session-id": title_session_id,
+                    },
+                )
+                response = conn.getresponse()
+                response.read()
+            finally:
+                conn.close()
+
+            assert response.status == HTTPStatus.OK
+            assert len(MockResponsesUpstream.requests) == 1
+            assert MockResponsesUpstream.requests[0]["body"] == request_body
+            assert title_session_id not in proxy_server.STORE.sessions
+            assert proxy_server.STORE.session_usage(title_session_id) is None
+            listed = proxy_server.STORE.list_sessions()
+            assert listed["active_session_id"] == real_session_id
+            assert [session["id"] for session in listed["sessions"]] == [real_session_id]
+        finally:
+            proxy.shutdown()
+            proxy.server_close()
+            upstream.shutdown()
+            upstream.server_close()
+            proxy_server.STORE = original_store
+            proxy_server.CHATGPT_UPSTREAM_BASE_URL = original_chatgpt_base_url
+            proxy_server.OPENAI_UPSTREAM_BASE_URL = original_openai_base_url
+            MockResponsesUpstream.response_event = {"type": "response.completed", "response": {"model": "gpt-test", "output": []}}
 
 
 def test_proxy_usage_routes_record_main_and_context_workbench() -> None:
@@ -1248,6 +1563,8 @@ def test_codex_response_item_types_roundtrip() -> None:
         "text",
     ]
     assert proxy_server.transcript_to_input_items(transcript) == items
+    assert assistant["toolEvents"][3]["display_title"] == "web_search"
+    assert assistant["toolEvents"][3]["display_detail"] == "weather"
 
     web_record = web_server.compile_record_from_provider_items(
         {"role": "assistant", "attachments": []},
@@ -1265,6 +1582,58 @@ def test_codex_response_item_types_roundtrip() -> None:
     ]
     assert web_record["toolEvents"][0]["call_id"] == "local-shell-call-id"
     assert web_record["toolEvents"][0]["raw_output"] == "hello"
+    assert web_record["toolEvents"][3]["display_title"] == "web_search"
+    assert web_record["toolEvents"][3]["display_detail"] == "weather"
+
+
+def test_web_search_call_display_detail_includes_action_payload() -> None:
+    provider_items = [
+        {
+            "type": "web_search_call",
+            "id": "web-search-query-id",
+            "status": "completed",
+            "action": {"type": "search", "query": "OpenAI Responses API web search"},
+        },
+        {
+            "type": "web_search_call",
+            "id": "web-search-open-id",
+            "status": "completed",
+            "action": {"type": "open_page", "url": "https://openai.com/index.html"},
+        },
+        {
+            "type": "web_search_call",
+            "id": "web-search-find-id",
+            "status": "completed",
+            "action": {
+                "type": "find_in_page",
+                "url": "https://openai.com/index.html",
+                "pattern": "Responses API",
+            },
+        },
+    ]
+
+    proxy_record = proxy_server.input_items_to_transcript(provider_items)[0]
+    assert [event["display_title"] for event in proxy_record["toolEvents"]] == [
+        "web_search",
+        "web_search",
+        "web_search",
+    ]
+    assert [event["display_detail"] for event in proxy_record["toolEvents"]] == [
+        "OpenAI Responses API web search",
+        "https://openai.com/index.html",
+        "Responses API in https://openai.com/index.html",
+    ]
+    assert proxy_server.transcript_to_input_items([proxy_record]) == provider_items
+
+    web_record = web_server.compile_record_from_provider_items(
+        {"role": "assistant", "attachments": []},
+        provider_items,
+    )
+    assert [event["display_detail"] for event in web_record["toolEvents"]] == [
+        "OpenAI Responses API web search",
+        "https://openai.com/index.html",
+        "Responses API in https://openai.com/index.html",
+    ]
 
 
 def test_shell_tool_output_display_metadata_is_reconstructed() -> None:
@@ -2655,7 +3024,14 @@ def main() -> None:
     test_request_without_override_preserves_codex_body()
     test_proxy_usage_summary_records_and_resets_by_session()
     test_proxy_store_can_save_only_one_session()
+    test_proxy_store_v2_replaces_mutated_tail_without_full_snapshot()
+    test_proxy_store_v2_optional_clear_reloads_as_absent_branch()
+    test_proxy_store_ignores_legacy_payloads_without_v2()
+    test_proxy_store_lazy_mirror_request_persists_payload_after_reload()
     test_proxy_usage_update_does_not_rewrite_session_payload()
+    test_proxy_store_lazy_loads_session_payloads_after_reload()
+    test_title_generation_request_detection_is_precise()
+    test_title_generation_request_is_forwarded_without_proxy_session()
     test_proxy_usage_routes_record_main_and_context_workbench()
     test_sse_completed_response_captures_usage_payload()
     test_local_compact_without_override_replaces_manual_prompt()

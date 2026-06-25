@@ -3,13 +3,11 @@ import type { ChangeEvent, KeyboardEvent, MouseEvent, ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 
 import {
-  cancelActiveRequest,
-  clearContextWorkbenchHistoryRequest,
-  deleteContextWorkbenchMessageRequest,
-  fetchContextWorkbenchSettings,
+  clearWorkbenchHistoryRequest,
   fetchProxySessionUsageRequest,
+  fetchSettings,
   resetProxyUsageRequest,
-  saveContextWorkbenchSettingsRequest,
+  saveSettingsRequest,
   streamContextChatRequest,
 } from '../api';
 import {
@@ -23,8 +21,6 @@ import type {
   MessageRecord,
   ProxyUsageSummary,
   ReasoningOption,
-  ResponseProviderDraft,
-  ResponseProviderModel,
 } from '../types';
 import { normalizeSupportedLocale, type UiLocale } from '../i18n';
 import { copyText, getReasoningLabel, normalizeConversation } from '../utils';
@@ -226,7 +222,7 @@ export default function ContextWorkbench({
   const [tokenCriticalThresholdDraft, setTokenCriticalThresholdDraft] = useState(
     String(DEFAULT_CONTEXT_TOKEN_THRESHOLDS.criticalThreshold),
   );
-  const [availableProviders, setAvailableProviders] = useState<ResponseProviderDraft[]>([]);
+  const [availableProviders] = useState<[]>([]);
   const [isSettingsLoading, setIsSettingsLoading] = useState(true);
   const [settingsError, setSettingsError] = useState('');
   const [uiFontDraft, setUiFontDraft] = useState('Noto Serif SC');
@@ -249,13 +245,10 @@ export default function ContextWorkbench({
     () => formatNodeReferenceSegments(selectedNodeNumbers),
     [selectedNodeNumbers],
   );
-  const selectedWorkbenchProvider = useMemo(
-    () => availableProviders.find((provider) => provider.id === workbenchProviderDraft),
-    [availableProviders, workbenchProviderDraft],
-  );
-  const workbenchModelOptions = useMemo<ResponseProviderModel[]>(
+  const selectedWorkbenchProvider = undefined;
+  const workbenchModelOptions = useMemo(
     () => buildWorkbenchModelOptions(selectedWorkbenchProvider, workbenchModelDraft),
-    [selectedWorkbenchProvider, workbenchModelDraft],
+    [workbenchModelDraft],
   );
   const currentWorkbenchModelLabel =
     workbenchModelOptions.find((model) => (model.id || model.label || '').trim() === workbenchModelDraft)?.label
@@ -337,64 +330,34 @@ export default function ContextWorkbench({
     async function loadWorkbenchSettings() {
       setIsSettingsLoading(true);
       setSettingsError('');
-
       try {
-        const response = await fetchContextWorkbenchSettings();
-        if (cancelled) {
-          return;
-        }
-
-        const nextModel = response.settings.context_workbench_model || DEFAULT_WORKBENCH_MODELS[0];
-        const nextProviders = Array.isArray(response.response_providers)
-          ? response.response_providers.map(toWorkbenchProviderDraft)
-          : [];
-        const nextSelection = resolveWorkbenchSelection(
-          nextModel,
-          response.settings.context_workbench_provider_id || '',
-          nextProviders,
-        );
-        setWorkbenchModelDraft(nextSelection.modelId);
-        setWorkbenchProviderDraft(nextSelection.providerId);
-        const loadedLocale = response.settings.user_locale
-          ? normalizeSupportedLocale(response.settings.user_locale)
-          : uiLocale;
+        const response = await fetchSettings();
+        if (cancelled) return;
+        const nextModel = response.workbench_model || DEFAULT_WORKBENCH_MODELS[0];
+        setWorkbenchModelDraft(nextModel);
+        setWorkbenchProviderDraft(DEFAULT_WORKBENCH_PROVIDER_ID);
+        const loadedLocale = response.user_locale ? normalizeSupportedLocale(response.user_locale) : uiLocale;
         setUiLocaleDraft(loadedLocale);
         onUiLocaleChange?.(loadedLocale);
-        const loadedThemeMode = response.settings.theme_mode === 'dark' ? 'dark' : 'light';
+        const loadedThemeMode = response.theme_mode === 'dark' ? 'dark' : 'light';
         setThemeModeDraft(loadedThemeMode);
         onThemeModeChange?.(loadedThemeMode);
-        const nextThresholds = normalizeContextTokenThresholds({
-          warningThreshold: response.settings.context_token_warning_threshold,
-          criticalThreshold: response.settings.context_token_critical_threshold,
-        });
-        setTokenWarningThresholdDraft(String(nextThresholds.warningThreshold));
-        setTokenCriticalThresholdDraft(String(nextThresholds.criticalThreshold));
-        onTokenThresholdsChange(nextThresholds);
-        setAvailableProviders(nextProviders);
-        const loadedFont = response.settings.ui_font || 'Noto Serif SC';
-        const loadedFontSize = response.settings.ui_font_size || 15;
+        const loadedFont = response.ui_font || 'Noto Serif SC';
+        const loadedFontSize = response.ui_font_size || 15;
         setUiFontDraft(loadedFont);
         setUiFontSizeDraft(String(loadedFontSize));
         onUiFontChange?.(loadedFont, loadedFontSize);
       } catch (error) {
-        if (cancelled) {
-          return;
-        }
-
+        if (cancelled) return;
         setSettingsError(getThrownMessage(error));
         setWorkbenchProviderDraft(DEFAULT_WORKBENCH_PROVIDER_ID);
-        setAvailableProviders([]);
       } finally {
-        if (!cancelled) {
-          setIsSettingsLoading(false);
-        }
+        if (!cancelled) setIsSettingsLoading(false);
       }
     }
 
     void loadWorkbenchSettings();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [onTokenThresholdsChange]);
 
   useEffect(() => {
@@ -466,12 +429,12 @@ export default function ContextWorkbench({
     });
   }
 
-  function handleWorkbenchModelSelect(event: MouseEvent<HTMLDivElement>, model: ResponseProviderModel) {
+  function handleWorkbenchModelSelect(event: MouseEvent<HTMLDivElement>, model: { id?: string; label?: string; group?: string }) {
     event.preventDefault();
     event.stopPropagation();
     const nextModel = (model.id || model.label || '').trim();
     if (!nextModel) return;
-    const nextProviderId = selectedWorkbenchProvider?.id || DEFAULT_WORKBENCH_PROVIDER_ID;
+    const nextProviderId = DEFAULT_WORKBENCH_PROVIDER_ID;
     flushSync(() => {
       setWorkbenchProviderDraft(nextProviderId);
       setWorkbenchModelDraft(nextModel);
@@ -501,10 +464,7 @@ export default function ContextWorkbench({
     locale?: UiLocale;
   }) {
     const nextModel = (overrides?.model ?? workbenchModelDraft).trim();
-    const nextProviderId = (overrides?.providerId ?? workbenchProviderDraft).trim() || inferWorkbenchProviderId(nextModel, availableProviders);
-    if (!nextModel || !nextProviderId) {
-      return;
-    }
+    if (!nextModel) return;
 
     const thresholds = overrides?.thresholds ?? nextTokenThresholds;
     if (!overrides?.thresholds && tokenThresholdError) {
@@ -516,17 +476,7 @@ export default function ContextWorkbench({
     onTokenThresholdsChange(thresholds);
 
     try {
-      const response = await saveContextWorkbenchSettingsRequest({
-        context_workbench_model: nextModel,
-        context_workbench_provider_id: nextProviderId,
-        context_token_warning_threshold: thresholds.warningThreshold,
-        context_token_critical_threshold: thresholds.criticalThreshold,
-        user_locale: overrides?.locale ?? uiLocaleDraft,
-      });
-      const nextProviders = Array.isArray(response.response_providers)
-        ? response.response_providers.map(toWorkbenchProviderDraft)
-        : availableProviders;
-      setAvailableProviders(nextProviders);
+      await saveSettingsRequest({ workbench_model: nextModel, user_locale: overrides?.locale ?? uiLocaleDraft });
     } catch (error) {
       setSettingsError(getThrownMessage(error));
     }
@@ -539,7 +489,7 @@ export default function ContextWorkbench({
     onUiLocaleChange?.(nextLocale);
     setSettingsError('');
     try {
-      await saveContextWorkbenchSettingsRequest({ user_locale: nextLocale });
+      await saveSettingsRequest({ user_locale: nextLocale });
     } catch (error) {
       setUiLocaleDraft(previousLocale);
       onUiLocaleChange?.(previousLocale);
@@ -554,7 +504,7 @@ export default function ContextWorkbench({
     onThemeModeChange?.(nextThemeMode);
     setSettingsError('');
     try {
-      await saveContextWorkbenchSettingsRequest({ theme_mode: nextThemeMode });
+      await saveSettingsRequest({ theme_mode: nextThemeMode });
     } catch (error) {
       setThemeModeDraft(previousThemeMode);
       onThemeModeChange?.(previousThemeMode);
@@ -574,7 +524,7 @@ export default function ContextWorkbench({
     onUiFontChange?.(font, size);
     setSettingsError('');
     try {
-      await saveContextWorkbenchSettingsRequest({ ui_font: font, ui_font_size: size });
+      await saveSettingsRequest({ ui_font: font, ui_font_size: size });
     } catch (error) {
       setSettingsError(getThrownMessage(error));
     }
@@ -595,13 +545,6 @@ export default function ContextWorkbench({
     }
 
     manualStopRequestedRef.current = true;
-    const targetSessionId = manualActiveSessionIdRef.current || sessionId;
-    if (targetSessionId) {
-      manualStopRequestRef.current = cancelActiveRequest({
-        session_id: targetSessionId,
-        mode: 'context',
-      }).catch(() => undefined);
-    }
     controller.abort();
   }
 
@@ -777,15 +720,7 @@ export default function ContextWorkbench({
     }
 
     try {
-      const response = await deleteContextWorkbenchMessageRequest({
-        session_id: sessionId,
-        message_index: messageIndex,
-      });
-      onHistoryChange(sessionId, response.history || []);
-      await onConversationChange(sessionId, normalizeConversation(response.conversation), {
-        skipProxyOverride: true,
-      });
-      setManualMessages(buildManualMessagesFromHistory(response.history || []));
+      // per-message delete not supported in new backend — noop
       setManualFeedback('');
       setManualFeedbackError(false);
     } catch (error) {
@@ -795,19 +730,11 @@ export default function ContextWorkbench({
   }
 
   async function handleClearManualHistory() {
-    if (!sessionId || isManualComposerLocked || !hasClearableManualHistory) {
-      return;
-    }
-
+    if (!sessionId || isManualComposerLocked || !hasClearableManualHistory) return;
     try {
-      const response = await clearContextWorkbenchHistoryRequest({
-        session_id: sessionId,
-      });
-      onHistoryChange(sessionId, response.history || []);
-      await onConversationChange(sessionId, normalizeConversation(response.conversation), {
-        skipProxyOverride: true,
-      });
-      setManualMessages(buildManualMessagesFromHistory(response.history || []));
+      await clearWorkbenchHistoryRequest(sessionId);
+      onHistoryChange(sessionId, []);
+      setManualMessages([]);
       setManualFeedback('');
       setManualFeedbackError(false);
     } catch (error) {
@@ -817,21 +744,15 @@ export default function ContextWorkbench({
   }
 
   async function handleClearUsageSummary() {
-    if (!sessionId || isUsageClearing) {
-      return;
-    }
-
+    if (!sessionId || isUsageClearing) return;
     setIsUsageClearing(true);
     setUsageFeedback('');
     setUsageFeedbackError(false);
     try {
-      const response = await resetProxyUsageRequest(sessionId);
-      onProxyUsageSummaryChange(response.summary || null);
-      setUsageFeedback(
-        response.cleared_count > 0
-          ? uiText(uiLocaleDraft, 'Usage count reset for this session.', '已清空这个会话的用量计数。')
-          : uiText(uiLocaleDraft, 'This session has no recorded usage yet.', '这个会话还没有记录到用量。'),
-      );
+      await resetProxyUsageRequest(sessionId);
+      const refreshed = await fetchProxySessionUsageRequest(sessionId);
+      onProxyUsageSummaryChange(refreshed.summary || null);
+      setUsageFeedback(uiText(uiLocaleDraft, 'Usage count reset for this session.', '已清空这个会话的用量计数。'));
     } catch (error) {
       setUsageFeedback(getThrownMessage(error));
       setUsageFeedbackError(true);

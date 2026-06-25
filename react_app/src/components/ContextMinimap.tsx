@@ -1,8 +1,6 @@
 import type {
-  Dispatch,
   MouseEvent as ReactMouseEvent,
   Ref,
-  SetStateAction,
 } from 'react';
 
 import {
@@ -19,14 +17,13 @@ interface ContextMinimapProps {
   messageStats: MessageStat[];
   minimapBars: MinimapBarLayout[];
   selectedIndexes: Set<number>;
-  hoveredIndex: number | null;
   uiLocale: 'zh-CN' | 'en-US';
   minimapContentHeightPx: number;
   minimapViewportTopPx: number;
   minimapViewportHeightPx: number;
   minimapRef: Ref<HTMLDivElement>;
   minimapScrollRef: Ref<HTMLDivElement>;
-  setHoveredIndex: Dispatch<SetStateAction<number | null>>;
+  minimapViewportRef: Ref<HTMLDivElement>;
   onScrollToNode: (index: number) => void;
   onMinimapMouseDown: (event: ReactMouseEvent<HTMLDivElement>) => void;
 }
@@ -36,14 +33,13 @@ export default function ContextMinimap({
   messageStats,
   minimapBars,
   selectedIndexes,
-  hoveredIndex,
   uiLocale,
   minimapContentHeightPx,
   minimapViewportTopPx,
   minimapViewportHeightPx,
   minimapRef,
   minimapScrollRef,
-  setHoveredIndex,
+  minimapViewportRef,
   onScrollToNode,
   onMinimapMouseDown,
 }: ContextMinimapProps) {
@@ -59,7 +55,7 @@ export default function ContextMinimap({
 
                 return (
                   <button
-                    className={`context-minimap-bar ${contextNodeClassName(message.role)} weight-${stats.weightClass} ${hoveredIndex === index ? 'hovered' : ''} ${selectedIndexes.has(index) ? 'selected' : ''} ${stats.internalKind ? 'locked' : ''}`}
+                    className={`context-minimap-bar ${contextNodeClassName(message.role)} weight-${stats.weightClass} ${selectedIndexes.has(index) ? 'selected' : ''} ${stats.internalKind ? 'locked' : ''}`}
                     key={`minimap-${message.role}-${index}`}
                     type="button"
                     style={{
@@ -73,8 +69,6 @@ export default function ContextMinimap({
                       event.stopPropagation();
                       onScrollToNode(index);
                     }}
-                    onMouseEnter={() => setHoveredIndex(index)}
-                    onMouseLeave={() => setHoveredIndex((previous) => (previous === index ? null : previous))}
                     aria-label={sidebarText(
                       uiLocale,
                       `Scroll to node ${index + 1}, about ${stats.tokens} tokens`,
@@ -85,9 +79,11 @@ export default function ContextMinimap({
               })}
               <div
                 className="context-minimap-viewport"
+                ref={minimapViewportRef}
                 style={{
-                  top: `${minimapViewportTopPx}px`,
+                  top: 0,
                   height: `${minimapViewportHeightPx}px`,
+                  transform: `translateY(${minimapViewportTopPx}px)`,
                 }}
               />
             </div>

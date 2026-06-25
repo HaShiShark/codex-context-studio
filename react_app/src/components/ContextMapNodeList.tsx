@@ -1,10 +1,9 @@
 import type {
-  Dispatch,
   KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
   Ref,
-  SetStateAction,
 } from 'react';
+import { memo } from 'react';
 
 import MessageContent from './MessageContent';
 import {
@@ -23,11 +22,9 @@ interface ContextMapNodeListProps {
   messageStats: MessageStat[];
   expandedIndexes: Set<number>;
   selectedIndexes: Set<number>;
-  hoveredIndex: number | null;
   previewTruncatedIndexes: Set<number>;
   uiLocale: 'zh-CN' | 'en-US';
   scrollRef: Ref<HTMLDivElement>;
-  setHoveredIndex: Dispatch<SetStateAction<number | null>>;
   setNodeRef: (index: number, node: HTMLDivElement | null) => void;
   onToggleMessage: (index: number) => void;
   onJumpToMessage: (index: number) => void;
@@ -35,18 +32,141 @@ interface ContextMapNodeListProps {
   onGutterKeyDown: (index: number, event: ReactKeyboardEvent<HTMLButtonElement>) => void;
 }
 
-export default function ContextMapNodeList({
+interface ContextMapNodeRowProps {
+  canToggleExpand: boolean;
+  displayNodeNumber: number | null | undefined;
+  index: number;
+  isExpanded: boolean;
+  isInteractive: boolean;
+  isInternal: boolean;
+  isSelectable: boolean;
+  isSelected: boolean;
+  message: MessageRecord;
+  stage: 0 | 1 | 2;
+  stats: MessageStat;
+  uiLocale: 'zh-CN' | 'en-US';
+  setNodeRef: (index: number, node: HTMLDivElement | null) => void;
+  onToggleMessage: (index: number) => void;
+  onJumpToMessage: (index: number) => void;
+  onGutterMouseDown: (index: number, event: ReactMouseEvent<HTMLButtonElement>) => void;
+  onGutterKeyDown: (index: number, event: ReactKeyboardEvent<HTMLButtonElement>) => void;
+}
+
+const MemoizedMessageContent = memo(MessageContent);
+
+const ContextMapNodeRow = memo(function ContextMapNodeRow({
+  canToggleExpand,
+  displayNodeNumber,
+  index,
+  isExpanded,
+  isInteractive,
+  isInternal,
+  isSelectable,
+  isSelected,
+  message,
+  stage,
+  stats,
+  uiLocale,
+  setNodeRef,
+  onToggleMessage,
+  onJumpToMessage,
+  onGutterMouseDown,
+  onGutterKeyDown,
+}: ContextMapNodeRowProps) {
+  const roleClass = contextNodeClassName(message.role);
+  const selectedClass = isSelected ? 'selected' : '';
+  const lockedClass = isInternal ? 'locked' : '';
+  const canJumpToChat = stage === 1;
+
+  return (
+    <div
+      className={`context-node-row ${roleClass} ${isExpanded ? 'expanded' : ''} ${selectedClass} ${lockedClass} ${stage === 1 ? 'without-gutter' : ''}`}
+      ref={(node) => setNodeRef(index, node)}
+    >
+      {stage !== 1 && isSelectable ? (
+        <button
+          className="context-node-gutter"
+          type="button"
+          onMouseDown={(event) => onGutterMouseDown(index, event)}
+          onKeyDown={(event) => onGutterKeyDown(index, event)}
+          aria-label={sidebarText(uiLocale, `Select node ${index + 1}`, `选择第 ${index + 1} 个节点`)}
+          aria-pressed={isSelected}
+        >
+          <span>{displayNodeNumber}</span>
+        </button>
+      ) : stage !== 1 ? (
+        <div className="context-node-gutter locked" aria-hidden="true">
+          <i className="ph-light ph-lock-simple" />
+        </div>
+      ) : null}
+
+      <div className={`context-map-item ${roleClass} ${isExpanded ? 'expanded' : ''} ${selectedClass}`}>
+        <button
+          aria-expanded={canToggleExpand ? isExpanded : undefined}
+          aria-label={canJumpToChat
+            ? sidebarText(
+                uiLocale,
+                `Jump to main chat message ${index + 1}`,
+                `跳转到主聊天第 ${index + 1} 条消息`,
+              )
+            : undefined}
+          className={`context-map-item-button ${isInteractive ? '' : 'non-expandable'}`}
+          type="button"
+          onClick={
+            isInteractive
+              ? () => {
+                  if (canJumpToChat) {
+                    onJumpToMessage(index);
+                    return;
+                  }
+
+                  onToggleMessage(index);
+                }
+              : undefined
+          }
+        >
+          <div className="map-metadata">
+            <span>{stats.label}</span>
+            {canToggleExpand ? (
+              <i className={`ph-light ph-caret-right context-map-expand-icon ${isExpanded ? 'open' : ''}`} />
+            ) : null}
+          </div>
+          {!isExpanded ? (
+            <div className="map-bubble">
+              <span className="map-preview-text">{stats.previewText}</span>
+            </div>
+          ) : null}
+        </button>
+
+        {canToggleExpand ? (
+          <div
+            className={`context-map-expanded-shell ${isExpanded ? 'open' : ''}`}
+            aria-hidden={!isExpanded}
+          >
+            <div className="context-map-expanded-content">
+              {isExpanded ? (
+                <div className="context-map-expanded-body">
+                  <MemoizedMessageContent record={message} variant="context-map" />
+                </div>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+});
+
+function ContextMapNodeList({
   messages,
   stage,
   nodeMeta,
   messageStats,
   expandedIndexes,
   selectedIndexes,
-  hoveredIndex,
   previewTruncatedIndexes,
   uiLocale,
   scrollRef,
-  setHoveredIndex,
   setNodeRef,
   onToggleMessage,
   onJumpToMessage,
@@ -62,100 +182,31 @@ export default function ContextMapNodeList({
             const isSelected = selectedIndexes.has(index);
             const stats = messageStats[index];
             const meta = nodeMeta[index];
-            const displayNodeNumber = meta?.displayNodeNumber;
-            const isSelectable = Boolean(meta?.selectable);
-            const isInternal = Boolean(meta?.internalKind);
             const canExpand = canExpandMessage(message, stats.previewText, previewTruncatedIndexes.has(index));
             const canToggleExpand = stage !== 1 && canExpand;
             const canJumpToChat = stage === 1;
-            const isInteractive = canToggleExpand || canJumpToChat;
-            const hoverClass = hoveredIndex === index ? 'hovered' : '';
-            const selectedClass = isSelected ? 'selected' : '';
-            const lockedClass = isInternal ? 'locked' : '';
 
             return (
-              <div
-                className={`context-node-row ${contextNodeClassName(message.role)} ${isExpanded ? 'expanded' : ''} ${hoverClass} ${selectedClass} ${lockedClass} ${stage === 1 ? 'without-gutter' : ''}`}
+              <ContextMapNodeRow
+                canToggleExpand={canToggleExpand}
+                displayNodeNumber={meta?.displayNodeNumber}
+                index={index}
+                isExpanded={isExpanded}
+                isInteractive={canToggleExpand || canJumpToChat}
+                isInternal={Boolean(meta?.internalKind)}
+                isSelectable={Boolean(meta?.selectable)}
+                isSelected={isSelected}
                 key={`${message.role}-${index}`}
-                onMouseEnter={() => setHoveredIndex(index)}
-                onMouseLeave={() => setHoveredIndex((previous) => (previous === index ? null : previous))}
-                ref={(node) => setNodeRef(index, node)}
-              >
-                {stage !== 1 && isSelectable ? (
-                  <button
-                    className="context-node-gutter"
-                    type="button"
-                    onMouseDown={(event) => onGutterMouseDown(index, event)}
-                    onKeyDown={(event) => onGutterKeyDown(index, event)}
-                    aria-label={sidebarText(
-                      uiLocale,
-                      `Select node ${index + 1}`,
-                      `选择第 ${index + 1} 个节点`,
-                    )}
-                    aria-pressed={isSelected}
-                  >
-                    <span>{displayNodeNumber}</span>
-                  </button>
-                ) : stage !== 1 ? (
-                  <div className="context-node-gutter locked" aria-hidden="true">
-                    <i className="ph-light ph-lock-simple" />
-                  </div>
-                ) : null}
-
-                <div className={`context-map-item ${contextNodeClassName(message.role)} ${isExpanded ? 'expanded' : ''} ${selectedClass}`}>
-                  <button
-                    aria-expanded={canToggleExpand ? isExpanded : undefined}
-                    aria-label={canJumpToChat
-                      ? sidebarText(
-                          uiLocale,
-                          `Jump to main chat message ${index + 1}`,
-                          `跳转到主聊天第 ${index + 1} 条消息`,
-                        )
-                      : undefined}
-                    className={`context-map-item-button ${isInteractive ? '' : 'non-expandable'}`}
-                    type="button"
-                    onClick={
-                      isInteractive
-                        ? () => {
-                            if (canJumpToChat) {
-                              onJumpToMessage(index);
-                              return;
-                            }
-
-                            onToggleMessage(index);
-                          }
-                        : undefined
-                    }
-                  >
-                    <div className="map-metadata">
-                      <span>{stats.label}</span>
-                      {canToggleExpand ? (
-                        <i className={`ph-light ph-caret-right context-map-expand-icon ${isExpanded ? 'open' : ''}`} />
-                      ) : null}
-                    </div>
-                    {!isExpanded ? (
-                      <div className="map-bubble">
-                        <span className="map-preview-text">{stats.previewText}</span>
-                      </div>
-                    ) : null}
-                  </button>
-
-                  {canToggleExpand ? (
-                    <div
-                      className={`context-map-expanded-shell ${isExpanded ? 'open' : ''}`}
-                      aria-hidden={!isExpanded}
-                    >
-                      <div className="context-map-expanded-content">
-                        {isExpanded ? (
-                          <div className="context-map-expanded-body">
-                            <MessageContent record={message} variant="context-map" />
-                          </div>
-                        ) : null}
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-              </div>
+                message={message}
+                stage={stage}
+                stats={stats}
+                uiLocale={uiLocale}
+                setNodeRef={setNodeRef}
+                onToggleMessage={onToggleMessage}
+                onJumpToMessage={onJumpToMessage}
+                onGutterMouseDown={onGutterMouseDown}
+                onGutterKeyDown={onGutterKeyDown}
+              />
             );
           })
         ) : (
@@ -171,3 +222,5 @@ export default function ContextMapNodeList({
     </div>
   );
 }
+
+export default memo(ContextMapNodeList);

@@ -326,8 +326,22 @@ html[data-workbench-window-moving] {
   --tool-surface-strong: #ebe3da;
   --tool-text: #3d302b;
   --tool-muted: rgba(61, 48, 43, 0.58);
+  --bg-main: #f8f5f1;
+  --bg-input: #f0ebe4;
+  --bg-input-hover: #ebe3da;
+  --surface-bg: #f3eee8;
+  --bg-capsule: #ede7df;
+  --text-primary: #2a1f1a;
+  --text-secondary: #6b5449;
+  --text-muted: rgba(42, 31, 26, 0.5);
+  --border-color: rgba(100, 70, 55, 0.14);
+  --border-subtle: rgba(100, 70, 55, 0.09);
+  --item-hover: rgba(159, 87, 63, 0.08);
+  --scrollbar-thumb: rgba(100, 70, 55, 0.2);
+  --scrollbar-thumb-hover: rgba(100, 70, 55, 0.32);
+  --shadow-color: rgba(96, 61, 45, 0.14);
   color: var(--text-primary);
-  background: transparent;
+  background: var(--bg-main);
   border-radius: 0;
   box-shadow: none;
 }
@@ -977,7 +991,7 @@ html[data-workbench-window-moving] {
 
 .workbench-window-shell.loading {
   color: var(--text-primary);
-  background: transparent;
+  background: var(--bg-main);
   border: 0;
   box-shadow: none;
 }

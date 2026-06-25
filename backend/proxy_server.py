@@ -235,6 +235,32 @@ def compact_text(value: Any) -> str:
     return str(value)
 
 
+def web_search_action_display_detail(action: Any) -> str:
+    if not isinstance(action, dict):
+        return compact_text(action)
+
+    action_type = str(action.get("type") or "").strip()
+    if action_type == "search":
+        query = compact_text(action.get("query")).strip()
+        if query:
+            return query
+        queries = action.get("queries")
+        if isinstance(queries, list):
+            query_parts = [compact_text(query).strip() for query in queries]
+            return ", ".join(query for query in query_parts if query)
+    if action_type == "open_page":
+        return compact_text(action.get("url")).strip()
+    if action_type == "find_in_page":
+        pattern = compact_text(action.get("pattern")).strip()
+        url = compact_text(action.get("url")).strip()
+        if pattern and url:
+            return f"{pattern} in {url}"
+        return pattern or url
+
+    fallback = action.get("query") or action.get("url") or action_type or action
+    return compact_text(fallback).strip()
+
+
 def read_message_text(item: dict[str, Any]) -> str:
     if "content" in item:
         return compact_text(item.get("content"))
@@ -505,6 +531,8 @@ def display_detail_for_tool_item(item: dict[str, Any]) -> str:
             return compact_text(command)
     if name == "write_stdin" and isinstance(parsed_arguments, dict):
         return compact_text(parsed_arguments.get("stdin") or parsed_arguments.get("input") or arguments)
+    if item_type == "web_search_call":
+        return web_search_action_display_detail(item.get("action"))
     if item_type == "local_shell_call":
         action = item.get("action")
         if isinstance(action, dict):
@@ -647,6 +675,49 @@ def context_control_command_from_input(input_items: Any) -> str:
         text = compact_text(record.get("text") or "").strip()
         return text if is_context_control_command_text(text) else ""
     return ""
+
+
+CODEX_UI_TITLE_GENERATION_MARKERS = (
+    "you are a helpful assistant. you will be presented with a user prompt",
+    "provide a short title for a task that will be created from that prompt",
+    "generate a concise ui title",
+    "fill the structured title field with plain text",
+    "user prompt:",
+)
+HASH_CONTEXT_TITLE_PROMPT_MARKER = "请根据下面这条新对话的第一条用户消息，生成一个对话标题。"
+HASH_CONTEXT_TITLE_INSTRUCTION_MARKERS = (
+    "你只负责给一段新对话起标题。",
+    "标题要短、具体、自然，优先使用用户的语言。",
+    "最多 18 个中文字符或 8 个英文单词。",
+)
+
+
+def normalize_detection_text(value: str) -> str:
+    return " ".join(value.lower().split())
+
+
+def is_title_generation_request(body: dict[str, Any]) -> bool:
+    transcript = input_items_to_transcript(body.get("input") if isinstance(body, dict) else None)
+    user_texts = [
+        compact_text(record.get("text") or "")
+        for record in transcript
+        if str(record.get("role") or "").strip() == "user"
+    ]
+    if not user_texts:
+        return False
+
+    for text in user_texts:
+        normalized = normalize_detection_text(text)
+        if all(marker in normalized for marker in CODEX_UI_TITLE_GENERATION_MARKERS):
+            return True
+
+    instructions = compact_text(body.get("instructions") if isinstance(body, dict) else "")
+    if any(HASH_CONTEXT_TITLE_PROMPT_MARKER in text for text in user_texts) and all(
+        marker in instructions for marker in HASH_CONTEXT_TITLE_INSTRUCTION_MARKERS
+    ):
+        return True
+
+    return False
 
 
 def transcript_to_input_items(transcript: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1853,29 +1924,42 @@ def load_jsonl_state(path: Path, default: Any) -> Any:
     if not path.exists():
         return state
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        handle = path.open("r", encoding="utf-8")
     except OSError:
         return state
-    for line in lines:
-        if not line.strip():
-            continue
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(event, dict):
-            continue
-        event_type = str(event.get("type") or "")
-        if event_type == "clear":
-            state = None
-        elif event_type == "set":
-            state = copy.deepcopy(event.get("records", []))
-        elif event_type == "append":
-            records = event.get("records")
-            if isinstance(state, list) and isinstance(records, list):
-                state = [*state, *copy.deepcopy(records)]
-            elif isinstance(records, list):
-                state = copy.deepcopy(records)
+    with handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            event_type = str(event.get("type") or "")
+            if event_type == "clear":
+                state = None
+            elif event_type == "set":
+                state = copy.deepcopy(event.get("records", []))
+            elif event_type == "append":
+                records = event.get("records")
+                if isinstance(state, list) and isinstance(records, list):
+                    state = [*state, *copy.deepcopy(records)]
+                elif isinstance(records, list):
+                    state = copy.deepcopy(records)
+            elif event_type == "replace_from":
+                records = event.get("records")
+                index = event.get("index")
+                if isinstance(records, list):
+                    try:
+                        safe_index = int(index)
+                    except (TypeError, ValueError):
+                        continue
+                    if not isinstance(state, list):
+                        state = []
+                    safe_index = max(0, min(safe_index, len(state)))
+                    state = [*state[:safe_index], *copy.deepcopy(records)]
     return copy.deepcopy(default) if state is None and default is not None else state
 
 
@@ -1898,6 +1982,7 @@ class ProxySession:
     last_error: str = ""
     created_at: str = field(default_factory=utc_timestamp)
     updated_at: str = field(default_factory=utc_timestamp)
+    payloads_loaded: bool = True
 
     def visible_transcript(self) -> list[dict[str, Any]]:
         if self.pending_transcript is not None:
@@ -1916,12 +2001,26 @@ class ProxySession:
         return usage_summary_from_events(self.id, self.usage_events)
 
     def metadata_payload(self) -> dict[str, Any]:
+        has_override = self.edited_transcript is not None if self.payloads_loaded else self.status == "override"
+        active_context_source = "raw"
+        if self.payloads_loaded:
+            active_context_source = (
+                "pending"
+                if self.pending_transcript is not None
+                else "committed"
+                if self.edited_transcript is not None
+                else "raw"
+            )
+        elif self.status in {"running", "compacting"}:
+            active_context_source = "pending"
+        elif self.status == "override":
+            active_context_source = "committed"
         return {
             "id": self.id,
             "title": self.title,
             "status": self.status,
-            "active_context_source": "pending" if self.pending_transcript is not None else "committed" if self.edited_transcript is not None else "raw",
-            "has_override": self.edited_transcript is not None,
+            "active_context_source": active_context_source,
+            "has_override": has_override,
             "is_running": self.status in {"running", "compacting"},
             "last_error": self.last_error,
             "created_at": self.created_at,
@@ -2022,24 +2121,51 @@ class ProxyStore:
     def _state_file(self, session: ProxySession, kind: str) -> Path:
         return self._session_dir(session) / f"{kind}.jsonl"
 
+    def _v2_state_file(self, session: ProxySession, kind: str) -> Path:
+        if kind == "pending":
+            return self._session_dir(session) / "pending" / "active.jsonl"
+        return self._session_dir(session) / "branches" / f"{kind}.jsonl"
+
+    def _storage_manifest_file(self, session: ProxySession) -> Path:
+        return self._session_dir(session) / "storage.json"
+
+    def _write_session_storage_manifest(self, session: ProxySession) -> None:
+        path = self._storage_manifest_file(session)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json_dumps_compact(
+                {
+                    "version": 2,
+                    "updated_at": utc_timestamp(),
+                    "layout": {
+                        "raw": "branches/raw.jsonl",
+                        "edited": "branches/edited.jsonl",
+                        "override_base": "branches/override_base.jsonl",
+                        "pending": "pending/active.jsonl",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def _load_required_payload_file(self, session: ProxySession, kind: str, default: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        v2_path = self._v2_state_file(session, kind)
+        loaded = load_jsonl_state(v2_path, default)
+        return loaded if isinstance(loaded, list) else copy.deepcopy(default)
+
+    def _load_optional_payload_file(self, session: ProxySession, kind: str) -> list[dict[str, Any]] | None:
+        v2_path = self._v2_state_file(session, kind)
+        if v2_path.exists():
+            loaded = load_jsonl_state(v2_path, None)
+            return loaded if isinstance(loaded, list) else None
+        return None
+
     def _load_session_payloads_from_files(self, session: ProxySession) -> dict[str, list[dict[str, Any]] | None]:
         return {
-            "transcript": load_jsonl_state(self._state_file(session, "raw"), []),
-            "override_base_transcript": (
-                load_jsonl_state(self._state_file(session, "override_base"), [])
-                if self._state_file(session, "override_base").exists()
-                else None
-            ),
-            "edited_transcript": (
-                load_jsonl_state(self._state_file(session, "edited"), [])
-                if self._state_file(session, "edited").exists()
-                else None
-            ),
-            "pending_transcript": (
-                load_jsonl_state(self._state_file(session, "pending"), [])
-                if self._state_file(session, "pending").exists()
-                else None
-            ),
+            "transcript": self._load_required_payload_file(session, "raw", []),
+            "override_base_transcript": self._load_optional_payload_file(session, "override_base"),
+            "edited_transcript": self._load_optional_payload_file(session, "edited"),
+            "pending_transcript": self._load_optional_payload_file(session, "pending"),
         }
 
     def _append_state_delta(
@@ -2049,24 +2175,52 @@ class ProxyStore:
         previous: list[dict[str, Any]] | None,
         current: list[dict[str, Any]] | None,
     ) -> None:
-        path = self._state_file(session, kind)
-        if current is None:
-            if previous is not None:
+        path = self._v2_state_file(session, kind)
+        previous_safe = copy.deepcopy(previous)
+        current_safe = copy.deepcopy(current)
+        if previous_safe == current_safe:
+            return
+        if current_safe is None:
+            if previous_safe is not None:
                 append_jsonl_line(path, {"type": "clear", "created_at": utc_timestamp()})
             return
-        if previous is not None and len(current) >= len(previous) and current[: len(previous)] == previous:
-            appended = current[len(previous) :]
+        if previous_safe is None:
+            if current_safe:
+                append_jsonl_line(
+                    path,
+                    {"type": "append", "created_at": utc_timestamp(), "records": sanitize_json_value(current_safe)},
+                )
+            else:
+                append_jsonl_line(path, {"type": "clear", "created_at": utc_timestamp()})
+            return
+        if len(current_safe) >= len(previous_safe) and current_safe[: len(previous_safe)] == previous_safe:
+            appended = current_safe[len(previous_safe) :]
             if appended:
                 append_jsonl_line(
                     path,
                     {"type": "append", "created_at": utc_timestamp(), "records": sanitize_json_value(appended)},
                 )
             return
-        if previous == current:
+
+        common_prefix = 0
+        for previous_record, current_record in zip(previous_safe, current_safe):
+            if previous_record != current_record:
+                break
+            common_prefix += 1
+        if common_prefix > 0:
+            append_jsonl_line(
+                path,
+                {
+                    "type": "replace_from",
+                    "created_at": utc_timestamp(),
+                    "index": common_prefix,
+                    "records": sanitize_json_value(current_safe[common_prefix:]),
+                },
+            )
             return
         append_jsonl_line(
             path,
-            {"type": "set", "created_at": utc_timestamp(), "records": sanitize_json_value(current)},
+            {"type": "set", "created_at": utc_timestamp(), "records": sanitize_json_value(current_safe)},
         )
 
     def _append_list_delta(
@@ -2146,6 +2300,7 @@ class ProxyStore:
             ("pending_transcript", "pending"),
         ):
             self._append_state_delta(session, kind, previous.get(key), current[key])
+        self._write_session_storage_manifest(session)
         self._persisted_payloads[session.id] = copy.deepcopy(current)
 
     def _session_from_row(
@@ -2178,9 +2333,15 @@ class ProxyStore:
             last_error=str(last_error or ""),
             created_at=str(created_at or utc_timestamp()),
             updated_at=str(updated_at or utc_timestamp()),
+            payloads_loaded=False,
         )
         session.request_log = []
         session.response_items = []
+        return session
+
+    def _ensure_session_payloads_loaded(self, session: ProxySession) -> None:
+        if session.payloads_loaded:
+            return
         payloads = self._load_session_payloads_from_files(session)
         session.transcript = clean_transcript(payloads["transcript"])
         session.override_base_transcript = (
@@ -2198,13 +2359,16 @@ class ProxyStore:
             if payloads["pending_transcript"] is not None
             else None
         )
+        if session.edited_transcript is None and session.pending_transcript is None and session.status in {"override", "running", "compacting"}:
+            session.status = "mirror"
+            session.local_compact_source_transcript = None
         self._persisted_payloads[session.id] = {
             "transcript": copy.deepcopy(session.transcript),
             "override_base_transcript": copy.deepcopy(session.override_base_transcript) if session.override_base_transcript is not None else None,
             "edited_transcript": copy.deepcopy(session.edited_transcript) if session.edited_transcript is not None else None,
             "pending_transcript": copy.deepcopy(session.pending_transcript) if session.pending_transcript is not None else None,
         }
-        return session
+        session.payloads_loaded = True
 
     def load(self) -> None:
         with self._connect() as conn:
@@ -2388,6 +2552,10 @@ class ProxyStore:
                 session = self.sessions.get(session_id)
                 if session is None:
                     continue
+                if not session.payloads_loaded:
+                    self._save_session_metadata_to_db(conn, session)
+                    self._save_usage_to_db(conn, session)
+                    continue
                 session.request_log = session.request_log[-20:]
                 session.response_items = session.response_items[-100:]
                 session.usage_events = session.usage_events[-USAGE_EVENT_LIMIT:]
@@ -2409,6 +2577,8 @@ class ProxyStore:
             if current_codex_session_headers:
                 session.last_codex_session_headers = current_codex_session_headers
             previous_turn_metadata = session.last_turn_metadata_header
+            if not session.payloads_loaded:
+                self._ensure_session_payloads_loaded(session)
             if session.edited_transcript is not None:
                 source_snapshot = clean_transcript(source_transcript)
                 override_base_transcript = (
@@ -2491,6 +2661,7 @@ class ProxyStore:
                 request_body["input"] = drop_unpaired_tool_items(transcript_to_input_items(forwarded_transcript))
                 request_body.pop("previous_response_id", None)
                 session.status = "running"
+                session.payloads_loaded = True
                 if current_turn_metadata:
                     session.last_turn_metadata_header = current_turn_metadata
             else:
@@ -2500,6 +2671,7 @@ class ProxyStore:
                     session.local_compact_source_transcript = compact_source
                     session.transcript = compact_source
                     session.pending_transcript = None
+                    session.payloads_loaded = True
                     request_body["input"] = replace_last_local_compact_prompt_input(
                         body.get("input"),
                         replacement_local_compact_prompt(
@@ -2528,6 +2700,7 @@ class ProxyStore:
                 session.pending_transcript = None
                 session.status = "running"
                 session.transcript = with_running_assistant(source_transcript)
+                session.payloads_loaded = True
                 if current_turn_metadata:
                     session.last_turn_metadata_header = current_turn_metadata
             session.last_error = ""
@@ -2571,6 +2744,8 @@ class ProxyStore:
             if session is None:
                 session = ProxySession(id=session_id, title=f"Codex {session_id[:8]}")
                 self.sessions[session_id] = session
+            else:
+                self._ensure_session_payloads_loaded(session)
             source_transcript = clean_transcript(
                 strip_context_edit_notice_records(input_items_to_transcript(body.get("input")))
             )
@@ -2613,6 +2788,8 @@ class ProxyStore:
                 session = ProxySession(id=session_id, title=f"Codex {session_id[:8]}")
                 session.transcript = clean_transcript(source_transcript)
                 self.sessions[session_id] = session
+            elif not session.payloads_loaded:
+                self._ensure_session_payloads_loaded(session)
             self.active_session_id = session_id
             session.local_compact_source_transcript = None
 
@@ -2680,6 +2857,7 @@ class ProxyStore:
                 session.override_base_transcript = None
                 session.status = "mirror"
             session.pending_transcript = None
+            session.payloads_loaded = True
             session.response_items.extend(output_items)
             session.response_items = session.response_items[-100:]
             session.updated_at = utc_timestamp()
@@ -2707,6 +2885,7 @@ class ProxyStore:
                     session.status = "mirror"
                 session.local_compact_source_transcript = None
                 session.pending_transcript = None
+                session.payloads_loaded = True
                 session.response_items.extend(items)
                 session.response_items = session.response_items[-100:]
                 session.updated_at = utc_timestamp()
@@ -2732,6 +2911,7 @@ class ProxyStore:
                 session.edited_transcript = base
                 session.status = "override"
             session.pending_transcript = None
+            session.payloads_loaded = True
             session.response_items.extend(items)
             session.response_items = session.response_items[-100:]
             session.updated_at = utc_timestamp()
@@ -2818,6 +2998,8 @@ class ProxyStore:
     def get_session(self, session_id: str) -> dict[str, Any] | None:
         with self.lock:
             session = self.sessions.get(session_id)
+            if session is not None:
+                self._ensure_session_payloads_loaded(session)
             return session.to_payload() if session else None
 
     def override(self, session_id: str, transcript: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2826,6 +3008,8 @@ class ProxyStore:
             if session is None:
                 session = ProxySession(id=session_id, title=f"Codex {session_id[:8]}")
                 self.sessions[session_id] = session
+            else:
+                self._ensure_session_payloads_loaded(session)
             previous_visible = clean_transcript(session.visible_transcript())
             next_transcript = clean_transcript(transcript)
             mirror_transcript = clean_transcript(session.transcript)
@@ -2850,6 +3034,7 @@ class ProxyStore:
             session = self.sessions.get(session_id)
             if session is None:
                 raise KeyError(session_id)
+            self._ensure_session_payloads_loaded(session)
             previous_visible = clean_transcript(session.visible_transcript())
             session.override_base_transcript = None
             session.edited_transcript = None
@@ -3296,7 +3481,9 @@ class Handler(BaseHTTPRequestHandler):
 
         headers = {key.lower(): value for key, value in self.headers.items()}
         is_internal_context = is_internal_context_request(headers, body)
-        if not is_internal_context:
+        is_title_generation = is_title_generation_request(body)
+        capture_proxy_session = not is_internal_context and not is_title_generation
+        if capture_proxy_session:
             control_command = context_control_command_from_input(body.get("input"))
             if control_command:
                 session_id = session_id_for_request(body, headers)
@@ -3332,10 +3519,14 @@ class Handler(BaseHTTPRequestHandler):
                 session_id=session_id,
             )
             forwarded_body = copy.deepcopy(body)
-        else:
+        elif capture_proxy_session:
             session_id = session_id_for_request(body, headers)
             headers_for_upstream = headers
             _session, forwarded_body = STORE.begin_request(session_id, body, headers)
+        else:
+            session_id = session_id_for_request(body, headers)
+            headers_for_upstream = headers
+            forwarded_body = copy.deepcopy(body)
         upstream_base_url = upstream_base_url_for_request(headers_for_upstream)
         upstream = urllib.parse.urlparse(upstream_base_url.rstrip("/") + "/responses")
         effective_headers = apply_cached_upstream_auth(headers_for_upstream)
@@ -3343,7 +3534,8 @@ class Handler(BaseHTTPRequestHandler):
         auth_kind = "chatgpt" if effective_lowered.get("chatgpt-account-id") else "api-key-or-bearer"
         proxy_log(
             f"request session={session_id} auth={auth_kind} "
-            f"internal={is_internal_context} upstream={upstream.geturl()}"
+            f"internal={is_internal_context} title_generation={is_title_generation} "
+            f"capture={capture_proxy_session} upstream={upstream.geturl()}"
         )
         connection_cls = http.client.HTTPSConnection if upstream.scheme == "https" else http.client.HTTPConnection
         conn = connection_cls(upstream.hostname, upstream.port, timeout=120)
@@ -3388,23 +3580,24 @@ class Handler(BaseHTTPRequestHandler):
             if upstream_response.status >= 400:
                 preview = error_preview.decode("utf-8", errors="replace")
                 proxy_log(f"upstream error session={session_id} body={preview[:1000]!r}")
-                if not is_internal_context:
+                if capture_proxy_session:
                     STORE.fail_response(session_id, preview[:1000] or upstream_response.reason)
             else:
-                usage_kind = "context_workbench" if is_internal_context else "main"
-                fallback_model = str(forwarded_body.get("model") or body.get("model") or "")
-                for completed_response in completed_responses:
-                    STORE.record_usage(
-                        session_id,
-                        usage_kind,
-                        str(completed_response.get("model") or fallback_model),
-                        completed_response.get("usage"),
-                    )
-                if not is_internal_context:
+                if is_internal_context or capture_proxy_session:
+                    usage_kind = "context_workbench" if is_internal_context else "main"
+                    fallback_model = str(forwarded_body.get("model") or body.get("model") or "")
+                    for completed_response in completed_responses:
+                        STORE.record_usage(
+                            session_id,
+                            usage_kind,
+                            str(completed_response.get("model") or fallback_model),
+                            completed_response.get("usage"),
+                        )
+                if capture_proxy_session:
                     STORE.complete_response(session_id, response_items, "".join(text_parts))
         except Exception as exc:
             proxy_log(f"error session={session_id} error={type(exc).__name__}: {exc}")
-            if not is_internal_context:
+            if capture_proxy_session:
                 STORE.fail_response(session_id, str(exc))
             if not self.wfile.closed:
                 try:
