@@ -55,13 +55,24 @@ export interface ProviderFunctionCallOutputItem {
   output: unknown;
 }
 
-export type ContextInputRole = 'system' | 'developer' | 'user' | 'assistant' | 'compaction' | 'context';
-
 export type ProviderItem =
   | ProviderMessageItem
   | ProviderFunctionCallItem
   | ProviderFunctionCallOutputItem
   | Record<string, unknown>;
+
+export interface TranscriptNodeItem {
+  kind: string;
+  providerItem: ProviderItem;
+  inputIndex?: number;
+}
+
+export interface TranscriptNode {
+  id: string;
+  role: string;
+  items: TranscriptNodeItem[];
+  source_map: Record<string, string>;
+}
 
 export interface TextMessageBlock {
   kind: 'text';
@@ -85,22 +96,10 @@ export interface ToolMessageBlock {
 
 export type MessageBlock = TextMessageBlock | ReasoningMessageBlock | ThinkingMessageBlock | ToolMessageBlock;
 
-export interface TranscriptRecord {
-  role: ContextInputRole;
-  text: string;
-  attachments?: AttachmentRecord[];
-  toolEvents?: ToolEvent[];
-  blocks?: MessageBlock[];
-  providerItems?: ProviderItem[];
-  pending?: boolean;
-  tool_events?: ToolEventRecord[];
-  canonical_items?: CanonicalItem[];
-  provider_raw?: ProviderRaw;
-  providerRaw?: ProviderRaw;
-}
+export type TranscriptEntry = TranscriptNode;
 
 export interface MessageRecord {
-  role: 'user' | 'an' | 'system' | 'developer' | 'compaction' | 'context';
+  role: 'user' | 'an' | 'subagent' | 'system' | 'developer' | 'compaction' | 'context';
   text: string;
   attachments: AttachmentRecord[];
   toolEvents: ToolEvent[];
@@ -223,7 +222,7 @@ export interface ToolSetting {
   enabled: boolean;
 }
 
-export interface ContextWorkbenchHistoryEntry {
+export interface ContextWorkbenchChatMessage {
   role: 'user' | 'assistant';
   content: string;
 }
@@ -282,6 +281,8 @@ export interface InitPayload {
   };
   active_session_id?: string;
   sessions?: Array<{ id: string; title: string; status: string; is_running?: boolean }>;
+  conversations?: Record<string, TranscriptEntry[]>;
+  context_workbench_histories?: Record<string, ContextWorkbenchChatMessage[]>;
 }
 
 export interface SidebarPayload {
@@ -346,7 +347,7 @@ export interface ResetSessionResponse extends SidebarPayload {
 
 export interface TruncateSessionResponse extends SidebarPayload {
   session: SessionSummary;
-  conversation: TranscriptRecord[];
+  conversation: TranscriptEntry[];
 }
 
 export interface SendMessageResponse extends SidebarPayload {
@@ -360,8 +361,8 @@ export interface ContextChatResponse {
   answer: string;
   used_model?: string;
   tool_events?: ToolEvent[];
-  history: ContextWorkbenchHistoryEntry[];
-  conversation: TranscriptRecord[];
+  history: ContextWorkbenchChatMessage[];
+  conversation: TranscriptEntry[];
 }
 
 export interface ContextWorkbenchSettingsResponse {
@@ -445,8 +446,8 @@ export interface ContextChatStreamDoneEvent {
   answer: string;
   used_model?: string;
   tool_events?: ToolEvent[];
-  history: ContextWorkbenchHistoryEntry[];
-  conversation: TranscriptRecord[];
+  history: ContextWorkbenchChatMessage[];
+  conversation: TranscriptEntry[];
 }
 
 export type ContextChatStreamEvent =
@@ -525,25 +526,6 @@ export interface ToolEventRecord {
   status?: CanonicalStatus;
   call_id?: string;
   error?: string;
-  provider_raw?: ProviderRaw;
-  providerRaw?: ProviderRaw;
-  metadata?: CanonicalJsonObject;
-}
-
-export interface CanonicalTranscriptBlock {
-  kind: 'text' | 'tool';
-  text?: string;
-  tool_event?: ToolEventRecord;
-  metadata?: CanonicalJsonObject;
-}
-
-export interface CanonicalTranscriptRecord {
-  role: TranscriptRole;
-  text: string;
-  attachments?: AttachmentRecord[];
-  blocks?: CanonicalTranscriptBlock[];
-  tool_events?: ToolEventRecord[];
-  canonical_items?: CanonicalItem[];
   provider_raw?: ProviderRaw;
   providerRaw?: ProviderRaw;
   metadata?: CanonicalJsonObject;

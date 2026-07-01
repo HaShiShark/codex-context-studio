@@ -295,7 +295,6 @@ function Test-DesktopHookConfigInstalled {
   try {
     $configText = Get-Content -Raw -Path $desktopConfigPath
     return (
-      $configText.Contains("# BEGIN HASH_CONTEXT_DESKTOP_TOP") -and
       $configText.Contains("hooks.UserPromptSubmit") -and
       $configText.Contains("codex-context-hook.cmd")
     )

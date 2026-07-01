@@ -50,4 +50,4 @@ Remove-WorkspacePath $ProxyWork
   --workpath $ProxyWork `
   --specpath $ProxyWork `
   --name hash-proxy-server `
-  (Join-Path $Root "backend\proxy_server.py")
+  (Join-Path $Root "backend\proxy_fastapi.py")

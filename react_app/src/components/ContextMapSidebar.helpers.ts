@@ -2,8 +2,8 @@ import { getMessagePreviewText } from './MessageContent';
 import type { MessageRecord } from '../types';
 import {
   getContextToolWeightSource,
+  getContextTokenCount,
   getContextTokenWeightClass,
-  getContextWeightSource,
   type ContextMapNodeMeta,
   type ContextMessageTokenStat,
   type ContextTokenThresholds,
@@ -46,8 +46,26 @@ export const SELECTION_DRAG_THRESHOLD_PX = 4;
 export const SELECTION_AUTO_SCROLL_EDGE_PX = 68;
 export const SELECTION_AUTO_SCROLL_MAX_SPEED_PX = 14;
 
+function isAssistantStyleRole(role: MessageRecord['role']) {
+  return role === 'an' || role === 'subagent';
+}
+
+function providerItemType(item: unknown) {
+  return item && typeof item === 'object' && !Array.isArray(item)
+    ? String((item as Record<string, unknown>).type || '').trim()
+    : '';
+}
+
+function subagentAuthorFromMessage(message: MessageRecord) {
+  const agentMessage = (message.providerItems || []).find((item) => providerItemType(item) === 'agent_message');
+  if (!agentMessage || typeof agentMessage !== 'object' || Array.isArray(agentMessage)) {
+    return '';
+  }
+  return String((agentMessage as Record<string, unknown>).author || '').trim();
+}
+
 export function getMinimapBarHeightPx(role: MessageRecord['role'], weightClass: ContextTokenWeightClass) {
-  if (role !== 'an') {
+  if (!isAssistantStyleRole(role)) {
     return 4;
   }
 
@@ -67,7 +85,7 @@ export function contextNodeRoleName(role: MessageRecord['role']) {
 }
 
 export function contextNodeClassName(role: MessageRecord['role']) {
-  return role === 'an' ? 'assistant' : role;
+  return isAssistantStyleRole(role) ? 'assistant' : role;
 }
 
 export function sidebarText(locale: 'zh-CN' | 'en-US', english: string, chinese: string) {
@@ -164,9 +182,11 @@ export function buildMessageStats(
 ): MessageStat[] {
   return messages.map((message, index) => {
     const meta = nodeMeta[index];
-    const tokens = countTokens(getContextWeightSource(message));
+    const tokens = getContextTokenCount(message);
     const toolTokens = countTokens(getContextToolWeightSource(message));
-    const roleName = contextNodeRoleName(message.role);
+    const roleName = message.role === 'subagent'
+      ? ['subagent', subagentAuthorFromMessage(message)].filter(Boolean).join(' ')
+      : contextNodeRoleName(message.role);
     const size = (tokens / 1000).toFixed(1);
 
     return {

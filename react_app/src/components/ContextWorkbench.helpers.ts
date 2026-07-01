@@ -1,5 +1,5 @@
 import type {
-  ContextWorkbenchHistoryEntry,
+  ContextWorkbenchChatMessage,
   ContextWorkbenchToolCatalogItem,
   ProxyUsageBucket,
   ProxyUsageSummary,
@@ -101,14 +101,14 @@ export function createManualMessage(
   };
 }
 
-export function buildManualMessagesFromHistory(history: ContextWorkbenchHistoryEntry[]): ManualWorkbenchMessage[] {
-  if (!history.length) {
+export function buildManualMessagesFromChat(chat: ContextWorkbenchChatMessage[]): ManualWorkbenchMessage[] {
+  if (!chat.length) {
     return [];
   }
 
-  return history.map((entry, index) =>
+  return chat.map((entry, index) =>
     createManualMessage(entry.role, entry.content, {
-      id: `history-${index}-${entry.role}`,
+      id: `context-chat-${index}-${entry.role}`,
     }),
   );
 }

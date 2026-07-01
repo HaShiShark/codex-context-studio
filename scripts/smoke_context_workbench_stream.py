@@ -113,8 +113,8 @@ def stream_context_turn(
     payload = {
         "session_id": session_id,
         "message": (
-            "Call compress_context_item on Node #2 item #1, compress it to "
-            '"alpha summary". Then call set_context_revision_summary and reply done.'
+            "Call get_nodes for Node #2. Then call write_nodes to delete Node #2 "
+            'and insert after Node #2 an assistant node with content "alpha summary". Reply done.'
         ),
         "selected_node_indexes": [],
         "reasoning_effort": "none",
@@ -189,7 +189,6 @@ def stream_context_turn(
                         "sync_during_stream": sync_done.is_set() if sync_during_stream else False,
                         "answer": str(event.get("answer") or ""),
                         "conversation": event.get("conversation") if isinstance(event.get("conversation"), list) else [],
-                        "revisions": event.get("revisions") if isinstance(event.get("revisions"), list) else [],
                     }
 
     tail = buffer.strip()
@@ -205,7 +204,6 @@ def stream_context_turn(
                 "sync_during_stream": sync_done.is_set() if sync_during_stream else False,
                 "answer": str(event.get("answer") or ""),
                 "conversation": event.get("conversation") if isinstance(event.get("conversation"), list) else [],
-                "revisions": event.get("revisions") if isinstance(event.get("revisions"), list) else [],
             }
 
     raise RuntimeError(f"context stream ended without done; events={events}; tools={tools}")
@@ -257,27 +255,27 @@ def verify_external_sync_preserves_workbench_history(base_url: str, session_id: 
     synced_history = synced.get("context_workbench_history")
     if not isinstance(synced_history, list) or len(synced_history) < 2:
         raise RuntimeError("proxy sync did not preserve context workbench history after transcript change")
-    if synced.get("pending_context_restore"):
-        raise RuntimeError("proxy sync returned stale pending restore after transcript change")
+    if "pending_context_restore" in synced or "context_revision_history" in synced:
+        raise RuntimeError("proxy sync returned stale restore/revision payload")
 
     init_payload = get_json(base_url, "/api/init")
     histories = init_payload.get("context_workbench_histories")
     saved_history = histories.get(session_id) if isinstance(histories, dict) else None
     if not isinstance(saved_history, list) or len(saved_history) < 2:
         raise RuntimeError("init did not preserve context workbench history after transcript change")
-    pending_restores = init_payload.get("pending_context_restores")
-    if isinstance(pending_restores, dict) and pending_restores.get(session_id):
-        raise RuntimeError("init still exposes stale pending restore after transcript change")
+    stale_init_keys = sorted(
+        {"pending_context_restores", "context_revision_histories"}.intersection(init_payload)
+    )
+    if stale_init_keys:
+        raise RuntimeError(f"init still exposes stale restore/revision payload: {stale_init_keys}")
     conversations = init_payload.get("conversations")
     saved_conversation = conversations.get(session_id) if isinstance(conversations, dict) else None
     if not isinstance(saved_conversation, list) or len(saved_conversation) != len(changed_transcript):
         raise RuntimeError("init did not expose the externally synced transcript")
 
-    revisions = synced.get("context_revision_history")
     return {
         "history_preserved": True,
         "history_count_after_sync": len(saved_history),
-        "revision_count_after_sync": len(revisions) if isinstance(revisions, list) else 0,
         "conversation_count_after_sync": len(saved_conversation),
     }
 
@@ -297,7 +295,7 @@ def main() -> int:
             args.timeout,
             sync_during_stream=not args.skip_concurrent_sync,
         )
-        required_tools = {"compress_context_item", "set_context_revision_summary"}
+        required_tools = {"get_nodes", "write_nodes"}
         missing_tools = sorted(required_tools.difference(result["tools"]))
         if missing_tools:
             raise RuntimeError(f"stream completed but missing tools: {missing_tools}; saw={result['tools']}")
@@ -313,7 +311,6 @@ def main() -> int:
                     "event_count": result["event_count"],
                     "tools": result["tools"],
                     "sync_during_stream": result["sync_during_stream"],
-                    "revision_count": len(result["revisions"]),
                     "external_sync_state": sync_state,
                     "answer_preview": result["answer"][:200],
                 },

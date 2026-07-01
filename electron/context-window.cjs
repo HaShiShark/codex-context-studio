@@ -23,6 +23,9 @@ const DARK_WINDOW_ACCENT_COLOR = '#211c18';
 
 app.setPath('userData', path.join(app.getPath('appData'), 'hash-context-codex-lab'));
 
+// All project-related data/state/logs live under ~/.hash-context-codex
+const HASH_CONTEXT_DATA_DIR = path.join(app.getPath('home'), '.hash-context-codex');
+
 let mainWindow = null;
 let backendProcess = null;
 let frontendProcess = null;
@@ -35,7 +38,7 @@ function appRoot() {
 }
 
 function writeLog(message) {
-  const logDir = path.join(app.getPath('userData'), 'logs');
+  const logDir = path.join(HASH_CONTEXT_DATA_DIR, 'logs');
   fs.mkdirSync(logDir, { recursive: true });
   fs.appendFileSync(
     path.join(logDir, 'electron-window.log'),
@@ -214,7 +217,7 @@ async function waitFor(port, pathname, label, timeoutMs = 30000, hostname = HOST
 function pythonCandidateWorks(candidate) {
   const result = spawnSync(
     candidate.command,
-    [...candidate.args, '-c', 'import dotenv, zstandard'],
+    [...candidate.args, '-c', 'import dotenv, zstandard, fastapi, uvicorn, httpx'],
     { encoding: 'utf8', timeout: 5000, windowsHide: true },
   );
   return result.status === 0;
@@ -257,7 +260,7 @@ function pythonScriptCommand(root, scriptName) {
   const localPython = localVenvPython(root);
   if (fs.existsSync(localPython)) {
     throw new Error(
-      `Project .venv at ${localPython} is missing required dependencies (dotenv, zstandard). ` +
+      `Project .venv at ${localPython} is missing required dependencies (dotenv, zstandard, fastapi, uvicorn, httpx). ` +
         'Run npm run setup:python to repair it, then try again.',
     );
   }
@@ -330,13 +333,13 @@ async function startBackend(root) {
   }
 
   writeLog('starting backend');
-  const serverCommand = pythonServerCommand(root, path.join('backend', 'proxy_server.py'), 'hash-web-server');
+  const serverCommand = pythonServerCommand(root, path.join('backend', 'web_server.py'), 'hash-web-server');
   backendProcess = spawn(serverCommand.command, serverCommand.args, {
     cwd: root,
     env: cleanEnv({
       HASH_WEB_HOST: HOST,
       HASH_WEB_PORT: String(BACKEND_PORT),
-      HASH_DATA_DIR: path.join(app.getPath('userData'), 'data'),
+      HASH_DATA_DIR: HASH_CONTEXT_DATA_DIR,
       PYTHONIOENCODING: 'utf-8',
       PYTHONPATH: pythonPathForRoot(root),
     }),
@@ -358,13 +361,13 @@ async function startProxy(root) {
   }
 
   writeLog('starting proxy');
-  const serverCommand = pythonServerCommand(root, path.join('backend', 'proxy_server.py'), 'hash-proxy-server');
+  const serverCommand = pythonServerCommand(root, path.join('backend', 'proxy_fastapi.py'), 'hash-proxy-server');
   proxyProcess = spawn(serverCommand.command, serverCommand.args, {
     cwd: root,
     env: cleanEnv({
       HASH_CONTEXT_PROXY_HOST: HOST,
       HASH_CONTEXT_PROXY_PORT: String(PROXY_PORT),
-      HASH_CONTEXT_PROXY_DATA_DIR: path.join(app.getPath('userData'), 'data'),
+      HASH_CONTEXT_PROXY_DATA_DIR: HASH_CONTEXT_DATA_DIR,
       PYTHONIOENCODING: 'utf-8',
       PYTHONPATH: pythonPathForRoot(root),
     }),

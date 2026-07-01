@@ -1,9 +1,9 @@
 import type {
   ContextChatStreamEvent,
-  ContextWorkbenchHistoryEntry,
+  ContextWorkbenchChatMessage,
   InitPayload,
   ProxyUsageSummary,
-  TranscriptRecord,
+  TranscriptEntry,
 } from './types';
 
 export async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -36,17 +36,25 @@ async function readJsonLineStream<T>(response: Response, onEvent: (event: T) => 
     while (idx !== -1) {
       const line = buffer.slice(0, idx).trim();
       buffer = buffer.slice(idx + 1);
-      if (line) onEvent(JSON.parse(line) as T);
+      if (line) { try { onEvent(JSON.parse(line) as T); } catch { /* skip malformed line */ } }
       idx = buffer.indexOf('\n');
     }
   }
-  if (buffer.trim()) onEvent(JSON.parse(buffer.trim()) as T);
+  if (buffer.trim()) { try { onEvent(JSON.parse(buffer.trim()) as T); } catch { /* skip malformed */ } }
 }
 
 // ── init / settings ───────────────────────────────────────────────────────────
 
-export function fetchInit(): Promise<InitPayload> {
-  return apiFetch<InitPayload>('/api/init');
+export function fetchInit(options: { sessionId?: string; includeConversation?: boolean } = {}): Promise<InitPayload> {
+  const params = new URLSearchParams();
+  if (options.sessionId) {
+    params.set('session_id', options.sessionId);
+  }
+  if (options.includeConversation === false) {
+    params.set('include_conversation', '0');
+  }
+  const query = params.toString();
+  return apiFetch<InitPayload>(query ? `/api/init?${query}` : '/api/init');
 }
 
 export interface ProxySettings {
@@ -74,20 +82,66 @@ export interface ProxySessionSummary {
   id: string;
   title: string;
   status: 'mirror' | 'running' | 'compacting' | 'error' | string;
-  transcript?: TranscriptRecord[];
-  active_transcript?: TranscriptRecord[];
+  transcript?: TranscriptEntry[];
   is_running?: boolean;
-  revision?: number;
   last_error?: string;
   created_at?: string;
   updated_at?: string;
+  transcript_version?: number;
   usage_summary?: ProxyUsageSummary;
-  workbench_history?: ContextWorkbenchHistoryEntry[];
 }
 
 export interface ProxySessionsResponse {
   active_session_id: string;
   sessions: ProxySessionSummary[];
+}
+
+export type TranscriptPatchOp =
+  | {
+      op: 'splice_nodes';
+      index: number;
+      delete_count: number;
+      nodes: TranscriptEntry[];
+    }
+  | {
+      op: 'append_node';
+      node: TranscriptEntry;
+    }
+  | {
+      op: 'replace_node';
+      index: number;
+      node: TranscriptEntry;
+    }
+  | {
+      op: 'delete_node';
+      index: number;
+    };
+
+export type ProxyRealtimeEvent = {
+  type: string;
+  event_id?: number;
+  session_id?: string;
+  session?: ProxySessionSummary | null;
+  session_list?: ProxySessionsResponse;
+  status?: string;
+  is_running?: boolean;
+  last_error?: string;
+  reason?: string;
+  phase?: string;
+  base_version?: number;
+  next_version?: number;
+  transcript_version?: number;
+  transcript?: TranscriptEntry[];
+  ops?: TranscriptPatchOp[];
+  usage_summary?: ProxyUsageSummary;
+  message?: string;
+  code?: string;
+};
+
+export function proxyRealtimeUrl(): string {
+  const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  const hostname = window.location.hostname || 'localhost';
+  return `${protocol}://${hostname}:8787/api/proxy/ws`;
 }
 
 export function fetchProxySessionsRequest(): Promise<ProxySessionsResponse> {
@@ -102,16 +156,19 @@ export function fetchProxySessionUsageRequest(sessionId: string): Promise<{ summ
   return apiFetch<{ summary: ProxyUsageSummary }>(`/api/proxy/sessions/${encodeURIComponent(sessionId)}/usage`);
 }
 
-export function resetProxyUsageRequest(sessionId: string): Promise<{ ok: boolean }> {
+export function resetProxyUsageRequest(
+  sessionId: string,
+): Promise<{ cleared_count: number; summary: ProxyUsageSummary }> {
   return apiFetch('/api/proxy/sessions/' + encodeURIComponent(sessionId) + '/usage/reset', { method: 'POST' });
 }
 
-export function resetProxySessionRequest(sessionId: string): Promise<ProxySessionSummary> {
-  return apiFetch<ProxySessionSummary>('/api/proxy/sessions/' + encodeURIComponent(sessionId) + '/reset', { method: 'POST' });
-}
-
-export function clearWorkbenchHistoryRequest(sessionId: string): Promise<{ ok: boolean }> {
-  return apiFetch('/api/proxy/sessions/' + encodeURIComponent(sessionId) + '/workbench/clear', { method: 'POST' });
+export function clearContextWorkbenchChatRequest(
+  sessionId: string,
+): Promise<{ conversation: TranscriptEntry[]; history: ContextWorkbenchChatMessage[] }> {
+  return apiFetch('/api/context-workbench-history-clear', {
+    method: 'POST',
+    body: JSON.stringify({ session_id: sessionId }),
+  });
 }
 
 export function syncProxySessionRequest(payload: {
@@ -128,7 +185,7 @@ export async function streamContextChatRequest(
   onEvent: (event: ContextChatStreamEvent) => void,
   options: { signal?: AbortSignal } = {},
 ): Promise<void> {
-  const response = await fetch('/api/workbench/chat', {
+  const response = await fetch('/api/context-chat-stream', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     signal: options.signal,

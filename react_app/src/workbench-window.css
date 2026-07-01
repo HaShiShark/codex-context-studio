@@ -294,6 +294,22 @@ html[data-workbench-window-moving] {
   line-height: 1.6;
 }
 
+.workbench-realtime-error {
+  position: absolute;
+  top: 42px;
+  right: 14px;
+  z-index: 20;
+  max-width: min(520px, calc(100% - 28px));
+  padding: 6px 10px;
+  border: 1px solid rgba(181, 77, 66, 0.28);
+  border-radius: 6px;
+  color: #b54d42;
+  background: var(--bg-main);
+  font-size: var(--ui-font-size-sm);
+  line-height: 1.4;
+  pointer-events: none;
+}
+
 .workbench-window-button {
   justify-self: center;
   border: 0;
@@ -570,8 +586,11 @@ html[data-workbench-window-moving] {
   border-left: 0;
 }
 
-.workbench-window-shell .context-minimap-bar.assistant {
+.workbench-window-shell .context-minimap-bar.assistant,
+.workbench-window-shell .context-minimap-bar.developer,
+.workbench-window-shell .context-minimap-bar.system {
   left: 4px;
+  right: auto;
   width: calc(100% - 8px);
 }
 
@@ -599,6 +618,12 @@ html[data-workbench-window-moving] {
 
 .workbench-window-shell .context-minimap-bar.weight-neutral {
   background: rgba(116, 93, 83, 0.32);
+}
+
+.workbench-window-shell .context-minimap-bar.developer,
+.workbench-window-shell .context-minimap-bar.system {
+  background: rgba(116, 108, 101, 0.34);
+  opacity: 0.58;
 }
 
 .workbench-window-shell .context-minimap-bar.hovered,
@@ -1246,6 +1271,12 @@ html[data-theme-mode="dark"] .workbench-window-shell .markdown-mermaid-error {
   color: #e09b8d;
 }
 
+html[data-theme-mode="dark"] .workbench-realtime-error {
+  border-color: rgba(224, 155, 141, 0.28);
+  color: #e09b8d;
+  background: var(--bg-main);
+}
+
 html[data-theme-mode="dark"] .workbench-window-shell .markdown-body a,
 html[data-theme-mode="dark"] .workbench-window-shell .message-attachment-open,
 html[data-theme-mode="dark"] .workbench-window-shell .thinking-inline-text,
@@ -1337,6 +1368,12 @@ html[data-theme-mode="dark"] .workbench-window-shell .context-minimap-bar.weight
   background: rgba(222, 199, 181, 0.22);
 }
 
+html[data-theme-mode="dark"] .workbench-window-shell .context-minimap-bar.developer,
+html[data-theme-mode="dark"] .workbench-window-shell .context-minimap-bar.system {
+  background: rgba(222, 199, 181, 0.24);
+  opacity: 0.62;
+}
+
 html[data-theme-mode="dark"] .workbench-window-shell .context-minimap-viewport {
   border: 0;
   background: rgba(184, 121, 98, 0.16);
@@ -1366,7 +1403,9 @@ html[data-theme-mode="dark"] .workbench-window-control-btn.close:hover {
 
 /* Final scoped typography bridge for the Electron window. */
 .workbench-window-shell .markdown-body,
-.workbench-window-shell .message .content {
+.workbench-window-shell .message .content,
+.workbench-window-shell .inline-tool-call-count,
+.workbench-window-shell .reasoning-block-toggle {
   font-size: var(--ui-font-size-lg);
 }
 
@@ -1376,7 +1415,6 @@ html[data-theme-mode="dark"] .workbench-window-control-btn.close:hover {
 .workbench-window-shell .manual-workbench-input,
 .workbench-window-shell .tool-btn-capsule,
 .workbench-window-shell .dropdown-item,
-.workbench-window-shell .inline-tool-call-count,
 .workbench-window-shell .inline-tool-command-preview,
 .workbench-window-shell .inline-tool-detail-text,
 .workbench-window-shell .tool-shell-command,
@@ -1384,7 +1422,6 @@ html[data-theme-mode="dark"] .workbench-window-control-btn.close:hover {
 .workbench-window-shell .tool-json-scroll pre,
 .workbench-window-shell .tool-shell-footer,
 .workbench-window-shell .thinking-inline-text,
-.workbench-window-shell .reasoning-block-toggle,
 .workbench-window-shell .workbench-panel-desc,
 .workbench-window-shell .suggestion-row-title,
 .workbench-window-shell .manual-workbench-empty-title,
@@ -1404,6 +1441,7 @@ html[data-theme-mode="dark"] .workbench-window-control-btn.close:hover {
 .workbench-window-shell .context-map-expanded-content .markdown-body,
 .workbench-window-shell .context-map-expanded-content .inline-tool-call-count,
 .workbench-window-shell .context-map-expanded-content .inline-tool-summary,
+.workbench-window-shell .context-map-expanded-content .reasoning-block-toggle,
 .workbench-window-shell .context-map-expanded-content .markdown-code-block code.hljs,
 .workbench-window-shell .context-map-expanded-content .markdown-table-wrap th,
 .workbench-window-shell .context-map-expanded-content .markdown-table-wrap td,

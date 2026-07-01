@@ -16,12 +16,13 @@ from simple_agent.tools import normalize_tool_settings
 MODULE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = MODULE_DIR.parent
 LEGACY_DATA_DIR = REPO_ROOT / "data"
+DEFAULT_DATA_DIR = Path.home() / ".hash-context-codex"
 
 
 def _resolve_data_dir() -> Path:
     raw_data_dir = str(os.getenv("HASH_CONFIG_DIR") or os.getenv("HASH_DATA_DIR") or "").strip()
     if not raw_data_dir:
-        return LEGACY_DATA_DIR
+        return DEFAULT_DATA_DIR
 
     data_dir = Path(raw_data_dir).expanduser()
     return data_dir if data_dir.is_absolute() else (REPO_ROOT / data_dir).resolve()

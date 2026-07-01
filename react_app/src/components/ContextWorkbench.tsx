@@ -3,7 +3,7 @@ import type { ChangeEvent, KeyboardEvent, MouseEvent, ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 
 import {
-  clearWorkbenchHistoryRequest,
+  clearContextWorkbenchChatRequest,
   fetchProxySessionUsageRequest,
   fetchSettings,
   resetProxyUsageRequest,
@@ -17,7 +17,7 @@ import {
   type ContextTokenThresholds,
 } from '../contextTokenWeight';
 import type {
-  ContextWorkbenchHistoryEntry,
+  ContextWorkbenchChatMessage,
   MessageRecord,
   ProxyUsageSummary,
   ReasoningOption,
@@ -25,7 +25,7 @@ import type {
 import { normalizeSupportedLocale, type UiLocale } from '../i18n';
 import { copyText, getReasoningLabel, normalizeConversation } from '../utils';
 import {
-  buildManualMessagesFromHistory,
+  buildManualMessagesFromChat,
   buildWorkbenchModelOptions,
   createManualMessage,
   DEFAULT_WORKBENCH_MODELS,
@@ -60,16 +60,15 @@ interface ContextWorkbenchProps {
   tokenThresholds: ContextTokenThresholds;
   sessionId: string;
   isMainChatBusy: boolean;
-  history: ContextWorkbenchHistoryEntry[];
+  contextWorkbenchChat: ContextWorkbenchChatMessage[];
   reasoningOptions: ReasoningOption[];
   proxyUsageSummary: ProxyUsageSummary | null;
   uiLocale: UiLocale;
   themeMode: 'light' | 'dark';
-  onHistoryChange: (sessionId: string, history: ContextWorkbenchHistoryEntry[]) => void;
+  onContextWorkbenchChatChange: (sessionId: string, chat: ContextWorkbenchChatMessage[]) => void;
   onConversationChange: (
     sessionId: string,
     conversation: MessageRecord[],
-    options?: { resetProxyOverride?: boolean; skipProxyOverride?: boolean },
   ) => void | Promise<void>;
   onProxyUsageSummaryChange: (summary: ProxyUsageSummary | null) => void;
   onEnsureSession: () => Promise<string>;
@@ -81,21 +80,16 @@ interface ContextWorkbenchProps {
 
 interface ManualMessageItemProps {
   entry: ManualWorkbenchMessage;
-  messageIndex: number;
   uiLocale: UiLocale;
   onCopy: (content: string) => void;
-  onDelete: (messageIndex: number) => void;
 }
 
 function ManualMessageItem({
   entry,
-  messageIndex,
   uiLocale,
   onCopy,
-  onDelete,
 }: ManualMessageItemProps) {
   const copyLabel = uiText(uiLocale, 'Copy', '复制');
-  const deleteLabel = uiText(uiLocale, 'Delete', '删除');
 
   return (
     <div className={`manual-workbench-message ${entry.role}`}>
@@ -128,14 +122,6 @@ function ManualMessageItem({
               onClick={() => onCopy(entry.content)}
             >
               <i className="ph-light ph-copy" />
-            </button>
-            <button
-              aria-label={deleteLabel}
-              title={deleteLabel}
-              type="button"
-              onClick={() => onDelete(messageIndex)}
-            >
-              <i className="ph-light ph-trash" />
             </button>
           </div>
         ) : null}
@@ -184,12 +170,12 @@ export default function ContextWorkbench({
   tokenThresholds,
   sessionId,
   isMainChatBusy,
-  history,
+  contextWorkbenchChat,
   reasoningOptions,
   proxyUsageSummary,
   uiLocale,
   themeMode,
-  onHistoryChange,
+  onContextWorkbenchChatChange,
   onConversationChange,
   onProxyUsageSummaryChange,
   onEnsureSession,
@@ -203,7 +189,7 @@ export default function ContextWorkbench({
   const [manualReasoning, setManualReasoning] = useState('default');
   const [isManualReasoningOpen, setIsManualReasoningOpen] = useState(false);
   const [manualMessages, setManualMessages] = useState<ManualWorkbenchMessage[]>(
-    () => buildManualMessagesFromHistory(history),
+    () => buildManualMessagesFromChat(contextWorkbenchChat),
   );
   const [isManualSending, setIsManualSending] = useState(false);
   const [isUsageClearing, setIsUsageClearing] = useState(false);
@@ -284,11 +270,11 @@ export default function ContextWorkbench({
     () => localSuggestionNodes.filter((node) => criticalNodeIndexSet.has(node.node_index)),
     [localSuggestionNodes, criticalNodeIndexSet],
   );
-  const manualHistoryKey = useMemo(() => JSON.stringify(history || []), [history]);
+  const manualChatKey = useMemo(() => JSON.stringify(contextWorkbenchChat || []), [contextWorkbenchChat]);
   const isWorkbenchBusy = isManualSending;
   const isManualComposerLocked = isMainChatBusy || isWorkbenchBusy;
   const manualReasoningDisabled = reasoningOptions.length === 0;
-  const hasClearableManualHistory = manualMessages.some((message) => !message.pending);
+  const hasClearableManualChat = manualMessages.some((message) => !message.pending);
   const currentManualReasoningLabel = reasoningDisplayLabel(
     manualReasoning,
     getReasoningLabel(manualReasoning, reasoningOptions),
@@ -374,9 +360,9 @@ export default function ContextWorkbench({
 
 
   useEffect(() => {
-    setManualMessages(buildManualMessagesFromHistory(history));
+    setManualMessages(buildManualMessagesFromChat(contextWorkbenchChat));
     setIsManualSending(false);
-  }, [manualHistoryKey, sessionId]);
+  }, [manualChatKey, sessionId]);
 
   useEffect(() => {
     setManualDraft('');
@@ -457,17 +443,17 @@ export default function ContextWorkbench({
     }
   }
 
-  async function handleSaveWorkbenchSettings(overrides?: {
+  async function handleSaveWorkbenchSettings(updates?: {
     model?: string;
     providerId?: string;
     thresholds?: { warningThreshold: number; criticalThreshold: number };
     locale?: UiLocale;
   }) {
-    const nextModel = (overrides?.model ?? workbenchModelDraft).trim();
+    const nextModel = (updates?.model ?? workbenchModelDraft).trim();
     if (!nextModel) return;
 
-    const thresholds = overrides?.thresholds ?? nextTokenThresholds;
-    if (!overrides?.thresholds && tokenThresholdError) {
+    const thresholds = updates?.thresholds ?? nextTokenThresholds;
+    if (!updates?.thresholds && tokenThresholdError) {
       setSettingsError(tokenThresholdError);
       return;
     }
@@ -476,7 +462,7 @@ export default function ContextWorkbench({
     onTokenThresholdsChange(thresholds);
 
     try {
-      await saveSettingsRequest({ workbench_model: nextModel, user_locale: overrides?.locale ?? uiLocaleDraft });
+      await saveSettingsRequest({ workbench_model: nextModel, user_locale: updates?.locale ?? uiLocaleDraft });
     } catch (error) {
       setSettingsError(getThrownMessage(error));
     }
@@ -633,13 +619,11 @@ export default function ContextWorkbench({
           }
 
           streamCompleted = true;
-          onHistoryChange(targetSessionId, event.history);
+          onContextWorkbenchChatChange(targetSessionId, event.history);
           conversationCommit = Promise.resolve(
-          onConversationChange(targetSessionId, normalizeConversation(event.conversation), {
-            skipProxyOverride: true,
-          }),
-        );
-          setManualMessages(buildManualMessagesFromHistory(event.history));
+            onConversationChange(targetSessionId, normalizeConversation(event.conversation)),
+          );
+          setManualMessages(buildManualMessagesFromChat(event.history));
         },
         {
           signal: streamController.signal,
@@ -709,32 +693,13 @@ export default function ContextWorkbench({
     }
   }
 
-  async function handleDeleteManualMessage(messageIndex: number) {
-    if (!sessionId || isWorkbenchBusy || isMainChatBusy) {
-      return;
-    }
-
-    const targetMessage = manualMessages[messageIndex];
-    if (!targetMessage || targetMessage.pending) {
-      return;
-    }
-
+  async function handleClearManualChat() {
+    if (!sessionId || isManualComposerLocked || !hasClearableManualChat) return;
     try {
-      // per-message delete not supported in new backend — noop
-      setManualFeedback('');
-      setManualFeedbackError(false);
-    } catch (error) {
-      setManualFeedback(getThrownMessage(error));
-      setManualFeedbackError(true);
-    }
-  }
-
-  async function handleClearManualHistory() {
-    if (!sessionId || isManualComposerLocked || !hasClearableManualHistory) return;
-    try {
-      await clearWorkbenchHistoryRequest(sessionId);
-      onHistoryChange(sessionId, []);
-      setManualMessages([]);
+      const response = await clearContextWorkbenchChatRequest(sessionId);
+      onContextWorkbenchChatChange(sessionId, response.history);
+      await onConversationChange(sessionId, normalizeConversation(response.conversation));
+      setManualMessages(buildManualMessagesFromChat(response.history));
       setManualFeedback('');
       setManualFeedbackError(false);
     } catch (error) {
@@ -852,14 +817,12 @@ export default function ContextWorkbench({
             <div className="manual-workbench">
               <div className="manual-workbench-list" ref={manualListRef}>
                 {manualMessages.length ? (
-                  manualMessages.map((entry, messageIndex) => (
+                  manualMessages.map((entry) => (
                     <ManualMessageItem
                       entry={entry}
                       key={entry.id}
-                      messageIndex={messageIndex}
                       uiLocale={uiLocaleDraft}
                       onCopy={(content) => void handleCopyManualMessage(content)}
-                      onDelete={(index) => void handleDeleteManualMessage(index)}
                     />
                   ))
                 ) : (
@@ -924,14 +887,14 @@ export default function ContextWorkbench({
                       rows={1}
                       value={manualDraft}
                     />
-                    {hasClearableManualHistory ? (
+                    {hasClearableManualChat ? (
                       <button
-                        aria-label={uiText(uiLocaleDraft, 'Clear context model chat history', '清空上下文模型对话记录')}
+                        aria-label={uiText(uiLocaleDraft, 'Clear context model chat', '清空上下文模型对话')}
                         className="manual-workbench-clear"
                         disabled={isManualSending}
-                        title={uiText(uiLocaleDraft, 'Clear context model chat history', '清空上下文模型对话记录')}
+                        title={uiText(uiLocaleDraft, 'Clear context model chat', '清空上下文模型对话')}
                         type="button"
-                        onClick={() => void handleClearManualHistory()}
+                        onClick={() => void handleClearManualChat()}
                       >
                         <i className="ph-light ph-broom" />
                       </button>

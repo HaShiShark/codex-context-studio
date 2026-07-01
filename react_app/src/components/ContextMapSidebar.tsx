@@ -13,7 +13,7 @@ import ContextWorkbench from './ContextWorkbench';
 import ContextMapNodeList from './ContextMapNodeList';
 import ContextMinimap from './ContextMinimap';
 import type {
-  ContextWorkbenchHistoryEntry,
+  ContextWorkbenchChatMessage,
   MessageRecord,
   ProxyUsageSummary,
   ReasoningOption,
@@ -55,16 +55,15 @@ interface ContextMapSidebarProps {
   onJumpToMessage: (messageIndex: number) => void;
   sessionId: string;
   isMainChatBusy: boolean;
-  contextWorkbenchHistory: ContextWorkbenchHistoryEntry[];
+  contextWorkbenchChat: ContextWorkbenchChatMessage[];
   reasoningOptions: ReasoningOption[];
   proxyUsageSummary: ProxyUsageSummary | null;
   uiLocale: 'zh-CN' | 'en-US';
   themeMode: 'light' | 'dark';
-  onContextWorkbenchHistoryChange: (sessionId: string, history: ContextWorkbenchHistoryEntry[]) => void;
+  onContextWorkbenchChatChange: (sessionId: string, chat: ContextWorkbenchChatMessage[]) => void;
   onContextWorkbenchConversationChange: (
     sessionId: string,
     conversation: MessageRecord[],
-    options?: { resetProxyOverride?: boolean; skipProxyOverride?: boolean },
   ) => void | Promise<void>;
   onProxyUsageSummaryChange: (summary: ProxyUsageSummary | null) => void;
   onEnsureSession: () => Promise<string>;
@@ -80,12 +79,12 @@ export default function ContextMapSidebar({
   onJumpToMessage,
   sessionId,
   isMainChatBusy,
-  contextWorkbenchHistory,
+  contextWorkbenchChat,
   reasoningOptions,
   proxyUsageSummary,
   uiLocale,
   themeMode,
-  onContextWorkbenchHistoryChange,
+  onContextWorkbenchChatChange,
   onContextWorkbenchConversationChange,
   onProxyUsageSummaryChange,
   onEnsureSession,
@@ -794,12 +793,12 @@ export default function ContextMapSidebar({
           tokenThresholds={tokenThresholds}
           sessionId={sessionId}
           isMainChatBusy={isMainChatBusy}
-          history={contextWorkbenchHistory}
+          contextWorkbenchChat={contextWorkbenchChat}
           reasoningOptions={reasoningOptions}
           proxyUsageSummary={proxyUsageSummary}
           uiLocale={uiLocale}
           themeMode={themeMode}
-          onHistoryChange={onContextWorkbenchHistoryChange}
+          onContextWorkbenchChatChange={onContextWorkbenchChatChange}
           onConversationChange={onContextWorkbenchConversationChange}
           onProxyUsageSummaryChange={onProxyUsageSummaryChange}
           onEnsureSession={onEnsureSession}

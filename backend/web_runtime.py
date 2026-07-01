@@ -3,11 +3,9 @@ from __future__ import annotations
 import base64
 import json
 import mimetypes
-import sqlite3
 import time
 import uuid
 from collections.abc import Callable
-from contextlib import closing
 from datetime import datetime, timezone
 from http import HTTPStatus
 from pathlib import Path
@@ -41,17 +39,13 @@ from backend.web_context import (
     build_attachment_input,
     build_attachment_path_note,
     build_context_workspace_snapshot,
-    coerce_context_revision_number,
-    context_revision_summaries,
     editable_context_node_count,
     extract_text_from_provider_message_content,
-    find_active_context_revision_id,
     model_options,
     normalize_context_chat_history,
     normalize_provider_items,
     normalize_selected_node_indexes,
     normalize_transcript,
-    proxy_state_sqlite_file,
     sanitize_value,
     serialize_tool_event,
     write_context_edit_marker,
@@ -143,7 +137,7 @@ def build_context_chat_runtime(
     selected_indexes: list[int] | None = None,
 ) -> tuple[str, str, ContextWorkbenchDraft, ContextWorkbenchToolRegistry, list[dict[str, Any]]]:
     safe_selected_indexes = normalize_selected_node_indexes(selected_indexes or [], len(session.transcript))
-    draft = ContextWorkbenchDraft(normalize_transcript(session.transcript), safe_selected_indexes)
+    draft = ContextWorkbenchDraft(session.transcript, safe_selected_indexes)
     snapshot = build_context_workspace_snapshot(session, selected_indexes=safe_selected_indexes)
     tool_registry = ContextWorkbenchToolRegistry(
         draft,
@@ -209,10 +203,12 @@ def build_context_chat_runtime(
         "  节点级批量操作：删除和/或插入节点，一次调用完成所有变更。\n"
         "  delete：要删除的节点编号列表，引用初始快照，可不连续。\n"
         "  inserts：[{after: 锁点编号, role: user|assistant|developer, content: 新内容}]\n"
+        "    role 可省略，默认 user；压缩多个节点得到的摘要节点默认也用 user。\n"
+        "    除非用户明确要求插入 assistant/developer 节点，否则不要设置 role。\n"
         "    after 引用初始快照编号；即使该节点也被删除，位置游标仍然有效；after:0 = 插在最前。\n"
         "  返回 updated_snapshot，直接用它向用户确认结果。无需额外 confirm 步骤。\n"
         "  示例（删除 #5-7 替换为摘要，同时纯删 #8）：\n"
-        "  {delete:[5,6,7,8], inserts:[{after:7, role:assistant, content:5-7讨论了X...}]}\n"
+        "  {delete:[5,6,7,8], inserts:[{after:7, content:5-7讨论了X...}]}\n"
         "\n"
         "- write_items(node_number, delete?, inserts?)\n"
         "  节点内 item 级精细操作。先 get_nodes 拿到 item 编号，再调此工具。\n"
@@ -842,18 +838,18 @@ def build_context_chat_response_payload(
     draft: ContextWorkbenchDraft,
     tool_events: list[ToolEvent] | None = None,
 ) -> dict[str, object]:
-    proxy_override: dict[str, object] | None = None
+    proxy_transcript_sync: dict[str, object] | None = None
     if draft.has_changes:
-        conversation, _revisions, _pending = app_state.apply_context_workbench_mutation(
+        conversation = app_state.apply_context_workbench_mutation(
             session,
             transcript=draft.committed_transcript(),
-            revision_label=draft.revision_label(),
-            revision_summary=draft.revision_summary(),
-            operations=draft.operations,
         )
-        proxy_override = safe_sync_proxy_session_override_if_known(session, conversation)
-        if sanitize_text(proxy_override.get("status") or "") == "error":
-            answer = append_proxy_override_warning(answer, sanitize_text(proxy_override.get("error") or ""))
+        proxy_transcript_sync = safe_sync_proxy_session_transcript_if_known(session, conversation)
+        if sanitize_text(proxy_transcript_sync.get("status") or "") == "error":
+            answer = append_proxy_transcript_sync_warning(
+                answer,
+                sanitize_text(proxy_transcript_sync.get("error") or ""),
+            )
     else:
         conversation = sanitize_value(session.transcript)
 
@@ -870,8 +866,8 @@ def build_context_chat_response_payload(
     }
     if tool_events is not None:
         payload["tool_events"] = [serialize_tool_event(event) for event in tool_events]
-    if proxy_override is not None:
-        payload["proxy_override"] = proxy_override
+    if proxy_transcript_sync is not None:
+        payload["proxy_transcript_sync"] = proxy_transcript_sync
     return payload
 
 def parse_data_url(data_url: str) -> tuple[str, bytes]:
@@ -1244,15 +1240,12 @@ def proxy_state_contains_session(session_id: str) -> bool:
     safe_session_id = sanitize_text(session_id or "").strip()
     if not safe_session_id:
         return False
-    sqlite_file = proxy_state_sqlite_file()
-    if not sqlite_file.exists():
-        return False
     try:
-        with closing(sqlite3.connect(sqlite_file)) as conn:
-            row = conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (safe_session_id,)).fetchone()
-    except sqlite3.Error:
+        from backend.proxy_session_storage import ProxySessionStorage
+        from backend.web_constants import STATE_DIR
+    except ImportError:
         return False
-    return row is not None
+    return ProxySessionStorage(STATE_DIR).session_exists(safe_session_id)
 
 def codex_proxy_session_exists(session_id: str) -> bool:
     safe_session_id = sanitize_text(session_id or "").strip()
@@ -1268,7 +1261,7 @@ def codex_proxy_session_exists(session_id: str) -> bool:
     except ValueError:
         return False
 
-def sync_proxy_session_override_if_known(
+def sync_proxy_session_transcript_if_known(
     session: SessionState,
     transcript: list[dict[str, object]],
 ) -> dict[str, object]:
@@ -1279,35 +1272,34 @@ def sync_proxy_session_override_if_known(
         return {"status": "skipped", "reason": "not_proxy_session"}
 
     proxy_payload = post_codex_proxy_control_json(
-        f"/api/proxy/sessions/{quote(session_id, safe='')}/override",
+        f"/api/proxy/sessions/{quote(session_id, safe='')}/transcript",
         {"transcript": transcript},
     )
     if bool(proxy_payload.get("changed")):
-        summary, revision_number = active_context_revision_marker(session)
         visible_transcript = normalize_transcript(proxy_payload.get("transcript"))
         write_context_edit_marker(
             session_id,
-            summary=summary,
-            revision_number=revision_number,
+            summary="Context has been edited.",
+            edit_version=0,
             node_count=editable_context_node_count(visible_transcript),
         )
     return {
         "status": "synced",
         "changed": bool(proxy_payload.get("changed")),
-        "has_override": bool(proxy_payload.get("has_override")),
     }
 
-def safe_sync_proxy_session_override_if_known(
+def safe_sync_proxy_session_transcript_if_known(
     session: SessionState,
     transcript: list[dict[str, object]],
 ) -> dict[str, object]:
     try:
-        return sync_proxy_session_override_if_known(session, transcript)
+        return sync_proxy_session_transcript_if_known(session, transcript)
     except ValueError as exc:
         return {
             "status": "error",
-            "error": sanitize_text(str(exc) or "proxy override sync failed"),
+            "error": sanitize_text(str(exc) or "proxy transcript sync failed"),
         }
+
 
 def refresh_session_from_proxy_active_context_if_known(
     app_state: AppState,
@@ -1328,44 +1320,23 @@ def refresh_session_from_proxy_active_context_if_known(
     if not proxy_payload:
         return session
 
-    active_transcript = normalize_transcript(
-        proxy_payload.get("active_transcript") or proxy_payload.get("transcript")
-    )
-    if not active_transcript:
+    transcript = normalize_transcript(proxy_payload.get("transcript"))
+    if not transcript:
         return session
 
     return app_state.upsert_proxy_session(
         session_id=session_id,
         title=sanitize_text(proxy_payload.get("title") or "").strip() or session.title,
-        transcript=active_transcript,
+        transcript=transcript,
         is_running=bool(proxy_payload.get("is_running")),
     )
 
-def append_proxy_override_warning(answer: str, error_message: str) -> str:
+def append_proxy_transcript_sync_warning(answer: str, error_message: str) -> str:
     warning = (
-        "注意：这次上下文编辑已经写入本地视图，但同步到 Codex 代理 override 失败："
+        "注意：这次上下文编辑已经写入本地视图，但同步到 Codex 代理 transcript 失败："
         f"{sanitize_text(error_message)}。下一轮主模型可能仍会看到旧上下文。"
     )
     safe_answer = sanitize_text(answer).rstrip()
     if not safe_answer:
         return warning
     return f"{safe_answer}\n\n{warning}"
-
-def active_context_revision_marker(session: SessionState) -> tuple[str, int]:
-    active_revision_id = find_active_context_revision_id(session.context_revisions)
-    active_revision = next(
-        (
-            revision
-            for revision in reversed(session.context_revisions)
-            if sanitize_text(revision.get("id") or "").strip() == active_revision_id
-        ),
-        None,
-    )
-    if active_revision is None and session.context_revisions:
-        active_revision = session.context_revisions[-1]
-    if not isinstance(active_revision, dict):
-        return "Context has been edited.", 0
-    summary = sanitize_text(active_revision.get("summary") or active_revision.get("label") or "").strip()
-    revision_number = coerce_context_revision_number(active_revision.get("revision_number"), 0)
-    return summary or "Context has been edited.", revision_number
-

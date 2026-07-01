@@ -472,7 +472,6 @@ function ToolInvocationGroup({
         type="button"
         onClick={() => setIsGroupOpen((previous) => !previous)}
       >
-        <i className="ph-light ph-terminal-window inline-tool-group-icon" />
         <span>{toolGroupLabel(events)}</span>
         <i className="ph-light ph-caret-right inline-tool-group-chevron" />
       </button>

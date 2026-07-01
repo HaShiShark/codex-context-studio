@@ -5,10 +5,8 @@ import json
 import mimetypes
 import os
 import re
-import sqlite3
 import uuid
 from collections.abc import Callable
-from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,7 +19,6 @@ except ImportError:
 _TOKEN_ENCODING: Any | None = None
 _TOKEN_ENCODING_LOAD_FAILED = False
 
-from codex_context import is_conversation_record
 from simple_agent.agent import SimpleAgent, ToolEvent, sanitize_text
 from simple_agent.config import Settings
 from simple_agent.tools import ToolExecution
@@ -45,7 +42,11 @@ from backend.web_constants import (
     REPO_ROOT,
     SessionState,
     STATE_FILE,
-    PROXY_STATE_FILE,
+    STATE_DIR,
+)
+from backend.transcript_codec import (
+    input_items_to_transcript as core_input_items_to_transcript,
+    transcript_to_input_items as core_transcript_to_input_items,
 )
 
 def sanitize_value(value: Any) -> Any:
@@ -380,64 +381,9 @@ def normalize_provider_items(raw_items: Any) -> list[dict[str, Any]]:
         if not isinstance(item, dict):
             continue
 
-        item_type = sanitize_text(item.get("type") or "").strip()
-        if item_type == "message":
-            role = sanitize_text(item.get("role") or "").strip()
-            if role not in CONTEXT_INPUT_MESSAGE_ROLES:
-                continue
-
-            content = item.get("content")
-            if isinstance(content, list):
-                safe_content = sanitize_value(content)
-            else:
-                safe_content = sanitize_text(content or "")
-
-            normalized.append(
-                {
-                    "type": "message",
-                    "role": role,
-                    "content": safe_content,
-                }
-            )
-            continue
-
-        if item_type in {"compaction", "compaction_summary"}:
-            normalized.append(sanitize_value(item))
-            continue
-
-        if item_type == "function_call":
-            call_id = sanitize_text(item.get("call_id") or "").strip()
-            name = sanitize_text(item.get("name") or "").strip()
-            if not call_id or not name:
-                continue
-
-            normalized.append(
-                {
-                    "type": "function_call",
-                    "call_id": call_id,
-                    "name": name,
-                    "arguments": sanitize_text(item.get("arguments") or "{}") or "{}",
-                }
-            )
-            continue
-
-        if item_type == "function_call_output":
-            call_id = sanitize_text(item.get("call_id") or "").strip()
-            if not call_id:
-                continue
-
-            normalized.append(
-                {
-                    "type": "function_call_output",
-                    "call_id": call_id,
-                    "output": sanitize_value(item.get("output") if "output" in item else ""),
-                }
-            )
-
-        elif item_type:
-            normalized_item = sanitize_value(item)
-            if isinstance(normalized_item, dict):
-                normalized.append(normalized_item)
+        normalized_item = sanitize_value(item)
+        if isinstance(normalized_item, dict):
+            normalized.append(normalized_item)
 
     return normalized
 
@@ -554,69 +500,170 @@ def message_blocks_to_text(blocks: list[dict[str, object]]) -> str:
 def message_blocks_have_reasoning(blocks: list[dict[str, object]]) -> bool:
     return any(sanitize_text(block.get("kind") or "").strip() == "reasoning" for block in blocks)
 
+def is_core_transcript_node(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("items"), list)
+        and "providerItems" not in value
+    )
+
+def normalize_transcript_node(raw_node: dict[str, Any], fallback_index: int) -> dict[str, object] | None:
+    raw_items = raw_node.get("items")
+    if not isinstance(raw_items, list):
+        return None
+
+    items: list[dict[str, object]] = []
+    for item_index, raw_item in enumerate(raw_items):
+        if not isinstance(raw_item, dict) or "providerItem" not in raw_item:
+            continue
+        provider_item = sanitize_value(raw_item.get("providerItem"))
+        if not isinstance(provider_item, dict):
+            continue
+        input_index = raw_item.get("inputIndex")
+        node_item: dict[str, object] = {
+            "kind": sanitize_text(raw_item.get("kind") or provider_item.get("type") or "unknown").strip()
+            or "unknown",
+            "providerItem": provider_item,
+        }
+        if type(input_index) is int:
+            node_item["inputIndex"] = input_index
+        else:
+            node_item["inputIndex"] = item_index
+        items.append(node_item)
+
+    if not items:
+        return None
+
+    source_map = raw_node.get("source_map")
+    return {
+        "id": sanitize_text(raw_node.get("id") or f"node_{fallback_index}").strip() or f"node_{fallback_index}",
+        "role": sanitize_text(raw_node.get("role") or "unknown").strip() or "unknown",
+        "items": items,
+        "source_map": sanitize_value(source_map) if isinstance(source_map, dict) else {},
+    }
+
+def transcript_node_provider_items(node: dict[str, object]) -> list[dict[str, Any]]:
+    raw_items = node.get("items")
+    if not isinstance(raw_items, list):
+        return []
+    provider_items: list[dict[str, Any]] = []
+    for raw_item in raw_items:
+        if not isinstance(raw_item, dict):
+            continue
+        provider_item = raw_item.get("providerItem")
+        if isinstance(provider_item, dict):
+            provider_items.append(sanitize_value(provider_item))
+    return provider_items
+
+def context_records_to_input_items(raw_records: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw_records, list):
+        return []
+
+    input_items: list[dict[str, Any]] = []
+    for record_index, item in enumerate(raw_records):
+        if not isinstance(item, dict):
+            continue
+        if is_core_transcript_node(item):
+            input_items.extend(core_transcript_to_input_items([item]))
+            continue
+
+        role = sanitize_text(item.get("role") or "").strip()
+        provider_items = normalize_provider_items(item.get("providerItems"))
+        if provider_items:
+            input_items.extend(provider_items)
+            continue
+        if role in CONTEXT_INPUT_RECORD_ROLES:
+            input_items.extend(
+                build_provider_items_for_record(
+                    role=role,
+                    text=sanitize_text(item.get("text") or ""),
+                    attachments=normalize_attachment_records(item.get("attachments")),
+                    tool_events=sanitize_value(item.get("toolEvents"))
+                    if isinstance(item.get("toolEvents"), list)
+                    else [],
+                    blocks=normalize_message_blocks(item.get("blocks")),
+                    record_index=record_index,
+                )
+            )
+    return input_items
+
 def normalize_transcript(raw_records: Any) -> list[dict[str, object]]:
     if not isinstance(raw_records, list):
         return []
 
+    if all(is_core_transcript_node(item) for item in raw_records):
+        nodes: list[dict[str, object]] = []
+        for index, raw_node in enumerate(raw_records):
+            node = normalize_transcript_node(raw_node, index)
+            if node is not None:
+                nodes.append(node)
+        return nodes
+
+    return core_input_items_to_transcript(context_records_to_input_items(raw_records))
+
+def reindex_transcript_input_indexes(nodes: list[dict[str, object]]) -> list[dict[str, object]]:
+    reindexed_nodes = sanitize_value(nodes)
+    next_input_index = 0
+    for node in reindexed_nodes:
+        if not isinstance(node, dict):
+            continue
+        source_map = node.get("source_map")
+        if isinstance(source_map, dict):
+            source_map.clear()
+        items = node.get("items")
+        if not isinstance(items, list):
+            continue
+        for node_item in items:
+            if not isinstance(node_item, dict):
+                continue
+            node_item["inputIndex"] = next_input_index
+            next_input_index += 1
+    return reindexed_nodes
+
+def normalize_context_records(raw_records: Any) -> list[dict[str, object]]:
+    core_nodes = normalize_transcript(raw_records)
     records: list[dict[str, object]] = []
-    for record_index, item in enumerate(raw_records):
+    for record_index, item in enumerate(core_nodes):
         if not isinstance(item, dict):
             continue
         role = sanitize_text(item.get("role") or "").strip()
-        if role not in CONTEXT_INPUT_RECORD_ROLES:
-            continue
-        tool_events = item.get("toolEvents")
-        attachments = item.get("attachments")
-        normalized_attachments = normalize_attachment_records(attachments)
-        normalized_provider_items = normalize_provider_items(item.get("providerItems"))
-        recovered_record = (
-            compile_record_from_provider_items(
+        normalized_provider_items = transcript_node_provider_items(item)
+        core_items = [
+            sanitize_value(core_item)
+            for core_item in normalized_provider_items
+            if isinstance(core_item, dict)
+        ]
+        if role in CONTEXT_INPUT_RECORD_ROLES and core_items:
+            recovered_record = compile_record_from_provider_items(
                 {
                     "role": role,
-                    "attachments": normalized_attachments,
+                    "attachments": [],
                 },
-                normalized_provider_items,
+                core_items,
             )
-            if normalized_provider_items
-            else None
-        )
-
-        if isinstance(recovered_record, dict):
-            safe_text = sanitize_text(recovered_record.get("text") or "")
+            safe_text = sanitize_text(recovered_record.get("text") or "") if isinstance(recovered_record, dict) else ""
             safe_tool_events = (
                 sanitize_value(recovered_record.get("toolEvents"))
-                if isinstance(recovered_record.get("toolEvents"), list)
+                if isinstance(recovered_record, dict) and isinstance(recovered_record.get("toolEvents"), list)
                 else []
             )
-            blocks = normalize_message_blocks(recovered_record.get("blocks"))
-            provider_items = normalize_provider_items(recovered_record.get("providerItems"))
+            blocks = normalize_message_blocks(recovered_record.get("blocks")) if isinstance(recovered_record, dict) else []
+            provider_items = normalize_provider_items(recovered_record.get("providerItems")) if isinstance(recovered_record, dict) else core_items
+        elif role == "subagent":
+            safe_text = subagent_text_from_provider_items(core_items)
+            safe_tool_events = []
+            blocks = [{"kind": "text", "text": safe_text}] if safe_text.strip() else []
+            provider_items = core_items
         else:
-            safe_text = sanitize_text(item.get("text") or "")
-            safe_tool_events = sanitize_value(tool_events) if isinstance(tool_events, list) else []
-            blocks = normalize_message_blocks(item.get("blocks"))
-            if not blocks:
-                blocks = blocks_from_text_and_tools(
-                    role,
-                    safe_text,
-                    safe_tool_events,
-                )
-            if role == "assistant" and not safe_tool_events:
-                safe_tool_events = extract_tool_events_from_blocks(blocks)
-            if not safe_text:
-                safe_text = message_blocks_to_text(blocks)
-            provider_items = build_provider_items_for_record(
-                role=role,
-                text=safe_text,
-                attachments=normalized_attachments,
-                tool_events=safe_tool_events,
-                blocks=blocks,
-                record_index=record_index,
-            )
+            safe_text = ""
+            safe_tool_events = []
+            blocks = []
+            provider_items = core_items
         records.append(
             {
                 "role": role,
                 "text": safe_text,
-                "attachments": normalized_attachments,
+                "attachments": [],
                 "toolEvents": safe_tool_events,
                 "blocks": blocks,
                 "providerItems": provider_items,
@@ -980,43 +1027,6 @@ def unique_int_list(values: Any) -> list[int]:
             unique_values.append(value)
     return unique_values
 
-def unique_text_list(values: Any) -> list[str]:
-    if not isinstance(values, list):
-        return []
-
-    unique_values: list[str] = []
-    for raw_value in values:
-        value = sanitize_text(raw_value or "").strip()
-        if value and value not in unique_values:
-            unique_values.append(value)
-    return unique_values
-
-def operation_changed_nodes(operation: dict[str, object]) -> list[int]:
-    explicit_nodes = unique_int_list(operation.get("changed_nodes"))
-    if explicit_nodes:
-        return explicit_nodes
-
-    target_nodes = unique_int_list(operation.get("target_node_numbers"))
-    if target_nodes:
-        return target_nodes
-
-    target_items = operation.get("target_items")
-    if isinstance(target_items, list):
-        item_nodes: list[int] = []
-        for item in target_items:
-            if not isinstance(item, dict):
-                continue
-            try:
-                node_number = int(item.get("node_number") or 0)
-            except (TypeError, ValueError):
-                continue
-            if node_number > 0 and node_number not in item_nodes:
-                item_nodes.append(node_number)
-        if item_nodes:
-            return item_nodes
-
-    return []
-
 def normalize_change_type(raw_value: Any) -> str:
     value = sanitize_text(raw_value or "").strip().lower()
     if value in {"delete", "replace", "compress", "mixed", "update"}:
@@ -1028,278 +1038,6 @@ def normalize_change_type(raw_value: Any) -> str:
     if value.startswith("compress"):
         return "compress"
     return "update"
-
-def operation_change_type(operation: dict[str, object]) -> str:
-    return normalize_change_type(
-        operation.get("change_type")
-        or operation.get("operation_type")
-        or operation.get("type")
-        or "update"
-    )
-
-def summarize_change_type(change_types: list[str]) -> str:
-    normalized = [normalize_change_type(item) for item in change_types if sanitize_text(item).strip()]
-    unique_types = [item for item in normalized if item]
-    if not unique_types:
-        return "update"
-    if len(set(unique_types)) == 1:
-        return unique_types[0]
-    return "mixed"
-
-def summarize_changed_nodes_from_operations(operations: list[dict[str, object]]) -> list[int]:
-    changed_nodes: list[int] = []
-    for operation in operations:
-        for node_number in operation_changed_nodes(operation):
-            if node_number not in changed_nodes:
-                changed_nodes.append(node_number)
-    return changed_nodes
-
-def fallback_context_revision_summary(label: str, operations: list[dict[str, object]]) -> str:
-    safe_label = sanitize_text(label).strip() or "Context update"
-    if not operations:
-        return safe_label
-
-    if len(operations) == 1:
-        operation = operations[0]
-        operation_type = sanitize_text(operation.get("operation_type") or "").strip()
-        target_nodes = unique_int_list(operation.get("target_node_numbers") or operation.get("changed_nodes"))
-        node_text = f"节点 #{format_node_ranges(target_nodes)}" if target_nodes else "当前上下文"
-        target_items = operation.get("target_items")
-        first_item = target_items[0] if isinstance(target_items, list) and target_items else {}
-        item_number = int(first_item.get("item_number") or 0) if isinstance(first_item, dict) else 0
-        item_text = f"{node_text} 的第 {item_number} 个条目" if item_number else node_text
-
-        if operation_type == "compress_nodes":
-            return f"把{node_text}压缩成了更短的摘要，尽量保留主要信息。"
-        if operation_type == "delete_nodes":
-            return f"删除了{node_text}，让当前上下文更紧凑。"
-        if operation_type == "delete_item":
-            return f"删除了{item_text}，去掉了不再需要的上下文内容。"
-        if operation_type == "compress_item":
-            return f"压缩了{item_text}，保留原有条目类型的同时缩短了内容。"
-        if operation_type == "replace_item":
-            return f"改写了{item_text}，把它换成了更合适的新内容。"
-
-    changed_nodes = summarize_changed_nodes_from_operations(operations)
-    if changed_nodes:
-        return f"这一轮集中更新了节点 #{format_node_ranges(changed_nodes)} 的内容，并把它们整理成了新的上下文版本。"
-    return safe_label
-
-def find_active_context_revision_id(revisions: list[dict[str, object]]) -> str | None:
-    for revision in revisions:
-        revision_id = sanitize_text(revision.get("id") or "").strip()
-        if revision_id and bool(revision.get("is_active")):
-            return revision_id
-    return None
-
-def mark_active_context_revision(revisions: list[dict[str, object]], revision_id: str | None) -> None:
-    safe_revision_id = sanitize_text(revision_id or "").strip()
-    for revision in revisions:
-        current_id = sanitize_text(revision.get("id") or "").strip()
-        revision["is_active"] = bool(safe_revision_id and current_id == safe_revision_id)
-
-def coerce_context_revision_number(raw_value: Any, fallback: int, *, minimum: int = 0) -> int:
-    try:
-        value = int(raw_value)
-    except (TypeError, ValueError):
-        value = int(fallback)
-    return max(minimum, value)
-
-def has_initial_context_revision(revisions: list[dict[str, object]]) -> bool:
-    return any(
-        coerce_context_revision_number(revision.get("revision_number"), 1) == 0
-        for revision in revisions
-    )
-
-def next_context_revision_number(revisions: list[dict[str, object]]) -> int:
-    numbers = [
-        coerce_context_revision_number(revision.get("revision_number"), 0)
-        for revision in revisions
-    ]
-    return max([number for number in numbers if number > 0], default=0) + 1
-
-def ensure_initial_context_revision(session: SessionState) -> None:
-    if has_initial_context_revision(session.context_revisions):
-        return
-    if session.context_revisions:
-        return
-
-    session.context_revisions.append(
-        build_context_revision_entry(
-            transcript=normalize_transcript(session.transcript),
-            context_workbench_history=normalize_context_chat_history(session.context_workbench_history),
-            revision_label="初始版本",
-            revision_summary="还没有进行压缩、删除或替换时的完整上下文。",
-            operations=[],
-            revision_number=0,
-        )
-    )
-
-def sync_active_context_revision_snapshot(session: SessionState) -> None:
-    active_revision_id = find_active_context_revision_id(session.context_revisions)
-    if not active_revision_id:
-        return
-
-    safe_snapshot = sanitize_value(normalize_transcript(session.transcript))
-    safe_context_workbench_history = sanitize_value(
-        normalize_context_chat_history(session.context_workbench_history)
-    )
-    for revision in reversed(session.context_revisions):
-        current_id = sanitize_text(revision.get("id") or "").strip()
-        if current_id != active_revision_id:
-            continue
-        revision["snapshot"] = safe_snapshot
-        revision["context_workbench_history_snapshot"] = safe_context_workbench_history
-        revision["node_count"] = editable_context_node_count(normalize_transcript(session.transcript))
-        return
-
-def build_context_revision_entry(
-    *,
-    transcript: list[dict[str, object]],
-    context_workbench_history: list[dict[str, str]],
-    revision_label: str,
-    revision_summary: str,
-    operations: list[dict[str, object]],
-    revision_number: int,
-) -> dict[str, object]:
-    sanitized_operations = [
-        sanitize_value(operation)
-        for operation in operations
-        if isinstance(operation, dict)
-    ]
-    changed_nodes = summarize_changed_nodes_from_operations(sanitized_operations)
-    change_types = [
-        operation_change_type(operation)
-        for operation in sanitized_operations
-    ]
-    label = sanitize_text(revision_label).strip() or "Context update"
-    summary = sanitize_text(revision_summary).strip() or fallback_context_revision_summary(label, sanitized_operations)
-    return {
-        "id": uuid.uuid4().hex,
-        "label": label,
-        "summary": summary,
-        "created_at": utc_timestamp(),
-        "revision_number": coerce_context_revision_number(revision_number, 1),
-        "change_type": summarize_change_type(change_types),
-        "change_types": unique_text_list(change_types),
-        "changed_nodes": changed_nodes,
-        "operations": sanitized_operations,
-        "node_count": editable_context_node_count(normalize_transcript(transcript)),
-        "snapshot": sanitize_value(transcript),
-        "context_workbench_history_snapshot": sanitize_value(
-            normalize_context_chat_history(context_workbench_history)
-        ),
-        "is_active": True,
-    }
-
-def normalize_context_revision_entries(raw_entries: Any) -> list[dict[str, object]]:
-    if not isinstance(raw_entries, list):
-        return []
-
-    normalized: list[dict[str, object]] = []
-    for index, item in enumerate(raw_entries, start=1):
-        if not isinstance(item, dict):
-            continue
-
-        revision_id = sanitize_text(item.get("id") or "").strip()
-        label = sanitize_text(item.get("label") or "").strip()
-        created_at = sanitize_text(item.get("created_at") or "").strip() or utc_timestamp()
-        snapshot = normalize_transcript(item.get("snapshot"))
-        context_workbench_history_snapshot = normalize_context_chat_history(
-            item.get("context_workbench_history_snapshot")
-        )
-        operations = sanitize_value(item.get("operations")) if isinstance(item.get("operations"), list) else []
-        if not revision_id or not label:
-            continue
-
-        changed_nodes = unique_int_list(item.get("changed_nodes")) or summarize_changed_nodes_from_operations(operations)
-        change_types = unique_text_list(item.get("change_types"))
-        if not change_types:
-            change_types = [operation_change_type(operation) for operation in operations if isinstance(operation, dict)]
-        change_type = normalize_change_type(item.get("change_type") or summarize_change_type(change_types))
-
-        summary = sanitize_text(item.get("summary") or "").strip()
-        if not summary or summary == label:
-            summary = fallback_context_revision_summary(label, operations)
-
-        normalized.append(
-            {
-                "id": revision_id,
-                "label": label,
-                "summary": summary,
-                "created_at": created_at,
-                "revision_number": coerce_context_revision_number(
-                    item.get("revision_number"),
-                    index,
-                ),
-                "change_type": change_type,
-                "change_types": unique_text_list(change_types) or [change_type],
-                "changed_nodes": changed_nodes,
-                "operations": operations,
-                "node_count": len(snapshot),
-                "snapshot": sanitize_value(snapshot),
-                "context_workbench_history_snapshot": sanitize_value(context_workbench_history_snapshot),
-                "is_active": bool(item.get("is_active")),
-            }
-        )
-
-    if normalized and not any(bool(revision.get("is_active")) for revision in normalized):
-        normalized[-1]["is_active"] = True
-
-    for revision_number, revision in enumerate(normalized, start=1):
-        revision["revision_number"] = coerce_context_revision_number(
-            revision.get("revision_number"),
-            revision_number,
-        )
-
-    return normalized
-
-def context_revision_summaries(revisions: list[dict[str, object]]) -> list[dict[str, object]]:
-    return [
-        {
-            "id": sanitize_text(revision.get("id") or "").strip(),
-            "label": sanitize_text(revision.get("label") or "").strip() or "Revision",
-            "summary": (
-                lambda label, summary, operations: (
-                    fallback_context_revision_summary(label, operations)
-                    if not summary or summary == label
-                    else summary
-                )
-            )(
-                sanitize_text(revision.get("label") or "").strip() or "Revision",
-                sanitize_text(revision.get("summary") or "").strip(),
-                sanitize_value(revision.get("operations")) if isinstance(revision.get("operations"), list) else [],
-            ),
-            "created_at": sanitize_text(revision.get("created_at") or "").strip() or utc_timestamp(),
-            "revision_number": coerce_context_revision_number(revision.get("revision_number"), 0),
-            "change_type": normalize_change_type(revision.get("change_type") or "update"),
-            "change_types": unique_text_list(revision.get("change_types")) or [
-                normalize_change_type(revision.get("change_type") or "update")
-            ],
-            "changed_nodes": unique_int_list(revision.get("changed_nodes")),
-            "is_active": bool(revision.get("is_active")),
-            "operation_count": len(revision.get("operations") or []),
-            "node_count": int(revision.get("node_count") or 0),
-        }
-        for revision in reversed(revisions)
-        if sanitize_text(revision.get("id") or "").strip()
-    ]
-
-def context_pending_restore_payload(raw_restore: dict[str, object] | None) -> dict[str, object] | None:
-    if not isinstance(raw_restore, dict):
-        return None
-
-    target_revision_id = sanitize_text(raw_restore.get("target_revision_id") or "").strip()
-    if not target_revision_id:
-        return None
-
-    return {
-        "target_revision_id": target_revision_id,
-        "target_label": sanitize_text(raw_restore.get("target_label") or "").strip() or "Revision",
-        "created_at": sanitize_text(raw_restore.get("created_at") or "").strip() or utc_timestamp(),
-        "undo_active_revision_id": sanitize_text(raw_restore.get("undo_active_revision_id") or "").strip(),
-        "can_undo": True,
-    }
 
 def load_context_edit_markers() -> dict[str, dict[str, object]]:
     try:
@@ -1325,7 +1063,7 @@ def write_context_edit_marker(
     session_id: str,
     *,
     summary: str,
-    revision_number: int,
+    edit_version: int,
     node_count: int,
 ) -> None:
     safe_session_id = sanitize_text(session_id).strip()
@@ -1335,7 +1073,7 @@ def write_context_edit_marker(
     markers[safe_session_id] = {
         "session_id": safe_session_id,
         "summary": sanitize_text(summary).strip() or "Context has been edited.",
-        "revision_number": revision_number,
+        "edit_version": edit_version,
         "node_count": max(0, int(node_count or 0)),
         "created_at": utc_timestamp(),
     }
@@ -1349,9 +1087,19 @@ def consume_context_edit_marker(session_id: str) -> dict[str, object] | None:
     marker = markers.pop(safe_session_id, None)
     if marker is not None:
         save_context_edit_markers(markers)
-    return sanitize_value(marker) if isinstance(marker, dict) else None
+    if not isinstance(marker, dict):
+        return None
+    return {
+        "session_id": sanitize_text(marker.get("session_id") or safe_session_id).strip() or safe_session_id,
+        "summary": sanitize_text(marker.get("summary") or "Context has been edited.").strip()
+        or "Context has been edited.",
+        "edit_version": int(marker.get("edit_version") or 0),
+        "node_count": max(0, int(marker.get("node_count") or 0)),
+        "created_at": sanitize_text(marker.get("created_at") or ""),
+    }
 
 def context_record_preview(record: dict[str, object], *, limit: int = 140) -> str:
+    role = sanitize_text(record.get("role") or "").strip()
     blocks = normalize_message_blocks(record.get("blocks"))
     attachments = normalize_attachment_records(record.get("attachments"))
     text = sanitize_text(record.get("text") or "")
@@ -1380,6 +1128,11 @@ def context_record_preview(record: dict[str, object], *, limit: int = 140) -> st
     if text:
         return block_text_preview(text, limit=limit)
 
+    if role == "subagent":
+        subagent_text = subagent_text_from_provider_items(normalize_provider_items(record.get("providerItems")))
+        if subagent_text.strip():
+            return block_text_preview(subagent_text, limit=limit)
+
     if attachments:
         attachment_names = ", ".join(
             sanitize_text(item.get("name") or "").strip()
@@ -1390,6 +1143,25 @@ def context_record_preview(record: dict[str, object], *, limit: int = 140) -> st
             return f"Attachments: {attachment_names}"
 
     return "[empty]"
+
+def subagent_author_from_provider_items(provider_items: list[dict[str, Any]]) -> str:
+    for item in provider_items:
+        if provider_item_type(item) != "agent_message":
+            continue
+        author = sanitize_text(item.get("author") or "").strip()
+        if author:
+            return author
+    return ""
+
+def subagent_text_from_provider_items(provider_items: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for item in provider_items:
+        if provider_item_type(item) != "agent_message":
+            continue
+        text = extract_text_from_provider_agent_message_content(item.get("content"))
+        if text.strip():
+            parts.append(text)
+    return "\n\n".join(parts)
 
 def record_tool_usage(record: dict[str, object]) -> list[dict[str, object]]:
     tool_events = sanitize_value(record.get("toolEvents")) if isinstance(record.get("toolEvents"), list) else []
@@ -1488,15 +1260,17 @@ def record_context_weight_source(record: dict[str, object]) -> str:
 def context_record_overview(record: dict[str, object], *, node_number: int, selected: bool = False) -> dict[str, object]:
     role = sanitize_text(record.get("role") or "").strip() or "unknown"
     preview = context_record_preview(record)
-    if role == "assistant":
+    if role in {"assistant", "subagent"}:
         preview = collapsed_context_map_preview(preview) or "[empty]"
     tool_usage = record_tool_usage(record)
     provider_items = normalize_provider_items(record.get("providerItems"))
+    subagent_author = subagent_author_from_provider_items(provider_items) if role == "subagent" else ""
     token_estimate = estimate_token_count(record_context_weight_source(record))
     tool_token_estimate = estimate_token_count(record_context_tool_weight_source(record))
     return {
         "node_number": node_number,
         "role": role,
+        "subagent_author": subagent_author,
         "selected": selected,
         "preview": preview,
         "token_estimate": token_estimate,
@@ -1513,7 +1287,7 @@ def context_record_overview(record: dict[str, object], *, node_number: int, sele
 
 def context_workbench_suggestions_payload(session: SessionState) -> dict[str, object]:
     nodes: list[dict[str, object]] = []
-    transcript = normalize_transcript(session.transcript)
+    transcript = normalize_context_records(session.transcript)
     internal_indexes = internal_context_prefix_indexes(transcript)
     display_number_by_raw_index = {
         int(entry["raw_index"]): int(entry["node_number"])
@@ -1580,6 +1354,34 @@ def extract_text_from_provider_message_content(content: Any) -> str:
             parts.append(text)
 
     return "".join(parts)
+
+def extract_text_from_provider_agent_message_content(content: Any) -> str:
+    if not isinstance(content, list):
+        return provider_payload_text(content)
+
+    parts: list[str] = []
+    encrypted = False
+    for item in content:
+        if isinstance(item, str):
+            text = sanitize_text(item)
+            if text:
+                parts.append(text)
+            continue
+
+        if not isinstance(item, dict):
+            continue
+
+        item_type = sanitize_text(item.get("type") or "").strip()
+        if item_type == "encrypted_content":
+            encrypted = True
+            continue
+        text = sanitize_text(item.get("text") or item.get("content") or "")
+        if text:
+            parts.append(text)
+
+    if parts:
+        return "\n".join(parts)
+    return "[encrypted subagent message]" if encrypted else ""
 
 def replace_provider_message_text(content: Any, replacement_text: str) -> str | list[dict[str, Any]]:
     safe_text = sanitize_text(replacement_text)
@@ -1788,6 +1590,14 @@ def provider_item_detail(item: dict[str, Any], item_number: int) -> dict[str, ob
             else sanitize_text(content or "")
         )
         detail["preview"] = block_text_preview(preview_source, limit=180)
+        return detail
+
+    if item_type == "agent_message":
+        text = extract_text_from_provider_agent_message_content(item.get("content"))
+        detail["author"] = sanitize_text(item.get("author") or "").strip()
+        detail["recipient"] = sanitize_text(item.get("recipient") or "").strip()
+        detail["text_preview"] = block_text_preview(text, limit=220)
+        detail["preview"] = block_text_preview(text, limit=180)
         return detail
 
     if item_type in CODEX_TOOL_CALL_ITEM_TYPES:
@@ -2185,7 +1995,7 @@ def build_context_workspace_snapshot(
     *,
     selected_indexes: list[int] | None = None,
 ) -> str:
-    transcript = normalize_transcript(session.transcript)
+    transcript = normalize_context_records(session.transcript)
     safe_selected_indexes = normalize_selected_node_indexes(selected_indexes or [], len(transcript))
     selected_numbers = selected_display_node_numbers(transcript, safe_selected_indexes)
     editable_entries = editable_context_node_entries(transcript)
@@ -2272,13 +2082,18 @@ def codex_message_content_text(content: Any) -> str:
     return "\n".join(part for part in parts if part).strip()
 
 def transcript_has_instruction_prefix(records: list[dict[str, Any]]) -> bool:
+    transcript = normalize_transcript(records)
     return any(
         sanitize_text(record.get("role") or "").strip() in {"system", "developer"}
-        for record in records
+        for record in transcript
     )
 
 def transcript_has_conversation_records(records: list[dict[str, Any]]) -> bool:
-    return any(is_conversation_record(record) for record in records)
+    transcript = normalize_transcript(records)
+    return any(
+        sanitize_text(record.get("role") or "").strip() in {"user", "assistant"}
+        for record in transcript
+    )
 
 def provider_message_record(item: dict[str, Any]) -> dict[str, Any] | None:
     role = sanitize_text(item.get("role") or "").strip()
@@ -2294,9 +2109,6 @@ def provider_message_record(item: dict[str, Any]) -> dict[str, Any] | None:
         "blocks": [{"kind": "text", "text": text}] if text else [],
         "providerItems": [sanitize_value(item)],
     }
-
-def proxy_state_sqlite_file() -> Path:
-    return PROXY_STATE_FILE.with_suffix(".sqlite3")
 
 def read_jsonl_state_file(path: Path, default: Any) -> Any:
     state = sanitize_value(default)
@@ -2328,50 +2140,16 @@ def read_jsonl_state_file(path: Path, default: Any) -> Any:
                 state = sanitize_value(records)
     return sanitize_value(default) if state is None and default is not None else state
 
-def latest_proxy_sessions_from_sqlite() -> tuple[str, list[dict[str, Any]]] | None:
-    sqlite_file = proxy_state_sqlite_file()
-    if not sqlite_file.exists():
-        return None
-    try:
-        with closing(sqlite3.connect(sqlite_file)) as conn:
-            active_row = conn.execute("SELECT value FROM meta WHERE key = 'active_session_id'").fetchone()
-            active_session_id = sanitize_text(active_row[0] if active_row else "").strip()
-            rows = conn.execute(
-                """
-                SELECT id, updated_at, session_dir
-                FROM sessions
-                ORDER BY updated_at DESC
-                """
-            ).fetchall()
-    except sqlite3.Error:
-        return None
-
-    sessions: list[dict[str, Any]] = []
-    sqlite_parent = sqlite_file.parent
-    for session_id, updated_at, session_dir in rows:
-        safe_session_id = sanitize_text(session_id or "").strip()
-        if not safe_session_id:
-            continue
-        request_log: list[dict[str, Any]] = []
-        safe_session_dir = sanitize_text(session_dir or "").strip()
-        if safe_session_dir:
-            raw_log = read_jsonl_state_file(sqlite_parent / safe_session_dir / "request_log.jsonl", [])
-            if isinstance(raw_log, list):
-                request_log = [item for item in raw_log if isinstance(item, dict)]
-        sessions.append(
-            {
-                "id": safe_session_id,
-                "updated_at": sanitize_text(updated_at or ""),
-                "request_log": request_log,
-            }
-        )
-    return active_session_id, sessions
-
 def latest_proxy_instruction_prefix_records() -> list[dict[str, Any]]:
-    sqlite_payload = latest_proxy_sessions_from_sqlite()
-    if sqlite_payload is None:
+    try:
+        from backend.proxy_session_storage import ProxySessionStorage
+    except ImportError:
         return []
-    active_session_id, sessions = sqlite_payload
+
+    storage = ProxySessionStorage(STATE_DIR)
+    index = storage.load_index()
+    active_session_id = sanitize_text(index.get("active_session_id") or "").strip()
+    sessions = [item for item in index.get("sessions", []) if isinstance(item, dict)]
 
     sessions.sort(
         key=lambda session: (
@@ -2597,15 +2375,16 @@ class ContextWorkbenchDraftNode:
 class ContextWorkbenchDraft:
     def __init__(self, transcript: list[dict[str, object]], selected_indexes: list[int]) -> None:
         normalized_transcript = normalize_transcript(transcript)
-        safe_selected = normalize_selected_node_indexes(selected_indexes, len(normalized_transcript))
-        self.selected_node_numbers = selected_display_node_numbers(normalized_transcript, safe_selected)
-        internal_indexes = internal_context_prefix_indexes(normalized_transcript)
+        display_records = normalize_context_records(normalized_transcript)
+        safe_selected = normalize_selected_node_indexes(selected_indexes, len(display_records))
+        self.selected_node_numbers = selected_display_node_numbers(display_records, safe_selected)
+        internal_indexes = internal_context_prefix_indexes(display_records)
         editable_numbers_by_raw_index = {
             int(entry["raw_index"]): int(entry["node_number"])
-            for entry in editable_context_node_entries(normalized_transcript)
+            for entry in editable_context_node_entries(display_records)
         }
         self.nodes: list[ContextWorkbenchDraftNode] = []
-        for raw_index, record in enumerate(normalized_transcript):
+        for raw_index, record in enumerate(display_records):
             node_number = editable_numbers_by_raw_index.get(raw_index)
             is_internal = raw_index in internal_indexes
             label = f"Node #{node_number}" if node_number is not None else "Internal Prefix"
@@ -2621,10 +2400,9 @@ class ContextWorkbenchDraft:
                     status="locked" if is_internal else "active",
                     editable=not is_internal,
                 )
-            )
+        )
         self.operations: list[dict[str, object]] = []
         self._draft_counter = 0
-        self._revision_summary = ""
         self._working_version = 0
 
     @property
@@ -2635,34 +2413,6 @@ class ContextWorkbenchDraft:
         self._working_version += 1
         operation["working_version"] = self._working_version
         self.operations.append(operation)
-        self._revision_summary = ""
-
-    def set_revision_summary(self, summary: str) -> dict[str, object]:
-        if not self.operations:
-            raise ValueError("no working snapshot edits exist yet")
-
-        safe_summary = re.sub(r"\s+", " ", sanitize_text(summary)).strip()
-        if not safe_summary:
-            raise ValueError("summary is required")
-        if len(safe_summary) > 220:
-            safe_summary = f"{safe_summary[:219].rstrip()}…"
-
-        self._revision_summary = safe_summary
-        return {
-            "payload_kind": "revision_summary",
-            "saved": True,
-            "summary": safe_summary,
-            "change_count": len(self.operations),
-            "working_version": self._working_version,
-        }
-
-    def _fallback_revision_summary(self) -> str:
-        if not self.operations:
-            return "这次更新了当前上下文。"
-        return fallback_context_revision_summary("Context update", self.operations)
-
-    def revision_summary(self) -> str:
-        return self._revision_summary or self._fallback_revision_summary()
 
     def active_nodes(self) -> list[ContextWorkbenchDraftNode]:
         return [
@@ -2923,7 +2673,7 @@ class ContextWorkbenchDraft:
         return f"Draft Node {letter_index(self._draft_counter)}"
 
     def _set_node_record(self, node: ContextWorkbenchDraftNode, record: dict[str, object], *, status: str = "updated") -> None:
-        normalized_record = normalize_transcript([record])
+        normalized_record = normalize_context_records([record])
         if not normalized_record:
             raise ValueError("record could not be normalized after mutation")
         node.record = normalized_record[0]
@@ -2931,7 +2681,13 @@ class ContextWorkbenchDraft:
             node.status = status
 
     def _provider_items_for_node(self, node: ContextWorkbenchDraftNode) -> list[dict[str, Any]]:
-        return normalize_provider_items(node.record.get("providerItems"))
+        provider_items = normalize_provider_items(node.record.get("providerItems"))
+        if provider_items:
+            return provider_items
+        if not isinstance(node.record, dict):
+            return []
+        node_transcript = normalize_transcript([node.record])
+        return transcript_node_provider_items(node_transcript[0]) if node_transcript else []
 
     def _resolve_item_detail(self, node: ContextWorkbenchDraftNode, item_number: int) -> dict[str, object]:
         provider_items = self._provider_items_for_node(node)
@@ -3696,17 +3452,16 @@ class ContextWorkbenchDraft:
         )
 
     def committed_transcript(self) -> list[dict[str, object]]:
-        return normalize_transcript([node.record for node in self.committed_nodes()])
-
-    def revision_label(self) -> str:
-        if not self.operations:
-            return "Context update"
-        if len(self.operations) == 1:
-            return sanitize_text(self.operations[0].get("summary") or self.operations[0].get("label") or "").strip() or "Context update"
-        first_label = sanitize_text(
-            self.operations[0].get("summary") or self.operations[0].get("label") or ""
-        ).strip() or "Context update"
-        return f"{first_label} + {len(self.operations) - 1} more"
+        core_nodes: list[dict[str, object]] = []
+        for node in self.committed_nodes():
+            if isinstance(node.record, dict) and "items" in node.record:
+                core_nodes.extend(normalize_transcript([node.record]))
+                continue
+            provider_items = self._provider_items_for_node(node)
+            if not provider_items:
+                continue
+            core_nodes.extend(core_input_items_to_transcript(provider_items))
+        return reindex_transcript_input_indexes(core_nodes)
 
     def _make_insert_provider_item(self, node: ContextWorkbenchDraftNode, ins: dict[str, Any]) -> dict[str, Any]:
         content = sanitize_text(ins.get("content") or "").strip()
@@ -3783,7 +3538,6 @@ class ContextWorkbenchDraft:
                 "changed_nodes": deleted_numbers,
                 "target_node_numbers": deleted_numbers,
             })
-            self._revision_summary = summary
         return {"summary": summary, "deleted": deleted_numbers, "inserted": len(created_nodes)}
 
     def apply_write_items(

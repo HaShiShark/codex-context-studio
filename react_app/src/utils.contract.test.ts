@@ -1,0 +1,171 @@
+import { normalizeConversation } from './utils';
+import {
+  CONTEXT_IMAGE_TOKEN_ESTIMATE,
+  getContextTokenCount,
+  getContextWeightSource,
+} from './contextTokenWeight';
+import type { ProviderItem, TranscriptNode } from './types';
+
+function assert(condition: unknown, message: string): asserts condition {
+  if (!condition) {
+    throw new Error(message);
+  }
+}
+
+function assertEqual<T>(actual: T, expected: T, message: string): void {
+  if (actual !== expected) {
+    throw new Error(`${message}: expected ${String(expected)}, got ${String(actual)}`);
+  }
+}
+
+function assertIncludes(value: string, expected: string, message: string): void {
+  if (!value.includes(expected)) {
+    throw new Error(`${message}: expected ${JSON.stringify(value)} to include ${JSON.stringify(expected)}`);
+  }
+}
+
+function node(id: string, role: string, providerItems: ProviderItem[]): TranscriptNode {
+  return {
+    id,
+    role,
+    items: providerItems.map((providerItem, index) => ({
+      kind: String((providerItem as Record<string, unknown>).type || 'unknown'),
+      providerItem,
+      inputIndex: index,
+    })),
+    source_map: {},
+  };
+}
+
+function testNormalizeConversationKeepsProviderItemContract(): void {
+  const callItem: ProviderItem = {
+    type: 'function_call',
+    call_id: 'call-lookup',
+    name: 'lookup_context',
+    arguments: '{"query":"alpha"}',
+  };
+  const outputItem: ProviderItem = {
+    type: 'function_call_output',
+    call_id: 'call-lookup',
+    output: 'lookup result',
+  };
+  const unknownItem: ProviderItem = {
+    type: 'unexpected_provider_item',
+    role: 'context',
+    payload: { marker: 'kept' },
+  };
+
+  const conversation = normalizeConversation([
+    node('node-user', 'user', [
+      {
+        type: 'message',
+        role: 'user',
+        content: 'hello',
+      },
+    ]),
+    node('node-assistant', 'assistant', [
+      {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'I will look it up.' }],
+      },
+      {
+        type: 'reasoning',
+        summary: [{ type: 'summary_text', text: 'Need a lookup.' }],
+      },
+      callItem,
+      outputItem,
+    ]),
+    node('node-unknown', 'unknown', [unknownItem]),
+  ]);
+
+  assertEqual(conversation.length, 3, 'normalizes every transcript node');
+
+  const user = conversation[0];
+  assertEqual(user.role, 'user', 'keeps user role');
+  assertEqual(user.text, 'hello', 'reads message item text');
+  assertEqual(user.blocks.length, 1, 'creates a text block for message item');
+  assertEqual(user.providerItems?.length, 1, 'keeps original user provider item');
+
+  const assistant = conversation[1];
+  assertEqual(assistant.role, 'an', 'maps assistant transcript role to UI assistant role');
+  assertIncludes(assistant.text, 'I will look it up.', 'includes assistant message text');
+  assertIncludes(assistant.text, 'Need a lookup.', 'includes reasoning text');
+  assertIncludes(assistant.text, 'lookup result', 'includes paired tool output text');
+  assertEqual(assistant.providerItems?.length, 4, 'keeps all assistant provider items');
+
+  const reasoningBlock = assistant.blocks.find((block) => block.kind === 'reasoning');
+  assert(reasoningBlock?.kind === 'reasoning', 'creates a reasoning block');
+  assertEqual(reasoningBlock.text, 'Need a lookup.', 'reasoning block exposes summary text');
+
+  const toolBlocks = assistant.blocks.filter((block) => block.kind === 'tool');
+  assertEqual(toolBlocks.length, 1, 'pairs one tool call with its output');
+  assertEqual(assistant.toolEvents.length, 1, 'creates one tool event');
+  assertEqual(assistant.toolEvents[0].name, 'lookup_context', 'uses function call name as tool event name');
+  assertEqual(assistant.toolEvents[0].call_id, 'call-lookup', 'keeps tool call id');
+  assertEqual(assistant.toolEvents[0].raw_output, 'lookup result', 'keeps tool output');
+  assertEqual(assistant.toolEvents[0].status, 'completed', 'marks successful tool output completed');
+
+  const unknown = conversation[2];
+  assertEqual(unknown.role, 'context', 'maps unknown transcript role to context display role');
+  assertEqual(unknown.providerItems?.length, 1, 'keeps unknown provider item');
+  assertIncludes(unknown.text, 'unexpected_provider_item', 'renders unknown item type');
+  assertIncludes(unknown.text, '"marker": "kept"', 'renders unknown item payload');
+}
+
+function testNormalizeConversationSupportsSubagentNodes(): void {
+  const conversation = normalizeConversation([
+    node('node-subagent', 'subagent', [
+      {
+        type: 'agent_message',
+        author: 'worker',
+        recipient: 'root',
+        content: [{ type: 'input_text', text: 'worker result is ready' }],
+      },
+    ]),
+  ]);
+
+  const subagent = conversation[0];
+  assertEqual(subagent.role, 'subagent', 'keeps subagent display role');
+  assertIncludes(subagent.text, 'worker result is ready', 'renders agent_message content as readable text');
+  assert(!subagent.text.includes('"author"'), 'does not render agent_message as raw JSON');
+  assertEqual(subagent.providerItems?.length, 1, 'keeps original agent_message provider item');
+}
+
+function testImageDataUrlsDoNotEnterContextWeightText(): void {
+  const payload = 'A'.repeat(120_000);
+  const imageUrl = `data:image/png;base64,${payload}`;
+  const conversation = normalizeConversation([
+    node('node-user-image', 'user', [
+      {
+        type: 'message',
+        role: 'user',
+        content: [
+          { type: 'input_text', text: 'Please inspect this screenshot.' },
+          { type: 'input_image', image_url: imageUrl },
+        ],
+      },
+    ]),
+  ]);
+
+  const user = conversation[0];
+  const weightSource = getContextWeightSource(user);
+  const tokenCount = getContextTokenCount(user);
+
+  assertIncludes(user.text, '[image]', 'renders image content as a short placeholder');
+  assert(!user.text.includes(payload), 'does not expose image base64 in normalized message text');
+  assert(!weightSource.includes(payload), 'does not count image base64 as text in context map weight source');
+  assert(
+    tokenCount >= CONTEXT_IMAGE_TOKEN_ESTIMATE && tokenCount < CONTEXT_IMAGE_TOKEN_ESTIMATE + 100,
+    'uses a bounded image token estimate instead of base64 text length',
+  );
+}
+
+function main(): void {
+  testNormalizeConversationKeepsProviderItemContract();
+  testNormalizeConversationSupportsSubagentNodes();
+  testImageDataUrlsDoNotEnterContextWeightText();
+  console.log('ok - normalizeConversation contract tests passed');
+}
+
+main();

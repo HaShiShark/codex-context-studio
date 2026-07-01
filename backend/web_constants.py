@@ -13,10 +13,10 @@ from simple_agent.agent import SimpleAgent
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REACT_DIST_DIR = REPO_ROOT / "react_app" / "dist"
 DEFAULT_PAGE = REACT_DIST_DIR / "index.html"
-RAW_STATE_DIR = Path(os.getenv("HASH_DATA_DIR", str(REPO_ROOT / "data"))).expanduser()
+DEFAULT_DATA_DIR = Path.home() / ".hash-context-codex"
+RAW_STATE_DIR = Path(os.getenv("HASH_DATA_DIR", str(DEFAULT_DATA_DIR))).expanduser()
 STATE_DIR = RAW_STATE_DIR if RAW_STATE_DIR.is_absolute() else (REPO_ROOT / RAW_STATE_DIR).resolve()
 STATE_FILE = STATE_DIR / "hash_web_state.json"
-PROXY_STATE_FILE = STATE_DIR / "proxy_state.json"
 CODEX_LOCAL_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
 CONTEXT_REQUEST_DEBUG_FILE = STATE_DIR / "context_request_debug.ndjson"
 CONTEXT_EDIT_MARKERS_FILE = STATE_DIR / "context_edit_markers.json"
@@ -114,8 +114,6 @@ class SessionState:
     agent: SimpleAgent | None
     transcript: list[dict[str, object]]
     context_workbench_history: list[dict[str, str]]
-    context_revisions: list[dict[str, object]]
-    pending_context_restore: dict[str, object] | None
     active_request_mode: str | None = None
     active_request_id: str | None = None
     active_cancel_event: threading.Event | None = None

@@ -240,7 +240,7 @@ textarea {
 }
 
 .inline-tool-block {
-  margin: 12px 0;
+  margin: 2px 0 4px 6px;
 }
 
 .inline-tool-item + .inline-tool-item {
@@ -256,17 +256,15 @@ textarea {
   gap: 6px;
   color: rgba(255, 255, 255, 0.3);
   font-size: var(--ui-font-size-md);
+  line-height: 1.25;
   cursor: pointer;
   transition: color 180ms ease;
-}
-
-.inline-tool-group-icon {
-  font-size: var(--ui-font-size-sm);
 }
 
 .inline-tool-group-chevron,
 .inline-tool-summary-chevron {
   opacity: 0;
+  line-height: 1;
   transition:
     transform 220ms ease,
     opacity 180ms ease;
@@ -315,6 +313,10 @@ textarea {
 }
 
 .inline-tool-group-inner {
+  margin-top: 0;
+}
+
+.inline-tool-group-panel.open .inline-tool-group-inner {
   margin-top: 6px;
 }
 
@@ -492,7 +494,7 @@ textarea {
 }
 
 .reasoning-block {
-  margin: 4px 0 12px;
+  margin: 2px 0 4px 6px;
   color: rgba(255, 255, 255, 0.62);
 }
 
@@ -501,14 +503,23 @@ textarea {
   align-items: center;
   gap: 6px;
   max-width: 100%;
-  padding: 3px 0;
+  padding: 0;
   border: 0;
   background: transparent;
   color: rgba(255, 255, 255, 0.38);
   font: inherit;
   font-size: var(--ui-font-size-md);
+  line-height: 1.25;
   cursor: pointer;
   transition: color 160ms ease;
+}
+
+.inline-tool-call-count,
+.reasoning-block-toggle {
+  min-height: 0;
+  padding: 0;
+  font-size: var(--ui-font-size-lg);
+  line-height: 1.25;
 }
 
 .reasoning-block-toggle:hover,
@@ -905,6 +916,10 @@ textarea {
 
 .context-map-expanded-content .inline-tool-block {
   margin: 6px 0;
+}
+
+.context-map-expanded-content .reasoning-block {
+  margin-left: 0;
 }
 
 .context-map-expanded-content .inline-tool-call-count {
@@ -1898,7 +1913,9 @@ html[data-theme-mode="dark"] .markdown-table-wrap td {
 
 /* Global typography scale. Keep this late so older component-local px sizes follow Settings > Font Size. */
 .markdown-body,
-.message .content {
+.message .content,
+.inline-tool-call-count,
+.reasoning-block-toggle {
   font-size: var(--ui-font-size-lg);
 }
 
@@ -1910,7 +1927,6 @@ html[data-theme-mode="dark"] .markdown-table-wrap td {
 .manual-workbench-input,
 .tool-btn-capsule,
 .dropdown-item,
-.inline-tool-call-count,
 .inline-tool-command-preview,
 .inline-tool-detail-text,
 .tool-shell-command,
@@ -1918,7 +1934,6 @@ html[data-theme-mode="dark"] .markdown-table-wrap td {
 .tool-json-scroll pre,
 .tool-shell-footer,
 .thinking-inline-text,
-.reasoning-block-toggle,
 .workbench-panel-desc,
 .suggestion-row-title,
 .manual-workbench-empty-title,
@@ -1936,6 +1951,7 @@ html[data-theme-mode="dark"] .markdown-table-wrap td {
 
 .context-map-expanded-content .inline-tool-call-count,
 .context-map-expanded-content .inline-tool-summary,
+.context-map-expanded-content .reasoning-block-toggle,
 .context-map-expanded-content .markdown-code-block code.hljs,
 .context-map-expanded-content .markdown-table-wrap th,
 .context-map-expanded-content .markdown-table-wrap td,

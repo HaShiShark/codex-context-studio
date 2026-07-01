@@ -1,4 +1,5 @@
 import type { MessageRecord } from './types';
+import { countTokens } from './utils';
 
 export type ContextTokenWeightClass = 'light' | 'medium' | 'heavy';
 
@@ -23,11 +24,49 @@ export const DEFAULT_CONTEXT_TOKEN_THRESHOLDS: ContextTokenThresholds = {
   criticalThreshold: 10000,
 };
 
+// Mirrors Codex's resized-image estimate: 7,373 model-visible bytes at roughly 4 bytes/token.
+export const CONTEXT_IMAGE_TOKEN_ESTIMATE = 1844;
+
 export interface ContextMapNodeMeta {
   displayNodeNumber: number | null;
   editable: boolean;
   selectable: boolean;
   internalKind?: 'instruction' | 'environment';
+}
+
+type UnknownRecord = Record<string, unknown>;
+
+function isRecord(value: unknown): value is UnknownRecord {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function isInlineImageDataUrl(value: unknown): boolean {
+  return typeof value === 'string' && /^data:image\/[^,;]+(?:;[^,]*)*;base64,/i.test(value.trim());
+}
+
+function isImageContentRecord(value: UnknownRecord): boolean {
+  const type = String(value.type || '').trim().toLowerCase();
+  if (type.includes('image') || 'image_url' in value) {
+    return true;
+  }
+
+  return isInlineImageDataUrl(value.url);
+}
+
+function countImageContentItems(value: unknown): number {
+  if (Array.isArray(value)) {
+    return value.reduce<number>((total, item) => total + countImageContentItems(item), 0);
+  }
+
+  if (!isRecord(value)) {
+    return 0;
+  }
+
+  if (isImageContentRecord(value)) {
+    return 1;
+  }
+
+  return Object.values(value).reduce<number>((total, item) => total + countImageContentItems(item), 0);
 }
 
 function isEnvironmentContextMessage(message: MessageRecord) {
@@ -133,6 +172,14 @@ export function getContextToolWeightSource(message: MessageRecord) {
   return parts.join('\n\n');
 }
 
+export function getContextImageTokenEstimate(message: MessageRecord) {
+  const providerItemImageCount = countImageContentItems(message.providerItems || []);
+  const attachmentImageCount = message.attachments.filter((attachment) => attachment.kind === 'image').length;
+  const imageCount = providerItemImageCount || attachmentImageCount;
+
+  return imageCount * CONTEXT_IMAGE_TOKEN_ESTIMATE;
+}
+
 export function getContextWeightSource(message: MessageRecord) {
   const parts: string[] = [];
 
@@ -169,4 +216,8 @@ export function getContextWeightSource(message: MessageRecord) {
   }
 
   return parts.join('\n\n');
+}
+
+export function getContextTokenCount(message: MessageRecord) {
+  return countTokens(getContextWeightSource(message)) + getContextImageTokenEstimate(message);
 }

@@ -27,7 +27,6 @@ from backend.web_constants import (
 from backend.web_state import AppState, resolve_attachment_file_path
 
 from backend.web_runtime import (
-    active_context_revision_marker,
     build_context_chat_response_payload,
     clone_provider_settings_payloads,
     codex_proxy_session_exists,
@@ -41,7 +40,7 @@ from backend.web_runtime import (
     refresh_session_from_proxy_active_context_if_known,
     persist_request_attachments,
     run_context_chat_turn,
-    safe_sync_proxy_session_override_if_known,
+    safe_sync_proxy_session_transcript_if_known,
 )
 
 from backend.web_context import (
@@ -75,10 +74,7 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
         return self.server.app_state  # type: ignore[attr-defined]
 
     def _get_proxy_control_json_or_none(self, path: str) -> dict[str, Any] | None:
-        try:
-            return get_codex_proxy_control_json(path)
-        except ValueError:
-            return None
+        return get_codex_proxy_control_json(path)
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -88,24 +84,43 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/proxy/sessions":
-            proxy_payload = self._get_proxy_control_json_or_none("/api/proxy/sessions")
-            self._send_json(proxy_payload or {"active_session_id": "", "sessions": []})
+            try:
+                proxy_payload = self._get_proxy_control_json_or_none("/api/proxy/sessions")
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_GATEWAY)
+                return
+            self._send_json(proxy_payload or {"error": "proxy returned empty sessions payload"}, status=HTTPStatus.BAD_GATEWAY)
             return
 
         if parsed.path == "/api/proxy/usage":
-            proxy_payload = self._get_proxy_control_json_or_none("/api/proxy/usage")
-            self._send_json(proxy_payload or {"overall": {}, "sessions": {}})
+            try:
+                proxy_payload = self._get_proxy_control_json_or_none("/api/proxy/usage")
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_GATEWAY)
+                return
+            self._send_json(proxy_payload or {"error": "proxy returned empty usage payload"}, status=HTTPStatus.BAD_GATEWAY)
             return
 
         if parsed.path.startswith("/api/proxy/sessions/") and parsed.path.endswith("/usage"):
             session_id = quote(parsed.path.split("/api/proxy/sessions/", 1)[1].rsplit("/", 1)[0], safe="")
-            proxy_payload = self._get_proxy_control_json_or_none(f"/api/proxy/sessions/{session_id}/usage")
-            self._send_json(proxy_payload or {"summary": {}})
+            try:
+                proxy_payload = self._get_proxy_control_json_or_none(f"/api/proxy/sessions/{session_id}/usage")
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_GATEWAY)
+                return
+            if proxy_payload is None:
+                self._send_json({"error": "session not found"}, status=HTTPStatus.NOT_FOUND)
+                return
+            self._send_json(proxy_payload)
             return
 
         if parsed.path.startswith("/api/proxy/sessions/"):
             session_id = quote(parsed.path.split("/api/proxy/sessions/", 1)[1].split("/", 1)[0], safe="")
-            proxy_payload = self._get_proxy_control_json_or_none(f"/api/proxy/sessions/{session_id}")
+            try:
+                proxy_payload = self._get_proxy_control_json_or_none(f"/api/proxy/sessions/{session_id}")
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_GATEWAY)
+                return
             if proxy_payload is None:
                 self._send_json({"error": "session not found"}, status=HTTPStatus.NOT_FOUND)
                 return
@@ -208,8 +223,7 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
             "/api/provider-model-candidates": self._handle_provider_model_candidates_post,
             "/api/provider-models": self._handle_provider_models_post,
             "/api/context-workbench-settings": self._handle_context_workbench_settings_post,
-            "/api/proxy-session-override": self._handle_proxy_session_override_post,
-            "/api/proxy-session-reset": self._handle_proxy_session_reset_post,
+            "/api/proxy-session-transcript": self._handle_proxy_session_transcript_post,
             "/api/proxy-session-usage-reset": self._handle_proxy_session_usage_reset_post,
             "/api/context-workbench-suggestions": self._handle_context_workbench_suggestions_post,
             "/api/delete-session": self._handle_delete_session_post,
@@ -217,10 +231,8 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
             "/api/cancel-request": self._handle_cancel_request_post,
             "/api/context-chat": self._handle_context_chat_post,
             "/api/context-chat-stream": self._handle_context_chat_stream_post,
-            "/api/context-restore": self._handle_context_restore_post,
             "/api/context-workbench-history-message-delete": self._handle_context_workbench_history_message_delete_post,
             "/api/context-workbench-history-clear": self._handle_context_workbench_history_clear_post,
-            "/api/context-undo-restore": self._handle_context_undo_restore_post,
             "/api/send-message-stream": self._handle_send_message_stream_post,
             "/api/send-message": self._handle_send_message_post,
         }
@@ -306,6 +318,8 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_proxy_sync_session_post(self, payload: dict[str, object]) -> None:
         transcript = payload.get("transcript")
+        if transcript is None:
+            transcript = []
         if not isinstance(transcript, list):
             raise ValueError("transcript must be a list")
         session = self.app_state.upsert_proxy_session(
@@ -391,12 +405,12 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
             raise ValueError("from_index must be a number") from exc
 
         session = self.app_state.truncate_session(session_id, from_index)
-        proxy_override = safe_sync_proxy_session_override_if_known(session, sanitize_value(session.transcript))
+        proxy_transcript_sync = safe_sync_proxy_session_transcript_if_known(session, sanitize_value(session.transcript))
         self._send_json(
             {
                 "session": self.app_state.session_payload(session),
                 "conversation": sanitize_value(session.transcript),
-                "proxy_override": proxy_override,
+                "proxy_transcript_sync": proxy_transcript_sync,
                 **self.app_state.sidebar_payload(),
             }
         )
@@ -414,7 +428,7 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
         request_id = self.app_state.acquire_session_request(session, "main")
         try:
             session = self.app_state.delete_transcript_message(session_id, message_index)
-            proxy_override = safe_sync_proxy_session_override_if_known(
+            proxy_transcript_sync = safe_sync_proxy_session_transcript_if_known(
                 session,
                 sanitize_value(session.transcript),
             )
@@ -422,7 +436,7 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
                 {
                     "session": self.app_state.session_payload(session),
                     "conversation": sanitize_value(session.transcript),
-                    "proxy_override": proxy_override,
+                    "proxy_transcript_sync": proxy_transcript_sync,
                     **self.app_state.sidebar_payload(),
                 }
             )
@@ -642,7 +656,7 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
         )
         return
 
-    def _handle_proxy_session_override_post(self, payload: dict[str, object]) -> None:
+    def _handle_proxy_session_transcript_post(self, payload: dict[str, object]) -> None:
         session_id = sanitize_text(payload.get("session_id") or "").strip()
         transcript = payload.get("transcript")
         if not session_id:
@@ -650,38 +664,15 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
         if not isinstance(transcript, list):
             raise ValueError("transcript must be a list")
         proxy_payload = post_codex_proxy_control_json(
-            f"/api/proxy/sessions/{quote(session_id, safe='')}/override",
+            f"/api/proxy/sessions/{quote(session_id, safe='')}/transcript",
             {"transcript": transcript},
         )
         if bool(proxy_payload.get("changed")):
-            session = self.app_state.get_session(session_id)
-            summary, revision_number = active_context_revision_marker(session)
             visible_transcript = normalize_transcript(proxy_payload.get("transcript"))
             write_context_edit_marker(
                 session_id,
-                summary=summary,
-                revision_number=revision_number,
-                node_count=editable_context_node_count(visible_transcript),
-            )
-        self._send_json(proxy_payload)
-        return
-
-    def _handle_proxy_session_reset_post(self, payload: dict[str, object]) -> None:
-        session_id = sanitize_text(payload.get("session_id") or "").strip()
-        if not session_id:
-            raise ValueError("session_id is required")
-        proxy_payload = post_codex_proxy_control_json(
-            f"/api/proxy/sessions/{quote(session_id, safe='')}/reset",
-            {},
-        )
-        if bool(proxy_payload.get("changed")):
-            session = self.app_state.get_session(session_id)
-            summary, revision_number = active_context_revision_marker(session)
-            visible_transcript = normalize_transcript(proxy_payload.get("transcript"))
-            write_context_edit_marker(
-                session_id,
-                summary=summary,
-                revision_number=revision_number,
+                summary="Context has been edited.",
+                edit_version=0,
                 node_count=editable_context_node_count(visible_transcript),
             )
         self._send_json(proxy_payload)
@@ -858,30 +849,6 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
             self.app_state.release_session_request(session, "context", request_id)
         return
 
-    def _handle_context_restore_post(self, payload: dict[str, object]) -> None:
-        session = self.app_state.get_session(payload.get("session_id"))
-        revision_id = sanitize_text(payload.get("revision_id") or "").strip()
-        if not revision_id:
-            raise ValueError("revision_id is required")
-
-        request_id = self.app_state.acquire_session_request(session, "context")
-        try:
-            conversation, history = self.app_state.restore_context_revision(
-                session,
-                revision_id,
-            )
-            proxy_override = safe_sync_proxy_session_override_if_known(session, conversation)
-            self._send_json(
-                {
-                    "conversation": conversation,
-                    "history": history,
-                    "proxy_override": proxy_override,
-                }
-            )
-        finally:
-            self.app_state.release_session_request(session, "context", request_id)
-        return
-
     def _handle_context_workbench_history_message_delete_post(self, payload: dict[str, object]) -> None:
         session = self.app_state.get_session(payload.get("session_id"))
         raw_message_index = payload.get("message_index")
@@ -913,23 +880,6 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
                 "history": history,
             }
         )
-        return
-
-    def _handle_context_undo_restore_post(self, payload: dict[str, object]) -> None:
-        session = self.app_state.get_session(payload.get("session_id"))
-        request_id = self.app_state.acquire_session_request(session, "context")
-        try:
-            conversation, history = self.app_state.undo_context_restore(session)
-            proxy_override = safe_sync_proxy_session_override_if_known(session, conversation)
-            self._send_json(
-                {
-                    "conversation": conversation,
-                    "history": history,
-                    "proxy_override": proxy_override,
-                }
-            )
-        finally:
-            self.app_state.release_session_request(session, "context", request_id)
         return
 
     def _handle_send_message_stream_post(self, payload: dict[str, object]) -> None:

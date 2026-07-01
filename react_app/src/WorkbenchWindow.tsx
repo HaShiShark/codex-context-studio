@@ -4,25 +4,23 @@ import {
   fetchInit,
   fetchProxySessionRequest,
   fetchProxySessionsRequest,
-  fetchProxySessionUsageRequest,
+  proxyRealtimeUrl,
   syncProxySessionRequest,
+  type ProxyRealtimeEvent,
+  type ProxySessionSummary,
+  type TranscriptPatchOp,
 } from './api';
 import ContextMapSidebar from './components/ContextMapSidebar';
 import { normalizeSupportedLocale, type UiLocale } from './i18n';
 import type {
-  ContextWorkbenchHistoryEntry,
+  ContextWorkbenchChatMessage,
   MessageRecord,
   ProxyUsageSummary,
   ReasoningOption,
-  TranscriptRecord,
+  TranscriptEntry,
 } from './types';
 import { normalizeConversation, normalizeReasoningOptions } from './utils';
 
-const LIVE_REFRESH_IDLE_MS = 4000;
-const LIVE_REFRESH_RUNNING_MS = 1500;
-const PENDING_CONTEXT_REFRESH_MS = 400;
-const PENDING_CONTEXT_REFRESH_MAX_MS = 8000;
-const LOCAL_EDIT_GRACE_MS = 2000;
 const MIN_WORKBENCH_WINDOW_WIDTH = 600;
 const MIN_WORKBENCH_WINDOW_HEIGHT = 360;
 
@@ -40,22 +38,34 @@ function isProxyBusy(status?: string, isRunning?: boolean): boolean {
   return Boolean(isRunning || status === 'running' || status === 'compacting');
 }
 
-function hasPendingAssistantMessage(messages: MessageRecord[]): boolean {
-  const lastAssistant = [...messages].reverse().find((message) => message.role === 'an');
-  if (!lastAssistant) return false;
-  return Boolean(
-    lastAssistant.pending
-    || (!lastAssistant.text.trim() && lastAssistant.blocks.some((block) => block.kind === 'thinking'))
-    || lastAssistant.blocks.some((block) => block.kind === 'reasoning' && block.status === 'streaming'),
-  );
-}
-
 function currentUrlSessionId(): string {
   return new URLSearchParams(window.location.search).get('session_id')?.trim() || '';
 }
 
 function conversationSignature(messages: MessageRecord[]): string {
   return JSON.stringify(messages);
+}
+
+function applyTranscriptPatch(current: TranscriptEntry[], ops: TranscriptPatchOp[] = []): TranscriptEntry[] {
+  const next = [...current];
+  for (const op of ops) {
+    if (op.op === 'splice_nodes') {
+      next.splice(Math.max(0, op.index), Math.max(0, op.delete_count), ...op.nodes);
+      continue;
+    }
+    if (op.op === 'append_node') {
+      next.push(op.node);
+      continue;
+    }
+    if (op.op === 'replace_node') {
+      if (op.index >= 0 && op.index < next.length) next[op.index] = op.node;
+      continue;
+    }
+    if (op.op === 'delete_node') {
+      if (op.index >= 0 && op.index < next.length) next.splice(op.index, 1);
+    }
+  }
+  return next;
 }
 
 function windowText(locale: UiLocale, english: string, chinese: string) {
@@ -200,13 +210,18 @@ export default function WorkbenchWindow() {
   const [proxySessionId, setProxySessionId] = useState('');
   const [isProxyRunning, setIsProxyRunning] = useState(false);
   const [messages, setMessages] = useState<MessageRecord[]>([]);
-  const [histories, setHistories] = useState<Record<string, ContextWorkbenchHistoryEntry[]>>({});
+  const [contextWorkbenchChats, setContextWorkbenchChats] = useState<Record<string, ContextWorkbenchChatMessage[]>>({});
   const [reasoningOptions] = useState<ReasoningOption[]>(normalizeReasoningOptions());
   const [proxyUsageSummary, setProxyUsageSummary] = useState<ProxyUsageSummary | null>(null);
+  const [realtimeError, setRealtimeError] = useState('');
   const loadRequestIdRef = useRef(0);
   const visibleLoadInFlightRef = useRef(false);
-  const lastLocalEditAtRef = useRef(0);
   const messagesSignatureRef = useRef('');
+  const proxySessionIdRef = useRef('');
+  const transcriptRef = useRef<TranscriptEntry[]>([]);
+  const transcriptVersionRef = useRef(0);
+  const lastRealtimeEventIdRef = useRef(0);
+  const realtimeClientIdRef = useRef(`frontend-window-${Math.random().toString(36).slice(2)}`);
 
   const setMessagesIfChanged = useCallback((next: MessageRecord[]) => {
     const sig = conversationSignature(next);
@@ -215,10 +230,18 @@ export default function WorkbenchWindow() {
     setMessages(next);
   }, []);
 
-  const refreshProxyUsage = useCallback(async (sid: string) => {
-    if (!sid) { setProxyUsageSummary(null); return; }
-    try { const r = await fetchProxySessionUsageRequest(sid); setProxyUsageSummary(r.summary || null); } catch { /* */ }
-  }, []);
+  const applyProxySession = useCallback((session: ProxySessionSummary | null | undefined) => {
+    if (!session?.id) return;
+    const sessionChanged = proxySessionIdRef.current !== session.id;
+    proxySessionIdRef.current = session.id;
+    const version = Number(session.transcript_version || 0);
+    transcriptVersionRef.current = sessionChanged ? version : Math.max(transcriptVersionRef.current, version);
+    transcriptRef.current = session.transcript || [];
+    setProxySessionId(session.id);
+    setIsProxyRunning(isProxyBusy(session.status, session.is_running));
+    setProxyUsageSummary(session.usage_summary || null);
+    setMessagesIfChanged(normalizeConversation(transcriptRef.current));
+  }, [setMessagesIfChanged]);
 
   const loadInit = useCallback(async (opts: { silent?: boolean; targetSessionId?: string } = {}) => {
     const targetSid = opts.targetSessionId?.trim() || currentUrlSessionId();
@@ -233,53 +256,52 @@ export default function WorkbenchWindow() {
     const isCurrentLoad = () => loadRequestIdRef.current === requestId;
 
     try {
-      const [proxyPayload] = await Promise.all([fetchProxySessionsRequest().catch(() => null)]);
+      const session = targetSid
+        ? await fetchProxySessionRequest(targetSid)
+        : await (async () => {
+            const proxyPayload = await fetchProxySessionsRequest();
+            if (!isCurrentLoad()) return null;
+            const activeSummary = proxyPayload.sessions.find((s) => s.id === proxyPayload.active_session_id) || proxyPayload.sessions[0] || null;
+            return activeSummary ? fetchProxySessionRequest(activeSummary.id) : null;
+          })();
       if (!isCurrentLoad()) return;
 
-      const activeSummary = targetSid
-        ? proxyPayload?.sessions.find((s) => s.id === targetSid) || null
-        : proxyPayload?.sessions.find((s) => s.id === proxyPayload.active_session_id) || proxyPayload?.sessions[0] || null;
-
-      if (!activeSummary) {
-        if (!opts.silent) { setLoading(false); visibleLoadInFlightRef.current = false; }
+      if (!session) {
+        proxySessionIdRef.current = '';
+        transcriptVersionRef.current = 0;
+        transcriptRef.current = [];
+        setProxySessionId('');
+        setIsProxyRunning(false);
+        setProxyUsageSummary(null);
+        setMessagesIfChanged([]);
         return;
       }
 
-      const session = await fetchProxySessionRequest(activeSummary.id).catch(() => activeSummary);
-      if (!isCurrentLoad()) return;
-
-      const transcript: TranscriptRecord[] = session.active_transcript || session.transcript || [];
-      const nextMessages = normalizeConversation(transcript);
-      const nextIsRunning = isProxyBusy(session.status, session.is_running);
-
-      // Load workbench settings from /api/init
       if (!opts.silent) {
-        const initPayload = await fetchInit().catch(() => null);
+        const initPayload = await fetchInit({ sessionId: session.id, includeConversation: false });
         if (!isCurrentLoad()) return;
-        if (initPayload?.settings) {
+        if (initPayload.settings) {
           setUiLocale(normalizeSupportedLocale(initPayload.settings.user_locale));
           setThemeMode(initPayload.settings.theme_mode === 'dark' ? 'dark' : 'light');
         }
+        setContextWorkbenchChats((prev) => ({
+          ...prev,
+          [session.id]: initPayload.context_workbench_histories?.[session.id] || prev[session.id] || [],
+        }));
       }
 
-      setProxySessionId(session.id);
-      setIsProxyRunning(nextIsRunning);
-      setMessagesIfChanged(nextMessages);
-      setHistories((prev) => ({
-        ...prev,
-        [session.id]: session.workbench_history || prev[session.id] || [],
-      }));
-      setProxyUsageSummary(session.usage_summary || null);
-      void refreshProxyUsage(session.id);
+      applyProxySession(session);
+      setRealtimeError('');
 
-      // Sync title
-      void syncProxySessionRequest({ session_id: session.id, title: session.title || 'Codex Context' }).catch(() => {});
+      void syncProxySessionRequest({ session_id: session.id, title: session.title || 'Codex Context' }).catch((caught) => {
+        setRealtimeError(caught instanceof Error ? caught.message : String(caught));
+      });
     } catch (caught) {
       if (!opts.silent) setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
       if (!opts.silent) { visibleLoadInFlightRef.current = false; if (isCurrentLoad()) setLoading(false); }
     }
-  }, [refreshProxyUsage, setMessagesIfChanged]);
+  }, [applyProxySession]);
 
   useEffect(() => { void loadInit(); }, [loadInit]);
 
@@ -318,37 +340,133 @@ export default function WorkbenchWindow() {
     return () => window.removeEventListener('hash-context-window-show', handler);
   }, [loadInit]);
 
+  const applyRealtimeEvent = useCallback((event: ProxyRealtimeEvent) => {
+    if (typeof event.event_id === 'number') {
+      lastRealtimeEventIdRef.current = Math.max(lastRealtimeEventIdRef.current, event.event_id);
+    }
+
+    if (event.type === 'connection_ack' || event.type === 'pong') {
+      setRealtimeError('');
+      return;
+    }
+
+    if (event.type === 'error') {
+      setRealtimeError(event.message || 'Realtime proxy error');
+      return;
+    }
+
+    const eventSessionId = event.session_id || event.session?.id || '';
+    const activeSessionId = proxySessionIdRef.current;
+    if (eventSessionId && activeSessionId && eventSessionId !== activeSessionId) return;
+
+    setRealtimeError('');
+
+    if (event.type === 'snapshot') {
+      applyProxySession(event.session);
+      return;
+    }
+
+    if (event.type === 'session_status') {
+      setIsProxyRunning(isProxyBusy(event.status || event.session?.status, event.is_running ?? event.session?.is_running));
+      if (event.session?.usage_summary) setProxyUsageSummary(event.session.usage_summary);
+      return;
+    }
+
+    if (event.type === 'transcript_update') {
+      const nextVersion = Number(event.transcript_version || event.session?.transcript_version || 0);
+      if (nextVersion && nextVersion <= transcriptVersionRef.current) return;
+      if (nextVersion) transcriptVersionRef.current = nextVersion;
+      transcriptRef.current = event.transcript || event.session?.transcript || [];
+      setMessagesIfChanged(normalizeConversation(transcriptRef.current));
+      if (event.session) {
+        setIsProxyRunning(isProxyBusy(event.session.status, event.session.is_running));
+        setProxyUsageSummary(event.session.usage_summary || null);
+      }
+      return;
+    }
+
+    if (event.type === 'transcript_patch') {
+      const baseVersion = Number(event.base_version || 0);
+      const nextVersion = Number(event.next_version || event.session?.transcript_version || 0);
+      if (baseVersion !== transcriptVersionRef.current) {
+        setRealtimeError(windowText(uiLocale, 'Transcript version mismatch', '上下文版本不一致'));
+        return;
+      }
+      transcriptRef.current = applyTranscriptPatch(transcriptRef.current, event.ops || []);
+      if (nextVersion) transcriptVersionRef.current = nextVersion;
+      setMessagesIfChanged(normalizeConversation(transcriptRef.current));
+      if (event.session) {
+        setIsProxyRunning(isProxyBusy(event.session.status, event.session.is_running));
+        setProxyUsageSummary(event.session.usage_summary || null);
+      }
+      return;
+    }
+
+    if (event.type === 'usage_update') {
+      setProxyUsageSummary(event.usage_summary || null);
+    }
+  }, [applyProxySession, setMessagesIfChanged, uiLocale]);
+
   useEffect(() => {
-    const ms = isProxyRunning ? LIVE_REFRESH_RUNNING_MS : LIVE_REFRESH_IDLE_MS;
-    const id = window.setInterval(() => {
-      if (Date.now() - lastLocalEditAtRef.current < LOCAL_EDIT_GRACE_MS) return;
-      void loadInit({ silent: true });
-    }, ms);
-    return () => window.clearInterval(id);
-  }, [isProxyRunning, loadInit]);
+    if (!proxySessionId) return undefined;
 
-  const hasPendingAssistant = useMemo(() => hasPendingAssistantMessage(messages), [messages]);
+    let disposed = false;
+    let socket: WebSocket | null = null;
+    let reconnectTimer: number | undefined;
+    let attempt = 0;
 
-  useEffect(() => {
-    if (!hasPendingAssistant) return undefined;
-    const startedAt = Date.now();
-    const id = window.setInterval(() => {
-      if (Date.now() - startedAt >= PENDING_CONTEXT_REFRESH_MAX_MS) { window.clearInterval(id); return; }
-      if (Date.now() - lastLocalEditAtRef.current < LOCAL_EDIT_GRACE_MS) return;
-      void loadInit({ silent: true });
-    }, PENDING_CONTEXT_REFRESH_MS);
-    return () => window.clearInterval(id);
-  }, [hasPendingAssistant, loadInit]);
+    const connect = () => {
+      if (disposed) return;
+      socket = new WebSocket(proxyRealtimeUrl());
 
-  const currentHistory = useMemo(
-    () => (proxySessionId ? histories[proxySessionId] || [] : []),
-    [histories, proxySessionId],
+      socket.onopen = () => {
+        attempt = 0;
+        setRealtimeError('');
+        socket?.send(JSON.stringify({
+          type: 'subscribe',
+          client_id: realtimeClientIdRef.current,
+          session_id: proxySessionId,
+          last_event_id: lastRealtimeEventIdRef.current,
+        }));
+      };
+
+      socket.onmessage = (message) => {
+        try {
+          applyRealtimeEvent(JSON.parse(String(message.data)) as ProxyRealtimeEvent);
+        } catch (caught) {
+          setRealtimeError(caught instanceof Error ? caught.message : String(caught));
+        }
+      };
+
+      socket.onerror = () => {
+        setRealtimeError(windowText(uiLocale, 'Realtime connection failed', '实时连接失败'));
+      };
+
+      socket.onclose = () => {
+        if (disposed) return;
+        setRealtimeError(windowText(uiLocale, 'Realtime connection closed', '实时连接已断开'));
+        const delay = Math.min(1000 * (2 ** attempt), 10000);
+        attempt += 1;
+        reconnectTimer = window.setTimeout(connect, delay);
+      };
+    };
+
+    connect();
+    return () => {
+      disposed = true;
+      if (reconnectTimer) window.clearTimeout(reconnectTimer);
+      socket?.close();
+    };
+  }, [applyRealtimeEvent, proxySessionId, uiLocale]);
+
+  const currentContextWorkbenchChat = useMemo(
+    () => (proxySessionId ? contextWorkbenchChats[proxySessionId] || [] : []),
+    [contextWorkbenchChats, proxySessionId],
   );
 
   const handleConversationChange = useCallback(
     (changedSessionId: string, conversation: MessageRecord[]) => {
       if (changedSessionId !== proxySessionId) return;
-      lastLocalEditAtRef.current = Date.now();
       setMessagesIfChanged(conversation);
     },
     [proxySessionId, setMessagesIfChanged],
@@ -390,6 +508,7 @@ export default function WorkbenchWindow() {
       <WorkbenchWindowChrome />
       <div className="workbench-window-frame">
         <WorkbenchWindowControls uiLocale={uiLocale} />
+        {realtimeError ? <div className="workbench-realtime-error">{realtimeError}</div> : null}
         <ContextMapSidebar
           stage={2}
           messages={messages}
@@ -397,13 +516,13 @@ export default function WorkbenchWindow() {
           onJumpToMessage={() => undefined}
           sessionId={proxySessionId}
           isMainChatBusy={isProxyRunning}
-          contextWorkbenchHistory={currentHistory}
+          contextWorkbenchChat={currentContextWorkbenchChat}
           reasoningOptions={reasoningOptions}
           proxyUsageSummary={proxyUsageSummary}
           uiLocale={uiLocale}
           themeMode={themeMode}
-          onContextWorkbenchHistoryChange={(sid, history) => {
-            setHistories((prev) => ({ ...prev, [sid]: history }));
+          onContextWorkbenchChatChange={(sid, chat) => {
+            setContextWorkbenchChats((prev) => ({ ...prev, [sid]: chat }));
           }}
           onContextWorkbenchConversationChange={handleConversationChange}
           onProxyUsageSummaryChange={setProxyUsageSummary}

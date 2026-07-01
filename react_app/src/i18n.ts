@@ -25,7 +25,6 @@ const TEXT_TRANSLATIONS: Record<string, string> = {
   '已经放回输入框，可以修改后重发。': 'Moved back to the composer. Edit it and send again.',
   '已经放回输入框，直接发送就会重新生成。': 'Moved back to the composer. Send it to regenerate.',
   '这条消息没有可重发的原始输入。': 'This message has no original input to resend.',
-  '当前版本还不支持从后端历史中删除单条消息。': 'This version cannot delete one message from backend history yet.',
   '先输入内容，或者至少带一个附件。': 'Type something, or attach at least one file.',
   '上一条还在处理中。': 'The previous message is still running.',
   '侧边栏已折叠。': 'Sidebar collapsed.',
@@ -143,7 +142,6 @@ const TEXT_TRANSLATIONS: Record<string, string> = {
 
   '建议': 'Suggestions',
   '手动': 'Manual',
-  '恢复': 'Restore',
   '可用': 'Available',
   '预览': 'Preview',
   '未选择供应商': 'No provider selected',
@@ -189,17 +187,13 @@ const TEXT_TRANSLATIONS: Record<string, string> = {
   '主聊天这一轮还没结束，右侧上下文工作区会等它先停下来。': 'The main chat is still running. The context workspace will wait for it to finish.',
   '直接问当前上下文哪里太长，或者哪些内容该保留...': 'Ask what is too long in the current context, or what should be kept...',
   '先进入一个会话，再在这里聊天...': 'Open a chat first, then talk here...',
-  '清空上下文模型对话记录': 'Clear context model chat history',
-  '当前没有可清空的对话记录': 'No chat history to clear',
-  '恢复记录': 'Restore History',
-  '这里保留的是每次提交后的完整版本。一个版本不会只记提交瞬间，它会继续吸收后面的主聊天和上下文聊天，直到下一次提交生成新版本，才会冻结成历史版本。': 'Each committed version is kept here. A version keeps absorbing later main and context chats until the next commit freezes it into history.',
+  '清空上下文模型对话': 'Clear context model chat',
+  '当前没有可清空的对话记录': 'No context model chat to clear',
   '初始版本': 'Initial version',
   '当前版本': 'Current version',
   '当前所在版本': 'Current version',
   '这次更新了当前上下文。': 'This update changed the current context.',
   '处理中...': 'Processing...',
-  '还没有恢复记录': 'No restore history yet',
-  '等工作区第一次真正提交上下文改动后，这里就会开始出现版本记录。': 'Version records will appear after the workspace commits its first context change.',
   '工作区设置': 'Workspace Settings',
   '手动页模型': 'Manual Page Model',
   '右侧手动页会固定走这个模型，用来做上下文分析和编辑。': 'The manual page on the right uses this model for context analysis and edits.',
@@ -374,12 +368,10 @@ function applyDynamicTranslation(text: string): string {
   output = output.replace(/附件：(.+)/g, 'Attachments: $1');
   output = output.replace(/退出码 (\d+) · 成功/g, 'Exit code $1 · Succeeded');
   output = output.replace(/退出码 (\d+) · 失败/g, 'Exit code $1 · Failed');
-  output = output.replace(/第 (\d+) 版/g, 'Revision $1');
   output = output.replace(/(\d+) 次改动/g, '$1 changes');
   output = output.replace(/(\d+) 个节点/g, '$1 nodes');
   output = output.replace(/手动页会优先围绕节点 #(.+?) 来看。/g, 'The manual page will prioritize node #$1.');
   output = output.replace(/节点 #([\d /-]+)/g, 'Node #$1');
-  output = output.replace(/切到第 (\d+) 版/g, 'Switch to revision $1');
   output = output.replace(/选择第 (\d+) 个节点/g, 'Select node $1');
   output = output.replace(/跳转到主聊天第 (\d+) 条消息/g, 'Jump to message $1 in main chat');
   output = output.replace(/定位到第 (\d+) 个节点，约 ([\d,]+) 个 token/g, 'Locate node $1, about $2 tokens');

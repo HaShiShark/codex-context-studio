@@ -25,22 +25,19 @@ from backend.web_constants import (
     STATE_DIR,
     STATE_FILE,
 )
+from backend.transcript_codec import (
+    append_input_items as core_append_input_items,
+    transcript_to_input_items as core_transcript_to_input_items,
+)
 
 from backend.web_context import (
     _find_tag,
     _safe_emit_split,
     active_provider_models,
     append_jsonl_state_event,
-    build_context_revision_entry,
     build_provider_items_for_record,
-    context_pending_restore_payload,
-    context_revision_summaries,
-    ensure_initial_context_revision,
-    find_active_context_revision_id,
-    mark_active_context_revision,
     message_blocks_to_text,
     model_options,
-    next_context_revision_number,
     normalize_attachment_records,
     normalize_context_chat_history,
     normalize_message_blocks,
@@ -49,7 +46,6 @@ from backend.web_context import (
     sanitize_value,
     serialize_tool_event,
     settings_payload,
-    sync_active_context_revision_snapshot,
     utc_timestamp,
 )
 
@@ -198,10 +194,7 @@ class AppState:
                 agent=SimpleAgent(self._settings_for_project_locked(target_project_id)),
                 transcript=[],
                 context_workbench_history=[],
-                context_revisions=[],
-                pending_context_restore=None,
             )
-            ensure_initial_context_revision(session)
             self.sessions[session.session_id] = session
             self._insert_session_locked(session)
             self._save_state_locked()
@@ -306,8 +299,6 @@ class AppState:
                     agent=SimpleAgent(self._settings_for_project_locked(None)),
                     transcript=[],
                     context_workbench_history=[],
-                    context_revisions=[],
-                    pending_context_restore=None,
                 )
                 self.sessions[safe_session_id] = session
                 self._insert_session_locked(session)
@@ -332,7 +323,6 @@ class AppState:
                 transcript_changed = next_transcript != normalize_transcript(session.transcript)
                 if transcript_changed:
                     session.transcript = next_transcript
-                    session.pending_context_restore = None
                     should_persist = True
             if active_mode != "context":
                 if is_running:
@@ -347,8 +337,6 @@ class AppState:
                     session.active_cancel_event = None
                     should_persist = True
             if should_persist:
-                ensure_initial_context_revision(session)
-                sync_active_context_revision_snapshot(session)
                 self._hydrate_agent_locked(session)
                 self._remove_session_from_lists_locked(session.session_id)
                 self._insert_session_locked(session)
@@ -364,9 +352,6 @@ class AppState:
             session.title = NEW_SESSION_TITLE
             session.transcript = []
             session.context_workbench_history = []
-            session.context_revisions = []
-            session.pending_context_restore = None
-            ensure_initial_context_revision(session)
             self._save_state_locked()
         return session
 
@@ -376,9 +361,6 @@ class AppState:
             safe_index = max(0, min(from_index, len(session.transcript)))
             session.transcript = session.transcript[:safe_index]
             session.context_workbench_history = []
-            session.context_revisions = []
-            session.pending_context_restore = None
-            ensure_initial_context_revision(session)
             self._hydrate_agent_locked(session)
             if not session.transcript:
                 session.title = NEW_SESSION_TITLE
@@ -405,8 +387,6 @@ class AppState:
                 for index, record in enumerate(normalized_transcript)
                 if index != safe_index
             ]
-            ensure_initial_context_revision(session)
-            sync_active_context_revision_snapshot(session)
             self._hydrate_agent_locked(session)
             if not session.transcript:
                 session.title = NEW_SESSION_TITLE
@@ -535,7 +515,6 @@ class AppState:
         answer: str,
     ) -> list[dict[str, str]]:
         with self.lock:
-            session.pending_context_restore = None
             session.context_workbench_history = normalize_context_chat_history(
                 [
                     *session.context_workbench_history,
@@ -543,8 +522,6 @@ class AppState:
                     {"role": "assistant", "content": sanitize_text(answer)},
                 ]
             )
-            ensure_initial_context_revision(session)
-            sync_active_context_revision_snapshot(session)
             self._save_state_locked()
             return sanitize_value(session.context_workbench_history)
 
@@ -568,8 +545,6 @@ class AppState:
                 for index, item in enumerate(normalized_history)
                 if index != safe_index
             ]
-            session.pending_context_restore = None
-            sync_active_context_revision_snapshot(session)
             self._save_state_locked()
             return (
                 sanitize_value(session.transcript),
@@ -582,8 +557,6 @@ class AppState:
     ) -> tuple[list[dict[str, object]], list[dict[str, str]]]:
         with self.lock:
             session.context_workbench_history = []
-            session.pending_context_restore = None
-            sync_active_context_revision_snapshot(session)
             self._save_state_locked()
             return (
                 sanitize_value(session.transcript),
@@ -595,105 +568,12 @@ class AppState:
         session: SessionState,
         *,
         transcript: list[dict[str, object]],
-        revision_label: str,
-        revision_summary: str,
-        operations: list[dict[str, object]],
-    ) -> tuple[list[dict[str, object]], list[dict[str, object]], dict[str, object] | None]:
+    ) -> list[dict[str, object]]:
         with self.lock:
-            ensure_initial_context_revision(session)
-            next_revision_number = next_context_revision_number(session.context_revisions)
             session.transcript = normalize_transcript(transcript)
-            session.pending_context_restore = None
-            mark_active_context_revision(session.context_revisions, None)
-            session.context_revisions.append(
-                build_context_revision_entry(
-                    transcript=session.transcript,
-                    context_workbench_history=session.context_workbench_history,
-                    revision_label=revision_label,
-                    revision_summary=revision_summary,
-                    operations=operations,
-                    revision_number=next_revision_number,
-                )
-            )
             self._hydrate_agent_locked(session)
             self._save_state_locked()
-            return (
-                sanitize_value(session.transcript),
-                context_revision_summaries(session.context_revisions),
-                None,
-            )
-
-    def restore_context_revision(
-        self,
-        session: SessionState,
-        revision_id: str,
-    ) -> tuple[list[dict[str, object]], list[dict[str, str]]]:
-        with self.lock:
-            safe_revision_id = sanitize_text(revision_id).strip()
-            target = next(
-                (
-                    revision
-                    for revision in reversed(session.context_revisions)
-                    if sanitize_text(revision.get("id") or "").strip() == safe_revision_id
-                ),
-                None,
-            )
-            if target is None:
-                raise ValueError("revision not found")
-
-            raw_snapshot = target.get("snapshot")
-            snapshot = normalize_transcript(raw_snapshot)
-            if not snapshot and session.transcript and "snapshot" not in target:
-                raise ValueError("target revision snapshot is unavailable")
-            workbench_history_snapshot = normalize_context_chat_history(
-                target.get("context_workbench_history_snapshot")
-            )
-
-            undo_active_revision_id = find_active_context_revision_id(session.context_revisions)
-            session.pending_context_restore = {
-                "undo_transcript": sanitize_value(session.transcript),
-                "undo_context_workbench_history": sanitize_value(session.context_workbench_history),
-                "target_revision_id": safe_revision_id,
-                "target_label": sanitize_text(target.get("label") or "").strip() or "Revision",
-                "created_at": utc_timestamp(),
-                "undo_active_revision_id": undo_active_revision_id or "",
-            }
-            session.transcript = snapshot
-            session.context_workbench_history = workbench_history_snapshot
-            mark_active_context_revision(session.context_revisions, safe_revision_id)
-            sync_active_context_revision_snapshot(session)
-            self._hydrate_agent_locked(session)
-            self._save_state_locked()
-            return (
-                sanitize_value(session.transcript),
-                sanitize_value(session.context_workbench_history),
-            )
-
-    def undo_context_restore(
-        self,
-        session: SessionState,
-    ) -> tuple[list[dict[str, object]], list[dict[str, str]]]:
-        with self.lock:
-            pending_restore = session.pending_context_restore
-            if not isinstance(pending_restore, dict):
-                raise ValueError("there is no context restore to undo")
-
-            undo_transcript = normalize_transcript(pending_restore.get("undo_transcript"))
-            undo_context_workbench_history = normalize_context_chat_history(
-                pending_restore.get("undo_context_workbench_history")
-            )
-            undo_active_revision_id = sanitize_text(pending_restore.get("undo_active_revision_id") or "").strip()
-            session.transcript = undo_transcript
-            session.context_workbench_history = undo_context_workbench_history
-            session.pending_context_restore = None
-            mark_active_context_revision(session.context_revisions, undo_active_revision_id or None)
-            sync_active_context_revision_snapshot(session)
-            self._hydrate_agent_locked(session)
-            self._save_state_locked()
-            return (
-                sanitize_value(session.transcript),
-                sanitize_value(session.context_workbench_history),
-            )
+            return sanitize_value(session.transcript)
 
     def append_turn(
         self,
@@ -706,55 +586,29 @@ class AppState:
         user_attachments: list[dict[str, object]] | None = None,
     ) -> None:
         with self.lock:
-            session.pending_context_restore = None
             safe_user_message = sanitize_text(user_message)
             safe_user_attachments = normalize_attachment_records(user_attachments)
-            user_record_index = len(session.transcript)
-            user_blocks = (
-                [{"kind": "text", "text": safe_user_message}]
-                if safe_user_message
-                else []
+            user_input_items = build_provider_items_for_record(
+                role="user",
+                text=safe_user_message,
+                attachments=safe_user_attachments,
+                tool_events=[],
+                blocks=[{"kind": "text", "text": safe_user_message}] if safe_user_message else [],
+                record_index=len(session.transcript),
             )
             safe_assistant_blocks = sanitize_value(assistant_blocks or [])
             assistant_text = message_blocks_to_text(safe_assistant_blocks) or sanitize_text(answer)
-            assistant_record_index = user_record_index + 1
             assistant_tool_events = [serialize_tool_event(event) for event in tool_events]
-            session.transcript.append(
-                {
-                    "role": "user",
-                    "text": safe_user_message,
-                    "attachments": safe_user_attachments,
-                    "toolEvents": [],
-                    "blocks": user_blocks,
-                    "providerItems": build_provider_items_for_record(
-                        role="user",
-                        text=safe_user_message,
-                        attachments=safe_user_attachments,
-                        tool_events=[],
-                        blocks=user_blocks,
-                        record_index=user_record_index,
-                    ),
-                }
+            assistant_input_items = build_provider_items_for_record(
+                role="assistant",
+                text=assistant_text,
+                attachments=[],
+                tool_events=assistant_tool_events,
+                blocks=safe_assistant_blocks,
+                record_index=len(session.transcript) + 1,
             )
-            session.transcript.append(
-                {
-                    "role": "assistant",
-                    "text": assistant_text,
-                    "attachments": [],
-                    "toolEvents": assistant_tool_events,
-                    "blocks": safe_assistant_blocks,
-                    "providerItems": build_provider_items_for_record(
-                        role="assistant",
-                        text=assistant_text,
-                        attachments=[],
-                        tool_events=assistant_tool_events,
-                        blocks=safe_assistant_blocks,
-                        record_index=assistant_record_index,
-                    ),
-                }
-            )
-            ensure_initial_context_revision(session)
-            sync_active_context_revision_snapshot(session)
+            session.transcript = normalize_transcript(session.transcript)
+            core_append_input_items(session.transcript, [*user_input_items, *assistant_input_items])
             self._hydrate_agent_locked(session)
             self._remove_session_from_lists_locked(session.session_id)
             self._insert_session_locked(session)
@@ -781,20 +635,6 @@ class AppState:
                 and self.sessions[safe_session_id].context_workbench_history
                 else ({} if safe_session_id else self._context_workbench_history_map_locked())
             )
-            context_revision_histories = (
-                {safe_session_id: context_revision_summaries(self.sessions[safe_session_id].context_revisions)}
-                if safe_session_id
-                and safe_session_id in self.sessions
-                and self.sessions[safe_session_id].context_revisions
-                else ({} if safe_session_id else self._context_revision_map_locked())
-            )
-            pending_context_restores = (
-                {safe_session_id: context_pending_restore_payload(self.sessions[safe_session_id].pending_context_restore)}
-                if safe_session_id
-                and safe_session_id in self.sessions
-                and self.sessions[safe_session_id].pending_context_restore
-                else ({} if safe_session_id else self._pending_context_restore_map_locked())
-            )
             return {
                 "project_name": self.settings.project_root.name or str(self.settings.project_root),
                 "project_root": str(self.settings.project_root),
@@ -806,8 +646,6 @@ class AppState:
                 "chat_sessions": self._chat_sessions_payload_locked(),
                 "conversations": conversations,
                 "context_workbench_histories": context_workbench_histories,
-                "context_revision_histories": context_revision_histories,
-                "pending_context_restores": pending_context_restores,
             }
 
     def sidebar_payload(self) -> dict[str, object]:
@@ -830,45 +668,44 @@ class AppState:
         return safe or uuid.uuid4().hex
 
     def _session_storage_dir(self, session_id: str) -> Path:
-        return STATE_DIR / "web_sessions" / self._safe_session_path_part(session_id)
+        return STATE_DIR / "sessions" / self._safe_session_path_part(session_id)
 
     def _session_state_path(self, session_id: str, name: str) -> Path:
         return self._session_storage_dir(session_id) / name
 
     def _load_session_payload(self, session_id: str) -> dict[str, Any]:
-        transcript = read_jsonl_state_file(self._session_state_path(session_id, "transcript.jsonl"), [])
-        # Keep the mutable in-progress assistant turn outside the append-only log.
-        tail_path = self._session_state_path(session_id, "transcript_tail.json")
-        if tail_path.exists():
-            try:
-                raw_tail = json.loads(tail_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                raw_tail = []
-            if isinstance(raw_tail, list):
-                transcript = list(transcript) + raw_tail
-        workbench_history = read_jsonl_state_file(self._session_state_path(session_id, "workbench.jsonl"), [])
-        revisions_path = self._session_state_path(session_id, "revisions.jsonl")
-        revisions: list[dict[str, object]] = []
-        if revisions_path.exists():
-            try:
-                raw = json.loads(revisions_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                raw = read_jsonl_state_file(revisions_path, [])
-            revisions = raw if isinstance(raw, list) else []
-        restore_path = self._session_state_path(session_id, "restore.json")
-        pending_restore: dict[str, object] | None = None
-        if restore_path.exists():
-            try:
-                raw_restore = json.loads(restore_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                raw_restore = None
-            pending_restore = raw_restore if isinstance(raw_restore, dict) else None
+        workbench_history = self._load_workbench_history(session_id)
         return {
-            "transcript": normalize_transcript(transcript),
+            "transcript": [],
             "context_workbench_history": normalize_context_chat_history(workbench_history),
-            "context_revisions": revisions if isinstance(revisions, list) else [],
-            "pending_context_restore": pending_restore,
         }
+
+    def _load_workbench_history(self, session_id: str) -> list[dict[str, str]]:
+        path = self._session_state_path(session_id, "workbench.jsonl")
+        if not path.exists():
+            return []
+        records: list[dict[str, str]] = []
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(item, dict) and item.get("role") in {"user", "assistant"}:
+                records.append(
+                    {
+                        "role": sanitize_text(item.get("role") or ""),
+                        "content": sanitize_text(item.get("content") or ""),
+                    }
+                )
+        if records:
+            return records
+        return normalize_context_chat_history(read_jsonl_state_file(path, []))
 
     def _append_session_list_delta(
         self,
@@ -897,59 +734,32 @@ class AppState:
         )
 
     def _persist_session_payload(self, session: SessionState) -> None:
-        # Keep only settled transcript records in transcript.jsonl; overwrite the live tail separately.
         previous = self._persisted_session_payloads.get(
             session.session_id,
             {
-                "transcript": [],
                 "context_workbench_history": [],
-                "context_revisions": [],
-                "pending_context_restore": None,
             },
         )
         current = {
-            "transcript": copy.deepcopy(session.transcript),
             "context_workbench_history": copy.deepcopy(session.context_workbench_history),
-            "context_revisions": copy.deepcopy(session.context_revisions),
-            "pending_context_restore": session.pending_context_restore,
         }
-        current_transcript = current["transcript"]
-        current_stable = current_transcript[:-1] if current_transcript else []
-        current_tail = current_transcript[-1:] if current_transcript else []
-        self._append_session_list_delta(
-            self._session_state_path(session.session_id, "transcript.jsonl"),
-            previous.get("transcript", []),
-            current_stable,
-        )
-        tail_path = self._session_state_path(session.session_id, "transcript_tail.json")
-        tail_path.parent.mkdir(parents=True, exist_ok=True)
-        tail_path.write_text(
-            json.dumps(current_tail, ensure_ascii=False, separators=(",", ":")),
-            encoding="utf-8",
-        )
-        self._append_session_list_delta(
-            self._session_state_path(session.session_id, "workbench.jsonl"),
-            previous.get("context_workbench_history", []),
-            current["context_workbench_history"],
-        )
-        revisions_path = self._session_state_path(session.session_id, "revisions.jsonl")
-        revisions_path.write_text(
-            json.dumps(current["context_revisions"], ensure_ascii=False, separators=(",", ":")),
-            encoding="utf-8",
-        )
-        if previous.get("pending_context_restore") != current["pending_context_restore"]:
-            restore_path = self._session_state_path(session.session_id, "restore.json")
-            restore_path.parent.mkdir(parents=True, exist_ok=True)
-            if current["pending_context_restore"] is None:
-                restore_path.write_text("null", encoding="utf-8")
-            else:
-                restore_path.write_text(
-                    json.dumps(current["pending_context_restore"], ensure_ascii=False, separators=(",", ":")),
-                    encoding="utf-8",
+        path = self._session_state_path(session.session_id, "workbench.jsonl")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if previous.get("context_workbench_history", []) != current["context_workbench_history"] or not path.exists():
+            lines = [
+                json.dumps(
+                    {
+                        "role": item.get("role"),
+                        "content": item.get("content"),
+                        "created_at": utc_timestamp(),
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
                 )
-        baseline = current
-        baseline["transcript"] = current_stable
-        self._persisted_session_payloads[session.session_id] = baseline
+                for item in normalize_context_chat_history(current["context_workbench_history"])
+            ]
+            path.write_text(("\n".join(lines) + "\n") if lines else "", encoding="utf-8")
+        self._persisted_session_payloads[session.session_id] = current
 
     def _load_state(self) -> None:
         raw_state: dict[str, Any] = {}
@@ -1008,16 +818,9 @@ class AppState:
                     agent=None,
                     transcript=session_payload["transcript"],
                     context_workbench_history=session_payload["context_workbench_history"],
-                    context_revisions=session_payload["context_revisions"],
-                    pending_context_restore=session_payload["pending_context_restore"],
                     agent_hydrated=False,
                 )
-                # The baseline must mirror transcript.jsonl, which stores only the
-                # stable records (all but the last). Drop the stitched tail record
-                # so the next persist appends cleanly instead of re-snapshotting.
                 baseline_payload = copy.deepcopy(session_payload)
-                baseline_transcript = baseline_payload.get("transcript") or []
-                baseline_payload["transcript"] = baseline_transcript[:-1] if baseline_transcript else []
                 self._persisted_session_payloads[safe_session_id] = baseline_payload
                 self.sessions[safe_session_id] = session
 
@@ -1078,7 +881,6 @@ class AppState:
             referenced_session_ids.update(project.archived_session_ids or [])
 
         for session in self.sessions.values():
-            ensure_initial_context_revision(session)
             if session.scope == "chat":
                 if session.session_id not in referenced_session_ids:
                     self.chat_session_ids.append(session.session_id)
@@ -1180,20 +982,6 @@ class AppState:
             if session.context_workbench_history
         }
 
-    def _context_revision_map_locked(self) -> dict[str, list[dict[str, object]]]:
-        return {
-            session_id: context_revision_summaries(session.context_revisions)
-            for session_id, session in self.sessions.items()
-            if session.context_revisions
-        }
-
-    def _pending_context_restore_map_locked(self) -> dict[str, dict[str, object]]:
-        return {
-            session_id: context_pending_restore_payload(session.pending_context_restore)
-            for session_id, session in self.sessions.items()
-            if session.pending_context_restore
-        }
-
     def _chat_sessions_payload_locked(self) -> list[dict[str, object]]:
         return [
             self.session_payload(self.sessions[session_id])
@@ -1284,23 +1072,9 @@ class AppState:
     def _hydrate_agent_locked(self, session: SessionState) -> None:
         agent = self._agent_locked(session)
         agent.reset()
-        agent.history = []
         normalized_transcript = normalize_transcript(session.transcript)
         session.transcript = normalized_transcript
-        for record_index, record in enumerate(normalized_transcript):
-            role = sanitize_text(record.get("role") or "").strip()
-            if role not in {"user", "assistant"}:
-                continue
-
-            provider_items = build_provider_items_for_record(
-                role=role,
-                text=sanitize_text(record.get("text") or ""),
-                attachments=normalize_attachment_records(record.get("attachments")),
-                tool_events=sanitize_value(record.get("toolEvents")) if isinstance(record.get("toolEvents"), list) else [],
-                blocks=normalize_message_blocks(record.get("blocks")),
-                record_index=record_index,
-            )
-            agent.history.extend(provider_items)
+        agent.history = core_transcript_to_input_items(normalized_transcript)
         session.agent_hydrated = True
 
     def ensure_agent_hydrated(self, session: SessionState) -> SimpleAgent:

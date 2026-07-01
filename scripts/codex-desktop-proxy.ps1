@@ -517,8 +517,10 @@ function Get-ProjectPortOwners {
       $commandLine = [string] $process.CommandLine
       if ($commandLine -and (
           $commandLine.Contains($projectRoot.Path) -or
+          $commandLine -like "*proxy_fastapi.py*" -or
           $commandLine -like "*proxy_server.py*" -or
           $commandLine -like "*web_server.py*" -or
+          $commandLine -like "*backend.proxy_fastapi*" -or
           $commandLine -like "*backend.proxy_server*" -or
           $commandLine -like "*backend.web_server*" -or
           $commandLine -like "*hash-proxy-server*" -or
@@ -567,8 +569,10 @@ function Get-ProjectServiceProcesses {
         $commandLine = [string] $_.CommandLine
         $inProject = $commandLine.Contains($projectPath)
         (
+          $commandLine -like "*proxy_fastapi.py*" -or
           $commandLine -like "*proxy_server.py*" -or
           $commandLine -like "*web_server.py*" -or
+          $commandLine -like "*backend.proxy_fastapi*" -or
           $commandLine -like "*backend.proxy_server*" -or
           $commandLine -like "*backend.web_server*" -or
           $commandLine -like "*hash-proxy-server*" -or
@@ -611,7 +615,10 @@ function Stop-ProjectServiceProcesses {
 function Test-SourceProxyRunning {
   $owners = Get-ProjectPortOwners -Ports @([int] $proxyPort)
   foreach ($owner in $owners) {
-    if ($owner.CommandLine -like "*proxy_server.py*" -or $owner.CommandLine -like "*backend.proxy_server*") {
+    if ($owner.CommandLine -like "*proxy_fastapi.py*" -or
+        $owner.CommandLine -like "*proxy_server.py*" -or
+        $owner.CommandLine -like "*backend.proxy_fastapi*" -or
+        $owner.CommandLine -like "*backend.proxy_server*") {
       return $true
     }
   }
@@ -725,6 +732,8 @@ function Test-DesktopConfigInstalled {
     $text = Get-Content -Raw -Path $configPath
     return (
       $text.Contains('model_provider = "hash-context"') -and
+      $text.Contains("hooks.UserPromptSubmit") -and
+      $text.Contains("codex-context-hook.cmd") -and
       ($text.Contains("http://${loopbackHost}:$proxyPort/v1") -or $text.Contains("http://localhost:$proxyPort/v1") -or $text.Contains("http://127.0.0.1:$proxyPort/v1"))
     )
   } catch {

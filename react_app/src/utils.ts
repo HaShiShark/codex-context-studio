@@ -2,8 +2,11 @@ import type {
   AttachmentRecord,
   MessageBlock,
   MessageRecord,
+  ProviderItem,
   ReasoningOption,
-  TranscriptRecord,
+  ToolEvent,
+  TranscriptEntry,
+  TranscriptNode,
 } from './types';
 
 type TokenEncoder = {
@@ -134,28 +137,684 @@ export function normalizeAttachments(value: AttachmentRecord[] | undefined): Att
   }, []);
 }
 
-export function normalizeConversation(records: TranscriptRecord[] = []): MessageRecord[] {
+type ProviderItemRecord = Record<string, unknown>;
+
+const NON_DICT_PROVIDER_ITEM_MARKER = '__hash_context_non_dict_provider_item__';
+
+const TOOL_CALL_ITEM_TYPES = new Set([
+  'functioncall',
+  'customtoolcall',
+  'localshellcall',
+  'toolsearchcall',
+  'websearchcall',
+  'imagegenerationcall',
+]);
+
+const TOOL_OUTPUT_ITEM_TYPES = new Set([
+  'functioncalloutput',
+  'customtoolcalloutput',
+  'localshellcalloutput',
+  'mcptoolcalloutput',
+  'toolsearchoutput',
+]);
+
+const PAIRED_TOOL_OUTPUT_TYPES_BY_CALL_TYPE: Record<string, Set<string>> = {
+  functioncall: new Set(['functioncalloutput', 'mcptoolcalloutput']),
+  localshellcall: new Set(['functioncalloutput', 'localshellcalloutput']),
+  customtoolcall: new Set(['customtoolcalloutput']),
+  toolsearchcall: new Set(['toolsearchoutput']),
+};
+
+const COMPACTION_ITEM_TYPES = new Set(['compaction', 'contextcompaction', 'compactionsummary']);
+
+function isRecord(value: unknown): value is ProviderItemRecord {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function isProviderItem(value: unknown): value is ProviderItem {
+  return isRecord(value);
+}
+
+function isTranscriptNode(record: TranscriptEntry): record is TranscriptNode {
+  return Array.isArray((record as TranscriptNode).items);
+}
+
+function mapTranscriptRole(rawRole: unknown): MessageRecord['role'] {
+  const role = String(rawRole || '').trim().toLowerCase();
+  if (role === 'assistant' || role === 'an') {
+    return 'an';
+  }
+  if (role === 'subagent' || role === 'agent_message' || role === 'agentmessage') {
+    return 'subagent';
+  }
+  if (role === 'system' || role === 'developer' || role === 'context' || role === 'compaction') {
+    return role;
+  }
+  if (role === 'context_compaction' || role === 'contextcompaction') {
+    return 'compaction';
+  }
+  if (role === 'unknown') {
+    return 'context';
+  }
+  return 'user';
+}
+
+function providerItemsFromTranscriptNode(node: TranscriptNode): ProviderItem[] {
+  if (!Array.isArray(node.items)) {
+    return [];
+  }
+
+  return node.items
+    .map((item) => (isRecord(item) ? item.providerItem : undefined))
+    .filter(isProviderItem);
+}
+
+function providerItemType(item: ProviderItemRecord | undefined): string {
+  return String(item?.type || '').trim();
+}
+
+function providerItemCanonicalType(item: ProviderItemRecord | undefined): string {
+  return providerItemType(item).toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function providerItemCallId(item: ProviderItemRecord | undefined, allowIdFallback = true): string {
+  const callId = String(item?.call_id || '').trim();
+  if (callId) {
+    return callId;
+  }
+  return allowIdFallback ? String(item?.id || '').trim() : '';
+}
+
+function safeStringify(value: unknown, space = 2): string {
+  if (value === undefined || value === null) {
+    return '';
+  }
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+
+  try {
+    const result = JSON.stringify(value, null, space);
+    return typeof result === 'string' ? result : '';
+  } catch {
+    return String(value);
+  }
+}
+
+function isInlineImageDataUrl(value: string): boolean {
+  return /^data:image\/[^,;]+(?:;[^,]*)*;base64,/i.test(value.trim());
+}
+
+function isImageContentRecord(value: ProviderItemRecord): boolean {
+  const type = String(value.type || '').trim().toLowerCase();
+  if (type.includes('image') || 'image_url' in value) {
+    return true;
+  }
+
+  const url = typeof value.url === 'string' ? value.url : '';
+  return Boolean(url && isInlineImageDataUrl(url));
+}
+
+function imageContentText(value: ProviderItemRecord): string {
+  const rawUrl = typeof value.image_url === 'string'
+    ? value.image_url
+    : typeof value.url === 'string'
+      ? value.url
+      : '';
+  const imageUrl = rawUrl.trim();
+
+  if (!imageUrl || isInlineImageDataUrl(imageUrl)) {
+    return '[image]';
+  }
+
+  return `[image] ${imageUrl}`;
+}
+
+function parseJsonish(value: unknown): unknown {
+  if (typeof value !== 'string') {
+    return value;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  if (!/^[{\[]/.test(trimmed)) {
+    return value;
+  }
+
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    return value;
+  }
+}
+
+function providerPayloadText(value: unknown): string {
+  if (value === undefined || value === null) {
+    return '';
+  }
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => providerPayloadText(entry))
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .join('\n');
+  }
+  if (isRecord(value)) {
+    if (isImageContentRecord(value)) {
+      return imageContentText(value);
+    }
+
+    for (const key of ['text', 'content', 'summary', 'output_text', 'input_text', 'reasoning_text']) {
+      if (key in value) {
+        const text = providerPayloadText(value[key]);
+        if (text.trim()) {
+          return text;
+        }
+      }
+    }
+  }
+  return safeStringify(value);
+}
+
+function previewText(value: unknown, limit = 160): string {
+  return truncateText(providerPayloadText(value).replace(/\s+/g, ' ').trim(), limit);
+}
+
+function messageContentPartText(part: unknown): string {
+  if (!isRecord(part)) {
+    return providerPayloadText(part);
+  }
+
+  if (isImageContentRecord(part)) {
+    return imageContentText(part);
+  }
+
+  const directText = providerPayloadText(part.text ?? part.output_text ?? part.input_text);
+  if (directText.trim()) {
+    return directText;
+  }
+
+  const nestedContent = providerPayloadText(part.content);
+  if (nestedContent.trim()) {
+    return nestedContent;
+  }
+
+  const type = String(part.type || '').trim();
+  if (type.includes('image') || 'image_url' in part) {
+    return imageContentText(part);
+  }
+  if (type.includes('file') || 'file_id' in part || 'filename' in part) {
+    return ['[file]', providerPayloadText(part.filename || part.file_id || part.name).trim()].filter(Boolean).join(' ');
+  }
+
+  return safeStringify(part);
+}
+
+function providerMessageContentText(content: unknown): string {
+  if (Array.isArray(content)) {
+    return content
+      .map(messageContentPartText)
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .join('\n');
+  }
+  return providerPayloadText(content);
+}
+
+function messageTextFromProviderItem(item: ProviderItemRecord): string {
+  return providerMessageContentText(item.content);
+}
+
+function agentMessageTextFromProviderItem(item: ProviderItemRecord): string {
+  const text = providerMessageContentText(item.content);
+  if (text.trim()) {
+    return text;
+  }
+  const encrypted = Array.isArray(item.content)
+    && item.content.some((part) => isRecord(part) && String(part.type || '').trim() === 'encrypted_content');
+  return encrypted ? '[encrypted subagent message]' : '';
+}
+
+function reasoningTextFromProviderItem(item: ProviderItemRecord): string {
+  const text = providerPayloadText(item.summary || item.content || item.text || item.reasoning_text);
+  if (text.trim()) {
+    return text;
+  }
+  if (String(item.encrypted_content || '').trim()) {
+    return 'Reasoning item (encrypted content)';
+  }
+  return '';
+}
+
+function compactionTextFromProviderItem(item: ProviderItemRecord): string {
+  const text = providerPayloadText(item.summary || item.content || item.text || item.output || item.input);
+  if (text.trim()) {
+    return text;
+  }
+  if (String(item.encrypted_content || '').trim()) {
+    return 'Compaction item (encrypted content)';
+  }
+  return '';
+}
+
+function toolOutputTextFromProviderItem(item: ProviderItemRecord | undefined): string {
+  if (!item) {
+    return '';
+  }
+
+  const itemType = providerItemCanonicalType(item);
+  if (itemType === 'toolsearchoutput') {
+    return providerPayloadText(item.tools);
+  }
+  if (itemType === 'imagegenerationcall') {
+    return providerPayloadText(item.result);
+  }
+  return providerPayloadText(item.output ?? item.result);
+}
+
+function webSearchActionDetail(action: unknown): string {
+  if (!isRecord(action)) {
+    return previewText(action);
+  }
+
+  const actionType = String(action.type || '').trim();
+  if (actionType === 'search') {
+    const query = String(action.query || '').trim();
+    if (query) {
+      return query;
+    }
+    const queries = Array.isArray(action.queries)
+      ? action.queries.map((query) => String(query || '').trim()).filter(Boolean)
+      : [];
+    return queries.join(', ');
+  }
+  if (actionType === 'open_page') {
+    return String(action.url || '').trim();
+  }
+  if (actionType === 'find_in_page') {
+    const pattern = String(action.pattern || '').trim();
+    const url = String(action.url || '').trim();
+    return pattern && url ? `${pattern} in ${url}` : pattern || url;
+  }
+
+  return previewText(action.query || action.url || actionType || action);
+}
+
+function toolCallArgumentsValue(item: ProviderItemRecord | undefined): unknown {
+  if (!item) {
+    return '';
+  }
+
+  const itemType = providerItemCanonicalType(item);
+  if (itemType === 'functioncall') {
+    return parseJsonish(item.arguments ?? '{}');
+  }
+  if (itemType === 'customtoolcall') {
+    return parseJsonish(item.input ?? '');
+  }
+  if (itemType === 'localshellcall' || itemType === 'websearchcall') {
+    return item.action ?? '';
+  }
+  if (itemType === 'toolsearchcall') {
+    return parseJsonish(item.arguments ?? '');
+  }
+  if (itemType === 'imagegenerationcall') {
+    return String(item.revised_prompt || item.prompt || '').trim();
+  }
+  return parseJsonish(item.arguments ?? item.input ?? item.action ?? '');
+}
+
+function toolDisplayTitleFromProviderItem(item: ProviderItemRecord | undefined): string {
+  if (!item) {
+    return 'tool';
+  }
+
+  const itemType = providerItemCanonicalType(item);
+  if (itemType === 'functioncall' || itemType === 'customtoolcall') {
+    return String(item.name || '').trim() || 'tool';
+  }
+  if (itemType === 'localshellcall') {
+    return 'local_shell';
+  }
+  if (itemType === 'toolsearchcall') {
+    return 'tool_search';
+  }
+  if (itemType === 'websearchcall') {
+    return 'web_search';
+  }
+  if (itemType === 'imagegenerationcall') {
+    return 'image_generation';
+  }
+  if (TOOL_OUTPUT_ITEM_TYPES.has(itemType)) {
+    return String(item.name || providerItemType(item) || 'tool_output').trim();
+  }
+  return providerItemType(item) || 'tool';
+}
+
+function toolEventNameFromProviderItems(
+  callItem: ProviderItemRecord | undefined,
+  outputItem: ProviderItemRecord | undefined,
+): string {
+  const source = callItem || outputItem;
+  if (!source) {
+    return 'tool';
+  }
+
+  const itemType = providerItemCanonicalType(source);
+  if (itemType === 'websearchcall') {
+    return 'web_search';
+  }
+  if (itemType === 'imagegenerationcall') {
+    return 'image_generation';
+  }
+  if (itemType === 'toolsearchcall') {
+    return 'tool_search';
+  }
+  if (itemType === 'localshellcall') {
+    return 'local_shell';
+  }
+  return String(source.name || toolDisplayTitleFromProviderItem(source)).trim() || 'tool';
+}
+
+function toolDisplayDetailFromProviderItem(item: ProviderItemRecord | undefined): string {
+  if (!item) {
+    return '';
+  }
+
+  const itemType = providerItemCanonicalType(item);
+  const callName = String(item.name || '').trim();
+  const argumentsValue = toolCallArgumentsValue(item);
+
+  if ((callName === 'shell_command' || callName === 'exec_command') && isRecord(argumentsValue)) {
+    const command = argumentsValue.command;
+    if (Array.isArray(command)) {
+      return command.map((part) => String(part)).join(' ');
+    }
+    if (command !== undefined && command !== null) {
+      return providerPayloadText(command).trim();
+    }
+  }
+  if (callName === 'write_stdin' && isRecord(argumentsValue)) {
+    return providerPayloadText(argumentsValue.stdin || argumentsValue.input || '').trim();
+  }
+  if (itemType === 'localshellcall') {
+    const action = item.action;
+    if (isRecord(action)) {
+      const command = action.command;
+      if (Array.isArray(command)) {
+        return command.map((part) => String(part)).join(' ');
+      }
+      if (command !== undefined && command !== null) {
+        return providerPayloadText(command).trim();
+      }
+    }
+    return previewText(action);
+  }
+  if (itemType === 'websearchcall') {
+    return webSearchActionDetail(item.action);
+  }
+  if (itemType === 'imagegenerationcall') {
+    return previewText(item.revised_prompt || item.prompt);
+  }
+
+  const detail = providerPayloadText(argumentsValue).trim();
+  return detail && detail !== '{}' && detail !== '[]' ? previewText(detail) : '';
+}
+
+function statusFromToolOutput(output: string, fallback = 'completed'): string {
+  const firstLine = output.trim().split(/\r?\n/, 1)[0] || '';
+  if (!firstLine.toLowerCase().startsWith('exit code:')) {
+    return fallback;
+  }
+
+  const rawCode = firstLine.split(':', 2)[1]?.trim().split(/\s+/, 1)[0] || '';
+  const code = Number.parseInt(rawCode, 10);
+  if (!Number.isFinite(code)) {
+    return fallback;
+  }
+  return code === 0 ? 'completed' : 'error';
+}
+
+function buildToolEventFromProviderItems(
+  callItem: ProviderItemRecord | undefined,
+  outputItem: ProviderItemRecord | undefined,
+): ToolEvent {
+  const source = callItem || outputItem;
+  const output = outputItem ? toolOutputTextFromProviderItem(outputItem) : toolOutputTextFromProviderItem(callItem);
+  const fallbackStatus = String(callItem?.status || outputItem?.status || 'completed').trim() || 'completed';
+  const callId = providerItemCallId(callItem) || providerItemCallId(outputItem, false);
+
+  return {
+    name: toolEventNameFromProviderItems(callItem, outputItem),
+    arguments: callItem ? toolCallArgumentsValue(callItem) : '',
+    call_id: callId || undefined,
+    output_preview: truncateText(output, 500),
+    raw_output: output,
+    display_title: toolDisplayTitleFromProviderItem(source),
+    display_detail: callItem ? toolDisplayDetailFromProviderItem(callItem) : '',
+    display_result: truncateText(output, 500),
+    status: output ? statusFromToolOutput(output, fallbackStatus) : fallbackStatus,
+  };
+}
+
+function fallbackProviderItemText(item: ProviderItemRecord): string {
+  if (item[NON_DICT_PROVIDER_ITEM_MARKER] === true) {
+    return providerPayloadText(item.value);
+  }
+
+  const itemType = providerItemType(item) || 'provider_item';
+  const payload = safeStringify(item);
+  return payload ? `${itemType}\n${payload}` : itemType;
+}
+
+function readableTextFromProviderItem(item: ProviderItem): string {
+  const itemRecord = item as ProviderItemRecord;
+  const itemType = providerItemCanonicalType(itemRecord);
+
+  if (itemType === 'message') {
+    return messageTextFromProviderItem(itemRecord);
+  }
+  if (itemType === 'agentmessage') {
+    return agentMessageTextFromProviderItem(itemRecord);
+  }
+  if (itemType === 'reasoning') {
+    return reasoningTextFromProviderItem(itemRecord);
+  }
+  if (COMPACTION_ITEM_TYPES.has(itemType)) {
+    return compactionTextFromProviderItem(itemRecord);
+  }
+  if (TOOL_OUTPUT_ITEM_TYPES.has(itemType)) {
+    return toolOutputTextFromProviderItem(itemRecord);
+  }
+  if (TOOL_CALL_ITEM_TYPES.has(itemType)) {
+    const title = toolDisplayTitleFromProviderItem(itemRecord);
+    const detail = toolDisplayDetailFromProviderItem(itemRecord);
+    return [title, detail].filter(Boolean).join(': ');
+  }
+
+  return fallbackProviderItemText(itemRecord);
+}
+
+function buildTextBlocksFromProviderItems(providerItems: ProviderItem[]): { text: string; blocks: MessageBlock[] } {
+  const blocks = providerItems
+    .map(readableTextFromProviderItem)
+    .map((text) => text.trim())
+    .filter(Boolean)
+    .map((text) => ({ kind: 'text', text }) satisfies MessageBlock);
+
+  return {
+    text: blocks.map((block) => block.text).join('\n\n'),
+    blocks,
+  };
+}
+
+function buildAssistantDisplayFromProviderItems(
+  providerItems: ProviderItem[],
+): { text: string; toolEvents: ToolEvent[]; blocks: MessageBlock[] } {
+  const outputIndexesByCallId = new Map<string, number[]>();
+  providerItems.forEach((item, index) => {
+    const itemRecord = item as ProviderItemRecord;
+    if (!TOOL_OUTPUT_ITEM_TYPES.has(providerItemCanonicalType(itemRecord))) {
+      return;
+    }
+    const callId = providerItemCallId(itemRecord, false);
+    if (!callId) {
+      return;
+    }
+    outputIndexesByCallId.set(callId, [...(outputIndexesByCallId.get(callId) || []), index]);
+  });
+
+  const consumedOutputIndexes = new Set<number>();
+  const textParts: string[] = [];
+  const toolEvents: ToolEvent[] = [];
+  const blocks: MessageBlock[] = [];
+
+  const addText = (text: string) => {
+    const trimmed = text.trim();
+    if (trimmed) {
+      textParts.push(trimmed);
+    }
+  };
+
+  const findOutputItem = (callItem: ProviderItemRecord): ProviderItemRecord | undefined => {
+    const callId = providerItemCallId(callItem);
+    if (!callId) {
+      return undefined;
+    }
+
+    const allowedTypes = PAIRED_TOOL_OUTPUT_TYPES_BY_CALL_TYPE[providerItemCanonicalType(callItem)];
+    if (!allowedTypes) {
+      return undefined;
+    }
+
+    for (const outputIndex of outputIndexesByCallId.get(callId) || []) {
+      if (consumedOutputIndexes.has(outputIndex)) {
+        continue;
+      }
+      const outputItem = providerItems[outputIndex] as ProviderItemRecord;
+      if (!allowedTypes.has(providerItemCanonicalType(outputItem))) {
+        continue;
+      }
+      consumedOutputIndexes.add(outputIndex);
+      return outputItem;
+    }
+
+    return undefined;
+  };
+
+  providerItems.forEach((item, index) => {
+    const itemRecord = item as ProviderItemRecord;
+    const itemType = providerItemCanonicalType(itemRecord);
+
+    if (itemType === 'message') {
+      const text = messageTextFromProviderItem(itemRecord);
+      addText(text);
+      if (text.trim()) {
+        blocks.push({ kind: 'text', text });
+      }
+      return;
+    }
+
+    if (itemType === 'reasoning') {
+      const text = reasoningTextFromProviderItem(itemRecord);
+      addText(text);
+      if (text.trim()) {
+        blocks.push({ kind: 'reasoning', text, status: 'completed' });
+      }
+      return;
+    }
+
+    if (COMPACTION_ITEM_TYPES.has(itemType)) {
+      const text = compactionTextFromProviderItem(itemRecord);
+      addText(text);
+      if (text.trim()) {
+        blocks.push({ kind: 'text', text });
+      }
+      return;
+    }
+
+    if (TOOL_CALL_ITEM_TYPES.has(itemType)) {
+      const outputItem = findOutputItem(itemRecord);
+      const toolEvent = buildToolEventFromProviderItems(itemRecord, outputItem);
+      toolEvents.push(toolEvent);
+      blocks.push({ kind: 'tool', tool_event: toolEvent });
+      addText(toolOutputTextFromProviderItem(outputItem) || toolOutputTextFromProviderItem(itemRecord));
+      return;
+    }
+
+    if (TOOL_OUTPUT_ITEM_TYPES.has(itemType)) {
+      if (consumedOutputIndexes.has(index)) {
+        return;
+      }
+      const toolEvent = buildToolEventFromProviderItems(undefined, itemRecord);
+      toolEvents.push(toolEvent);
+      blocks.push({ kind: 'tool', tool_event: toolEvent });
+      addText(toolOutputTextFromProviderItem(itemRecord));
+      return;
+    }
+
+    const fallbackText = fallbackProviderItemText(itemRecord);
+    addText(fallbackText);
+    if (fallbackText.trim()) {
+      blocks.push({ kind: 'text', text: fallbackText });
+    }
+  });
+
+  return {
+    text: textParts.join('\n\n'),
+    toolEvents,
+    blocks,
+  };
+}
+
+function buildTranscriptNodeDisplay(
+  role: MessageRecord['role'],
+  providerItems: ProviderItem[],
+): { text: string; toolEvents: ToolEvent[]; blocks: MessageBlock[] } {
+  if (role !== 'an') {
+    return {
+      ...buildTextBlocksFromProviderItems(providerItems),
+      toolEvents: [],
+    };
+  }
+  return buildAssistantDisplayFromProviderItems(providerItems);
+}
+
+export function normalizeConversation(records: TranscriptEntry[] = []): MessageRecord[] {
   let lastUserText = '';
 
   return records.map((record) => {
-    const rawRole = String(record.role || '').trim();
-    const role: MessageRecord['role'] = rawRole === 'assistant'
-      ? 'an'
-      : (['system', 'developer', 'compaction', 'context'].includes(rawRole)
-        ? rawRole as MessageRecord['role']
-        : 'user');
-    const text = String(record.text || '');
-    const toolEvents = Array.isArray(record.toolEvents) ? record.toolEvents : [];
-    const attachments = normalizeAttachments(record.attachments);
-    const blocks = normalizeBlocks(record.blocks, text, toolEvents, role);
+    const role = mapTranscriptRole(record.role);
+    const providerItems = providerItemsFromTranscriptNode(record);
+    const nodeDisplay = buildTranscriptNodeDisplay(role, providerItems);
+    const text = nodeDisplay.text;
+    const toolEvents = nodeDisplay.toolEvents;
+    const blocks = normalizeBlocks(
+      nodeDisplay.blocks,
+      text,
+      toolEvents,
+      role,
+    );
     const normalized: MessageRecord = {
       role,
       text,
-      attachments,
+      attachments: [],
       toolEvents,
       blocks,
-      providerItems: Array.isArray(record.providerItems) ? record.providerItems : [],
-      pending: Boolean(record.pending),
+      providerItems,
+      pending: role === 'an' && !text.trim() && toolEvents.length === 0,
       sourceText: role === 'an' ? lastUserText : '',
     };
 
@@ -168,9 +827,9 @@ export function normalizeConversation(records: TranscriptRecord[] = []): Message
 }
 
 function normalizeBlocks(
-  rawBlocks: TranscriptRecord['blocks'],
+  rawBlocks: MessageBlock[] | undefined,
   text: string,
-  toolEvents: TranscriptRecord['toolEvents'] | undefined,
+  toolEvents: ToolEvent[] | undefined,
   role: MessageRecord['role'],
 ): MessageBlock[] {
   if (Array.isArray(rawBlocks) && rawBlocks.length > 0) {
