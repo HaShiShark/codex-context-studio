@@ -9,6 +9,8 @@ const pythonDist = path.join(root, 'python_dist');
 const webWork = path.join(root, '.tmp-pyinstaller-web');
 const proxyWork = path.join(root, '.tmp-pyinstaller-proxy');
 const isWindows = process.platform === 'win32';
+const pyInstallerDataSeparator = isWindows ? ';' : ':';
+const registryDataArg = `${path.join(root, 'shared', 'codex-item-registry.json')}${pyInstallerDataSeparator}shared`;
 const venvPython = isWindows
   ? path.join(buildVenv, 'Scripts', 'python.exe')
   : path.join(buildVenv, 'bin', 'python');
@@ -56,6 +58,8 @@ function pyInstallerArgs(name, scriptPath, workPath) {
     workPath,
     '--name',
     name,
+    '--add-data',
+    registryDataArg,
   ];
 
   if (!isWindows) {

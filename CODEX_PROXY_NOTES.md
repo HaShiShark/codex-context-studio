@@ -24,7 +24,7 @@ codex `
 
 ## Local Services
 
-- `backend/proxy_server.py`: Codex-compatible Responses proxy, port `8787`.
+- `backend/proxy_fastapi.py`: Codex-compatible Responses proxy, port `8787`.
 - `backend/web_server.py`: HashCode backend, port `8765`.
 - Vite dev server: React frontend, port `5174`.
 - `electron/context-window.cjs`: Electron shell and local service supervisor.

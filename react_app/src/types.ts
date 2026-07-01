@@ -473,6 +473,8 @@ export type CanonicalJsonValue =
 export type CanonicalJsonObject = { [key: string]: CanonicalJsonValue };
 
 export type PromptBlockKind = 'system' | 'developer' | 'memory' | 'summary';
+// Mirrors agent_runtime CanonicalItem.role only. Proxy transcript nodes use
+// TranscriptNode.role and MessageRecord.role for lossless multi-role display.
 export type TranscriptRole = 'user' | 'assistant';
 export type CanonicalItemType = 'message' | 'tool_call' | 'tool_result';
 export type CanonicalStatus =

@@ -10,6 +10,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from backend.codex_input_cursor import (  # noqa: E402
+    canonical_provider_item_for_request,
     compute_diff,
     fingerprint_provider_item,
 )
@@ -146,6 +147,102 @@ def test_fingerprint_excludes_id_but_keeps_semantics() -> None:
     assert fingerprint_provider_item(first) == fingerprint_provider_item(second)
     assert fingerprint_provider_item(second) != fingerprint_provider_item(changed_call_id)
     assert fingerprint_provider_item(changed_reasoning) != fingerprint_provider_item(changed_reasoning_blob)
+
+
+def test_tool_search_output_preserves_schema_property_named_id() -> None:
+    tool_search_output = {
+        "id": "ts-output-dynamic",
+        "type": "tool_search_output",
+        "call_id": "call-search",
+        "status": "completed",
+        "execution": "client",
+        "tools": [
+            {
+                "type": "namespace",
+                "name": "multi_agent_v1",
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "resume_agent",
+                        "defer_loading": True,
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "id": {
+                                    "type": "string",
+                                    "description": "Agent id to resume.",
+                                }
+                            },
+                            "required": ["id"],
+                            "additionalProperties": False,
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+
+    canonical = canonical_provider_item_for_request(tool_search_output)
+
+    assert "id" not in canonical
+    assert canonical["tools"][0]["tools"][0]["parameters"]["properties"]["id"] == {
+        "type": "string",
+        "description": "Agent id to resume.",
+    }
+
+
+def test_fingerprint_distinguishes_missing_schema_property_named_id() -> None:
+    valid_tool_search_output = {
+        "type": "tool_search_output",
+        "call_id": "call-search",
+        "status": "completed",
+        "execution": "client",
+        "tools": [
+            {
+                "type": "namespace",
+                "name": "multi_agent_v1",
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "resume_agent",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"id": {"type": "string"}},
+                            "required": ["id"],
+                            "additionalProperties": False,
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+    broken_tool_search_output = {
+        **valid_tool_search_output,
+        "tools": [
+            {
+                "type": "namespace",
+                "name": "multi_agent_v1",
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "resume_agent",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {},
+                            "required": ["id"],
+                            "additionalProperties": False,
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+
+    diff = compute_diff([broken_tool_search_output], [valid_tool_search_output])
+
+    assert diff.prefix_len == 0
+    assert diff.pop == [broken_tool_search_output]
+    assert diff.append == [canonical_provider_item_for_request(valid_tool_search_output)]
 
 
 def test_full_prefix_match_is_idempotent() -> None:

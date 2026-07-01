@@ -13,6 +13,8 @@ JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
 JsonObject: TypeAlias = dict[str, JsonValue]
 
 PromptBlockKind: TypeAlias = Literal["system", "developer", "memory", "summary"]
+# agent_runtime is a lightweight agent adapter layer. Its transcript role is not
+# the lossless proxy TranscriptNode.role contract from backend/transcript_codec.py.
 TranscriptRole: TypeAlias = Literal["user", "assistant"]
 CanonicalItemType: TypeAlias = Literal["message", "tool_call", "tool_result"]
 CanonicalStatus: TypeAlias = Literal[

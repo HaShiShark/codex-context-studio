@@ -17,14 +17,14 @@ npm run dist:win
 生成的安装包在：
 
 ```text
-release/Codex Context Proxy Setup 0.3.0.exe
+release/Codex Context Proxy Setup 1.0.0.exe
 ```
 
-安装包会带上 Electron 前端、React 构建产物、`backend/web_server.py`、`backend/proxy_server.py` 以及打包后的 Python exe。用户不需要自己安装 Node 或 Python。
+安装包会带上 Electron 前端、React 构建产物、`backend/web_server.py`、`backend/proxy_fastapi.py` 以及打包后的 Python exe。用户不需要自己安装 Node 或 Python。
 
 ## 用户怎么用
 
-用户安装 `Codex Context Proxy Setup 0.3.0.exe` 后，安装器会自动安装 `codex ctx proxy ...` 控制命令，但不会默认打开代理。
+用户安装 `Codex Context Proxy Setup 1.0.0.exe` 后，安装器会自动安装 `codex ctx proxy ...` 控制命令，但不会默认打开代理。
 
 安装完成后，重新打开一个终端，然后使用：
 
@@ -103,7 +103,7 @@ codex ctx desktop status
 把下面这个文件上传到 GitHub Releases、网盘或下载页即可：
 
 ```text
-release/Codex Context Proxy Setup 0.3.0.exe
+release/Codex Context Proxy Setup 1.0.0.exe
 ```
 
 旧的 `hashcode Setup ...exe` 是历史产物，不要发布。

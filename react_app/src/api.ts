@@ -1,10 +1,47 @@
 import type {
   ContextChatStreamEvent,
   ContextWorkbenchChatMessage,
+  ContextWorkbenchSettingsResponse,
   InitPayload,
+  OpenAISettings,
   ProxyUsageSummary,
+  SettingsResponse,
   TranscriptEntry,
 } from './types';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function asTrimmedString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function formatErrorMetadata(value: unknown): string {
+  if (!isRecord(value)) return '';
+
+  const parts = [asTrimmedString(value.code), asTrimmedString(value.type)].filter(Boolean);
+  return parts.join(' / ');
+}
+
+export function extractErrorMessage(data: unknown, fallback = ''): string {
+  const fallbackMessage = asTrimmedString(fallback);
+  if (!isRecord(data)) return fallbackMessage;
+
+  const error = data.error;
+  if (isRecord(error)) {
+    const errorMessage = asTrimmedString(error.message);
+    if (errorMessage) return errorMessage;
+  }
+
+  const topLevelMessage = asTrimmedString(data.message);
+  if (topLevelMessage) return topLevelMessage;
+
+  const errorString = asTrimmedString(error);
+  if (errorString) return errorString;
+
+  return formatErrorMetadata(error) || formatErrorMetadata(data) || fallbackMessage;
+}
 
 export async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers);
@@ -15,10 +52,7 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
   let data: unknown = {};
   try { data = await response.json(); } catch { data = {}; }
   if (!response.ok) {
-    const err = (typeof data === 'object' && data !== null && 'error' in data)
-      ? String((data as { error?: unknown }).error || '').trim()
-      : '';
-    throw new Error(err || response.statusText || `HTTP ${response.status}`);
+    throw new Error(extractErrorMessage(data, response.statusText || `HTTP ${response.status}`));
   }
   return data as T;
 }
@@ -57,20 +91,46 @@ export function fetchInit(options: { sessionId?: string; includeConversation?: b
   return apiFetch<InitPayload>(query ? `/api/init?${query}` : '/api/init');
 }
 
-export interface ProxySettings {
-  workbench_model: string;
-  theme_mode: 'light' | 'dark';
-  ui_font: string;
-  ui_font_size: number;
-  user_locale: string;
+export type ProxySettingsPayload = Partial<
+  Omit<
+    OpenAISettings,
+    | 'has_api_key'
+    | 'api_key_preview'
+    | 'response_providers'
+    | 'context_workbench_model'
+    | 'context_workbench_provider_id'
+    | 'context_token_warning_threshold'
+    | 'context_token_critical_threshold'
+  >
+> & {
+  openai_api_key?: string;
+  clear_api_key?: boolean;
+  deleted_provider_ids?: string[];
+  response_providers?: OpenAISettings['response_providers'];
+};
+
+export function fetchSettings(): Promise<SettingsResponse> {
+  return apiFetch<SettingsResponse>('/api/settings');
 }
 
-export function fetchSettings(): Promise<ProxySettings> {
-  return apiFetch<ProxySettings>('/api/settings');
+export function saveSettingsRequest(payload: ProxySettingsPayload): Promise<SettingsResponse> {
+  return apiFetch<SettingsResponse>('/api/settings', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
 }
 
-export function saveSettingsRequest(payload: Partial<ProxySettings>): Promise<ProxySettings> {
-  return apiFetch<ProxySettings>('/api/settings', {
+export type ContextWorkbenchSettingsPayload = Partial<ContextWorkbenchSettingsResponse['settings']>;
+
+export function fetchContextWorkbenchSettings(options: { refreshModels?: boolean } = {}): Promise<ContextWorkbenchSettingsResponse> {
+  const query = options.refreshModels ? '?refresh_models=1' : '';
+  return apiFetch<ContextWorkbenchSettingsResponse>(`/api/context-workbench-settings${query}`);
+}
+
+export function saveContextWorkbenchSettingsRequest(
+  payload: ContextWorkbenchSettingsPayload,
+): Promise<ContextWorkbenchSettingsResponse> {
+  return apiFetch<ContextWorkbenchSettingsResponse>('/api/context-workbench-settings', {
     method: 'POST',
     body: JSON.stringify(payload),
   });
@@ -193,10 +253,11 @@ export async function streamContextChatRequest(
   });
 
   if (!response.ok) {
-    let msg = response.statusText || `HTTP ${response.status}`;
+    const fallback = response.statusText || `HTTP ${response.status}`;
+    let msg = fallback;
     try {
       const d = await response.json();
-      if (typeof d === 'object' && d !== null && 'error' in d) msg = String((d as { error: unknown }).error);
+      msg = extractErrorMessage(d, fallback);
     } catch { /* */ }
     throw new Error(msg);
   }

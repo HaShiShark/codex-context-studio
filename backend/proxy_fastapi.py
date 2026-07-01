@@ -20,7 +20,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 try:
-    from . import proxy_server as legacy
+    from . import proxy_routes_support as route_support
+    from .proxy_store import STORE
     from .realtime_events import (
         compact_update,
         error_event,
@@ -36,7 +37,8 @@ except ImportError:
     repo_root_for_import = Path(__file__).resolve().parents[1]
     if str(repo_root_for_import) not in sys.path:
         sys.path.insert(0, str(repo_root_for_import))
-    from backend import proxy_server as legacy
+    from backend import proxy_routes_support as route_support
+    from backend.proxy_store import STORE
     from backend.realtime_events import (
         compact_update,
         error_event,
@@ -50,7 +52,6 @@ except ImportError:
     from backend.realtime_hub import RealtimeHub, RealtimeSubscription
 
 
-STORE = legacy.STORE
 HUB = RealtimeHub()
 
 
@@ -156,8 +157,8 @@ async def _publish_usage(session_id: str) -> None:
 
 async def _read_json_body(request: Request) -> dict[str, Any]:
     raw_body = await request.body()
-    legacy.proxy_log(f"fastapi body bytes={len(raw_body)} prefix={raw_body[:80]!r}")
-    data = legacy.parse_json_request_body(raw_body, request.headers.get("content-encoding"))
+    route_support.proxy_log(f"fastapi body bytes={len(raw_body)} prefix={raw_body[:80]!r}")
+    data = route_support.parse_json_request_body(raw_body, request.headers.get("content-encoding"))
     if not isinstance(data, dict):
         raise json.JSONDecodeError("request body must be an object", "", 0)
     return data
@@ -192,7 +193,7 @@ async def _context_control_stream(body: dict[str, Any], opened: bool, error: str
     response_id = f"resp_hash_context_{uuid.uuid4().hex}"
     message_id = f"msg_hash_context_{uuid.uuid4().hex}"
     model = str(body.get("model") or "gpt-5.5")
-    text = legacy.CONTEXT_CONTROL_NOTICE_TEXT if opened else f"Hash Context: workbench unavailable. {error}".strip()
+    text = route_support.CONTEXT_CONTROL_NOTICE_TEXT if opened else f"Hash Context: workbench unavailable. {error}".strip()
     item = {
         "type": "message",
         "role": "assistant",
@@ -236,32 +237,12 @@ async def _stream_upstream_response(
     completed_responses: list[dict[str, Any]] = []
     buffer = ""
     error_preview = bytearray()
+    error_chunks: list[bytes] = []
+    response_finalized = False
 
-    try:
-        async for chunk in upstream_response.aiter_bytes():
-            if upstream_response.status_code >= 400 and len(error_preview) < 4000:
-                error_preview.extend(chunk[: 4000 - len(error_preview)])
-            yield chunk
-            buffer += chunk.decode("utf-8", errors="ignore")
-            buffer = legacy.parse_sse_buffer(buffer, response_items, text_parts, completed_responses)
-
-        if upstream_response.status_code >= 400:
-            preview = error_preview.decode("utf-8", errors="replace")
-            legacy.proxy_log(f"upstream error session={session_id} body={preview[:1000]!r}")
-            if capture_proxy_session:
-                before_version = _session_version(session_id)
-                before_transcript = _session_transcript(session_id)
-                was_compacting = _session_is_compacting(session_id)
-                STORE.fail_response(session_id, preview[:1000] or upstream_response.reason_phrase)
-                await _publish_session_change(
-                    session_id,
-                    reason="response_failed",
-                    before_version=before_version,
-                    before_transcript=before_transcript,
-                    compact_phase="failed" if was_compacting else "",
-                    transcript_mode="full" if was_compacting else "none",
-                )
-                await HUB.publish(error_event(session_id, preview[:1000] or upstream_response.reason_phrase))
+    async def finalize_completed_response() -> None:
+        nonlocal response_finalized
+        if response_finalized or upstream_response.status_code >= 400 or not completed_responses:
             return
 
         if is_internal_context or capture_proxy_session:
@@ -281,6 +262,7 @@ async def _stream_upstream_response(
             before_transcript = _session_transcript(session_id)
             was_compacting = _session_is_compacting(session_id)
             STORE.complete_response(session_id, response_items, "".join(text_parts))
+            response_finalized = True
             await _publish_session_change(
                 session_id,
                 reason="response_completed",
@@ -289,22 +271,53 @@ async def _stream_upstream_response(
                 compact_phase="success" if was_compacting else "",
                 transcript_mode="full" if was_compacting else "patch",
             )
+        else:
+            response_finalized = True
+
+    async def fail_pending_response(message: str) -> None:
+        nonlocal response_finalized
+        if response_finalized or not capture_proxy_session:
+            return
+        before_version = _session_version(session_id)
+        before_transcript = _session_transcript(session_id)
+        was_compacting = _session_is_compacting(session_id)
+        STORE.fail_response(session_id, message)
+        response_finalized = True
+        await _publish_session_change(
+            session_id,
+            reason="response_failed",
+            before_version=before_version,
+            before_transcript=before_transcript,
+            compact_phase="failed" if was_compacting else "",
+            transcript_mode="full" if was_compacting else "none",
+        )
+        await HUB.publish(error_event(session_id, message))
+
+    try:
+        async for chunk in upstream_response.aiter_bytes():
+            if upstream_response.status_code >= 400:
+                if len(error_preview) < 4000:
+                    error_preview.extend(chunk[: 4000 - len(error_preview)])
+                error_chunks.append(chunk)
+                continue
+            buffer += chunk.decode("utf-8", errors="ignore")
+            buffer = route_support.parse_sse_buffer(buffer, response_items, text_parts, completed_responses)
+            await finalize_completed_response()
+            yield chunk
+
+        if upstream_response.status_code >= 400:
+            preview = error_preview.decode("utf-8", errors="replace")
+            route_support.proxy_log(f"upstream error session={session_id} body={preview[:1000]!r}")
+            await fail_pending_response(preview[:1000] or upstream_response.reason_phrase)
+            for chunk in error_chunks:
+                yield chunk
+            return
+
+        if capture_proxy_session and not response_finalized:
+            await fail_pending_response("upstream stream ended without response.completed")
     except Exception as exc:
-        legacy.proxy_log(f"stream error session={session_id} error={type(exc).__name__}: {exc}")
-        if capture_proxy_session:
-            before_version = _session_version(session_id)
-            before_transcript = _session_transcript(session_id)
-            was_compacting = _session_is_compacting(session_id)
-            STORE.fail_response(session_id, str(exc))
-            await _publish_session_change(
-                session_id,
-                reason="response_failed",
-                before_version=before_version,
-                before_transcript=before_transcript,
-                compact_phase="failed" if was_compacting else "",
-                transcript_mode="full" if was_compacting else "none",
-            )
-            await HUB.publish(error_event(session_id, str(exc)))
+        route_support.proxy_log(f"stream error session={session_id} error={type(exc).__name__}: {exc}")
+        await fail_pending_response(str(exc))
         raise
     finally:
         await upstream_response.aclose()
@@ -312,16 +325,32 @@ async def _stream_upstream_response(
 
 
 def _initialize_runtime() -> None:
-    legacy.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    legacy.LOG_PATH.write_text("", encoding="utf-8")
-    if legacy.preload_force_upstream_auth():
-        legacy.proxy_log(f"preloaded force upstream auth for {legacy.FORCE_UPSTREAM_BASE_URL}")
-    elif legacy.preload_codex_subscription_auth():
-        legacy.proxy_log("preloaded Codex subscription auth from local auth.json")
-    elif legacy.preload_openai_api_auth():
-        legacy.proxy_log("preloaded OpenAI API auth from OPENAI_API_KEY")
+    route_support.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    route_support.LOG_PATH.write_text("", encoding="utf-8")
+    if route_support.preload_force_upstream_auth():
+        route_support.proxy_log(f"preloaded force upstream auth for {route_support.FORCE_UPSTREAM_BASE_URL}")
+    elif route_support.preload_codex_subscription_auth():
+        route_support.proxy_log("preloaded Codex subscription auth from local auth.json")
+    elif route_support.preload_openai_api_auth():
+        route_support.proxy_log("preloaded OpenAI API auth from OPENAI_API_KEY")
     else:
-        legacy.proxy_log("local Codex auth was not available at proxy startup")
+        route_support.proxy_log("local Codex auth was not available at proxy startup")
+
+
+def _prune_sessions_from_codex_rollouts() -> dict[str, Any]:
+    codex_thread_ids, scan_info = route_support.codex_existing_thread_ids()
+    if codex_thread_ids is None:
+        return {"status": "skipped", **scan_info}
+    result = STORE.prune_sessions_missing_from_codex(codex_thread_ids)
+    result.update(
+        {
+            "codex_home": scan_info.get("codex_home", ""),
+            "codex_thread_count": len(codex_thread_ids),
+            "scanned_files": scan_info.get("scanned_files", 0),
+            "unreadable_files": scan_info.get("unreadable_files", 0),
+        }
+    )
+    return result
 
 
 @asynccontextmanager
@@ -348,6 +377,14 @@ async def health() -> dict[str, Any]:
 @app.get("/api/proxy/sessions")
 async def list_sessions() -> dict[str, Any]:
     return STORE.list_sessions()
+
+
+@app.post("/api/proxy/sessions/prune-codex")
+async def prune_sessions_from_codex() -> dict[str, Any]:
+    result = await asyncio.to_thread(_prune_sessions_from_codex_rollouts)
+    route_support.proxy_log(f"manual prune sessions result={json.dumps(result, ensure_ascii=False, sort_keys=True)}")
+    await HUB.publish(session_list_update(STORE.list_sessions()))
+    return result
 
 
 @app.get("/api/proxy/usage")
@@ -413,30 +450,35 @@ async def reset_usage(session_id: str) -> Response:
 @app.get("/v1/models")
 async def models(request: Request) -> Response:
     headers = _headers_dict(request)
-    upstream_base_url = legacy.upstream_base_url_for_request(headers)
+    upstream_base_url = route_support.upstream_base_url_for_request(headers)
     upstream_url = _upstream_url(upstream_base_url, "models")
     if request.url.query:
         upstream_url = f"{upstream_url}?{request.url.query}"
-    legacy.proxy_log(f"models upstream={upstream_url}")
+    route_support.proxy_log(f"models upstream={upstream_url}")
     try:
-        upstream_headers = legacy.json_headers_for_upstream(headers)
-        legacy.proxy_log(
+        upstream_headers = route_support.json_headers_for_upstream(headers)
+        route_support.proxy_log(
             "models upstream headers "
-            f"{json.dumps(legacy.safe_headers_for_log(upstream_headers), ensure_ascii=False, sort_keys=True)}"
+            f"{json.dumps(route_support.safe_headers_for_log(upstream_headers), ensure_ascii=False, sort_keys=True)}"
         )
         async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
             upstream_response = await client.get(upstream_url, headers=upstream_headers)
     except Exception as exc:
-        legacy.proxy_log(f"models error error={type(exc).__name__}: {exc}")
+        route_support.proxy_log(f"models error error={type(exc).__name__}: {exc}")
         return _json_error(str(exc), HTTPStatus.BAD_GATEWAY)
 
+    status_code = upstream_response.status_code
     body = upstream_response.content
-    if upstream_response.status_code < 400:
-        body = legacy.normalize_models_response_body(body)
+    if status_code < 400:
+        body = route_support.normalize_models_response_body(body)
+    elif route_support.has_effective_chatgpt_auth(headers):
+        route_support.proxy_log("models upstream failed for ChatGPT auth; serving local fallback model list")
+        status_code = int(HTTPStatus.OK)
+        body = route_support.fallback_models_response_body()
     response_headers, media_type = _response_headers(upstream_response.headers)
     return Response(
         content=body,
-        status_code=upstream_response.status_code,
+        status_code=status_code,
         headers=response_headers,
         media_type=media_type or "application/json",
     )
@@ -452,14 +494,15 @@ async def responses(request: Request) -> Response:
         return _json_error(str(exc), HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
 
     headers = _headers_dict(request)
-    is_internal_context = legacy.is_internal_context_request(headers, body)
-    is_title_generation = legacy.is_title_generation_request(body)
-    capture_proxy_session = not is_internal_context and not is_title_generation
+    is_internal_context = route_support.is_internal_context_request(headers, body)
+    is_title_generation = route_support.is_title_generation_request(body)
+    passthrough_reason = route_support.codex_passthrough_reason(headers, body)
+    capture_proxy_session = not is_internal_context and not is_title_generation and not passthrough_reason
 
     if capture_proxy_session:
-        control_command = legacy.context_control_command_from_input(body.get("input"))
+        control_command = route_support.context_control_command_from_input(body.get("input"))
         if control_command:
-            session_id = legacy.session_id_for_request(body, headers)
+            session_id = route_support.session_id_for_request(body, headers)
             before_version = _session_version(session_id)
             before_transcript = _session_transcript(session_id)
             STORE.record_control_intercept(session_id, body, headers, control_command)
@@ -470,8 +513,8 @@ async def responses(request: Request) -> Response:
                 before_transcript=before_transcript,
                 transcript_mode="patch",
             )
-            opened, error = await asyncio.to_thread(legacy.open_context_workbench, session_id)
-            legacy.proxy_log(
+            opened, error = await asyncio.to_thread(route_support.open_context_workbench, session_id)
+            route_support.proxy_log(
                 f"context control intercepted session={session_id} command={control_command!r} "
                 f"opened={opened} error={error!r}"
             )
@@ -481,8 +524,8 @@ async def responses(request: Request) -> Response:
                 headers={"Cache-Control": "no-cache"},
             )
 
-    if is_internal_context and not legacy.has_effective_upstream_auth(headers):
-        legacy.proxy_log("internal context request missing cached upstream auth")
+    if is_internal_context and not route_support.has_effective_upstream_auth(headers):
+        route_support.proxy_log("internal context request missing cached upstream auth")
         return JSONResponse(
             {
                 "error": {
@@ -498,15 +541,15 @@ async def responses(request: Request) -> Response:
         )
 
     if is_internal_context:
-        session_id = legacy.session_id_for_request(body, headers)
-        headers_for_upstream = legacy.merge_codex_session_headers(
+        session_id = route_support.session_id_for_request(body, headers)
+        headers_for_upstream = route_support.merge_codex_session_headers(
             headers,
             STORE.codex_session_headers(session_id),
             session_id=session_id,
         )
         forwarded_body = copy.deepcopy(body)
     elif capture_proxy_session:
-        session_id = legacy.session_id_for_request(body, headers)
+        session_id = route_support.session_id_for_request(body, headers)
         headers_for_upstream = headers
         before_version = _session_version(session_id)
         before_transcript = _session_transcript(session_id)
@@ -520,26 +563,26 @@ async def responses(request: Request) -> Response:
             transcript_mode="none" if session.status == "compacting" else "patch",
         )
     else:
-        session_id = legacy.session_id_for_request(body, headers)
+        session_id = route_support.session_id_for_request(body, headers)
         headers_for_upstream = headers
         forwarded_body = copy.deepcopy(body)
 
-    upstream_base_url = legacy.upstream_base_url_for_request(headers_for_upstream)
+    upstream_base_url = route_support.upstream_base_url_for_request(headers_for_upstream)
     upstream_url = _upstream_url(upstream_base_url, "responses")
-    effective_headers = legacy.apply_cached_upstream_auth(headers_for_upstream)
+    effective_headers = route_support.apply_cached_upstream_auth(headers_for_upstream)
     effective_lowered = {key.lower(): value for key, value in effective_headers.items()}
     auth_kind = "chatgpt" if effective_lowered.get("chatgpt-account-id") else "api-key-or-bearer"
-    legacy.proxy_log(
+    route_support.proxy_log(
         f"request session={session_id} auth={auth_kind} "
         f"internal={is_internal_context} title_generation={is_title_generation} "
-        f"capture={capture_proxy_session} upstream={upstream_url}"
+        f"passthrough={passthrough_reason or '-'} capture={capture_proxy_session} upstream={upstream_url}"
     )
 
     payload = json.dumps(forwarded_body, ensure_ascii=False).encode("utf-8")
-    upstream_headers = legacy.upstream_headers_for_request(headers_for_upstream, accept="text/event-stream")
-    legacy.proxy_log(
+    upstream_headers = route_support.upstream_headers_for_request(headers_for_upstream, accept="text/event-stream")
+    route_support.proxy_log(
         f"upstream headers session={session_id} "
-        f"{json.dumps(legacy.safe_headers_for_log(upstream_headers), ensure_ascii=False, sort_keys=True)}"
+        f"{json.dumps(route_support.safe_headers_for_log(upstream_headers), ensure_ascii=False, sort_keys=True)}"
     )
 
     client = httpx.AsyncClient(timeout=httpx.Timeout(connect=30.0, read=None, write=60.0, pool=60.0))
@@ -553,7 +596,7 @@ async def responses(request: Request) -> Response:
         upstream_response = await client.send(upstream_request, stream=True)
     except Exception as exc:
         await client.aclose()
-        legacy.proxy_log(f"request error session={session_id} error={type(exc).__name__}: {exc}")
+        route_support.proxy_log(f"request error session={session_id} error={type(exc).__name__}: {exc}")
         if capture_proxy_session:
             before_version = _session_version(session_id)
             before_transcript = _session_transcript(session_id)
@@ -570,7 +613,7 @@ async def responses(request: Request) -> Response:
             await HUB.publish(error_event(session_id, str(exc)))
         return _json_error(str(exc), HTTPStatus.BAD_GATEWAY)
 
-    legacy.proxy_log(
+    route_support.proxy_log(
         f"upstream status session={session_id} "
         f"status={upstream_response.status_code} reason={upstream_response.reason_phrase}"
     )
@@ -664,9 +707,9 @@ async def proxy_ws(websocket: WebSocket) -> None:
 
             await websocket.send_json(await HUB.direct_event(_snapshot_payload(session_id)))
             sender_task = asyncio.create_task(_send_subscription_events(websocket, subscription))
-            legacy.proxy_log(f"ws subscribed client={client_id} session={session_id}")
+            route_support.proxy_log(f"ws subscribed client={client_id} session={session_id}")
     except WebSocketDisconnect:
-        legacy.proxy_log(f"ws disconnected client={client_id}")
+        route_support.proxy_log(f"ws disconnected client={client_id}")
     finally:
         if sender_task is not None:
             sender_task.cancel()
@@ -676,16 +719,16 @@ async def proxy_ws(websocket: WebSocket) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--host", default=legacy.HOST)
-    parser.add_argument("--port", type=int, default=legacy.PORT)
+    parser.add_argument("--host", default=route_support.HOST)
+    parser.add_argument("--port", type=int, default=route_support.PORT)
     args = parser.parse_args()
 
     print(f"Hash Context proxy listening on http://{args.host}:{args.port} (FastAPI)")
-    if legacy.FORCE_UPSTREAM_BASE_URL:
-        print(f"Force upstream: {legacy.FORCE_UPSTREAM_BASE_URL.rstrip('/')}/responses")
+    if route_support.FORCE_UPSTREAM_BASE_URL:
+        print(f"Force upstream: {route_support.FORCE_UPSTREAM_BASE_URL.rstrip('/')}/responses")
     else:
-        print(f"OpenAI API upstream: {legacy.OPENAI_UPSTREAM_BASE_URL.rstrip()}/responses")
-        print(f"ChatGPT upstream: {legacy.CHATGPT_UPSTREAM_BASE_URL.rstrip()}/responses")
+        print(f"OpenAI API upstream: {route_support.OPENAI_UPSTREAM_BASE_URL.rstrip()}/responses")
+        print(f"ChatGPT upstream: {route_support.CHATGPT_UPSTREAM_BASE_URL.rstrip()}/responses")
     uvicorn.run(app, host=args.host, port=args.port, log_level=os.environ.get("HASH_CONTEXT_UVICORN_LOG_LEVEL", "info"))
 
 

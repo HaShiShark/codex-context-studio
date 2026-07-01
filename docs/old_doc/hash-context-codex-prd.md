@@ -24,6 +24,6 @@
 - 不修改 Codex 源码。
 - CLI 主路径使用 shim 或 `npm run codex` 注入本地 provider。
 - Desktop 是实验路径，会托管写入 `.codex/config.toml` 的配置块。
-- `backend/proxy_server.py` 是 Codex 请求边界的 source of truth。
+- `backend/proxy_fastapi.py` 是 Codex 请求边界的 source of truth。
 - `backend/web_server.py` 和 React 小窗负责上下文地图、工作台、revision 和设置。
 - Codex 原始 UI、history 和 session 文件仍由 Codex 自己维护。

@@ -303,6 +303,7 @@ export function localizeToolCatalogItem(tool: ContextWorkbenchToolCatalogItem, l
 export function buildWorkbenchModelOptions(
   selectedProvider: ResponseProviderDraft | undefined,
   modelDraft: string,
+  models: string[] = [],
 ): ResponseProviderModel[] {
   const seen = new Set<string>();
   const options: ResponseProviderModel[] = [];
@@ -334,6 +335,7 @@ export function buildWorkbenchModelOptions(
   }
 
   (selectedProvider?.models || []).forEach(pushModel);
+  models.forEach(pushModel);
   pushModel(modelDraft);
   DEFAULT_WORKBENCH_MODELS.forEach(pushModel);
 

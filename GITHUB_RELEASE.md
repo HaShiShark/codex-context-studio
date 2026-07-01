@@ -1,4 +1,4 @@
-# Codex Context Proxy v0.3.0
+# Codex Context Proxy v1.0.0
 
 A visual, editable context layer for Codex. Let AI edit AI's context with surgical precision, giving you more control and freedom over what Codex sees.
 
@@ -23,7 +23,7 @@ A visual, editable context layer for Codex. Let AI edit AI's context with surgic
 Download and run:
 
 ```text
-Codex Context Proxy Setup 0.3.0.exe
+Codex Context Proxy Setup 1.0.0.exe
 ```
 
 After installation, open a new terminal and enable the proxy:

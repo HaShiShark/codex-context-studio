@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+"""Lightweight agent_runtime transcript contract.
+
+This module is intentionally scoped to adapter-friendly chat history for
+agent_runtime/simple_agent. It is not the proxy core transcript contract; the
+lossless proxy transcript lives in backend/transcript_codec.py as TranscriptNode
+and preserves provider roles/items such as system, developer, context,
+subagent, and compaction.
+"""
+
 from dataclasses import dataclass, field
 from typing import Literal, TypeAlias
 
@@ -39,7 +48,7 @@ class TranscriptBlock:
 
 @dataclass(slots=True)
 class TranscriptRecord:
-    """Product transcript record. Roles are intentionally limited."""
+    """agent_runtime chat record. Roles are intentionally limited."""
 
     role: TranscriptRole
     text: str

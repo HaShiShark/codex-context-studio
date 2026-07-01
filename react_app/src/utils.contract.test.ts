@@ -1,4 +1,5 @@
 import { normalizeConversation } from './utils';
+import codexItemRegistry from '../../shared/codex-item-registry.json';
 import {
   CONTEXT_IMAGE_TOKEN_ESTIMATE,
   getContextTokenCount,
@@ -113,6 +114,78 @@ function testNormalizeConversationKeepsProviderItemContract(): void {
   assertIncludes(unknown.text, '"marker": "kept"', 'renders unknown item payload');
 }
 
+function testProviderItemRegistryDrivesToolPairingAndDisplayHints(): void {
+  const registry = codexItemRegistry as {
+    tool_call_item_types: string[];
+    tool_output_item_types: string[];
+    paired_tool_output_types_by_call_type: Record<string, string[]>;
+    compaction_item_types: string[];
+    display_hints_by_item_type: Record<string, { title?: string; event_name?: string }>;
+  };
+
+  assert(
+    registry.tool_call_item_types.includes('local_shell_call'),
+    'registry declares local_shell_call as a tool call',
+  );
+  assert(
+    registry.tool_output_item_types.includes('local_shell_call_output'),
+    'registry declares local_shell_call_output as a tool output',
+  );
+  assert(
+    registry.paired_tool_output_types_by_call_type.local_shell_call.includes('local_shell_call_output'),
+    'registry declares local shell output pairing',
+  );
+  assertEqual(
+    registry.display_hints_by_item_type.local_shell_call.event_name,
+    'local_shell',
+    'registry declares local shell display event name',
+  );
+
+  const conversation = normalizeConversation([
+    node('node-assistant-shell', 'assistant', [
+      {
+        type: 'local_shell_call',
+        call_id: 'call-shell',
+        action: { command: ['echo', 'hello'] },
+      },
+      {
+        type: 'local_shell_call_output',
+        call_id: 'call-shell',
+        output: 'exit code: 0\nhello',
+      },
+    ]),
+  ]);
+
+  const assistant = conversation[0];
+  assertEqual(assistant.toolEvents.length, 1, 'pairs local shell call with registry output type');
+  assertEqual(assistant.toolEvents[0].name, 'local_shell', 'uses registry display event name');
+  assertEqual(assistant.toolEvents[0].display_title, 'local_shell', 'uses registry display title');
+  assertEqual(assistant.toolEvents[0].raw_output, 'exit code: 0\nhello', 'keeps paired local shell output');
+  assertEqual(assistant.toolEvents[0].status, 'completed', 'keeps local shell status parsing');
+}
+
+function testProviderItemTypesAreCaseAndSeparatorSensitive(): void {
+  const conversation = normalizeConversation([
+    node('node-assistant-wrong-type', 'assistant', [
+      {
+        type: 'Local-Shell-Call',
+        call_id: 'call-shell',
+        action: { command: ['echo', 'hello'] },
+      },
+      {
+        type: 'local_shell_call_output',
+        call_id: 'call-shell',
+        output: 'exit code: 0\nhello',
+      },
+    ]),
+  ]);
+
+  const assistant = conversation[0];
+  assertEqual(assistant.toolEvents.length, 1, 'does not pair output with wrong call type');
+  assertEqual(assistant.toolEvents[0].name, 'local_shell_call_output', 'renders the valid output as standalone');
+  assertIncludes(assistant.text, 'Local-Shell-Call', 'renders wrong call type as raw provider item');
+}
+
 function testNormalizeConversationSupportsSubagentNodes(): void {
   const conversation = normalizeConversation([
     node('node-subagent', 'subagent', [
@@ -163,6 +236,8 @@ function testImageDataUrlsDoNotEnterContextWeightText(): void {
 
 function main(): void {
   testNormalizeConversationKeepsProviderItemContract();
+  testProviderItemRegistryDrivesToolPairingAndDisplayHints();
+  testProviderItemTypesAreCaseAndSeparatorSensitive();
   testNormalizeConversationSupportsSubagentNodes();
   testImageDataUrlsDoNotEnterContextWeightText();
   console.log('ok - normalizeConversation contract tests passed');

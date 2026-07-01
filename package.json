@@ -1,6 +1,6 @@
 {
   "name": "hash-context-codex-lab",
-  "version": "0.8.0",
+  "version": "1.0.0",
   "private": true,
   "description": "Local context proxy and workbench companion for Codex.",
   "author": "",
@@ -84,6 +84,7 @@
       "react_app/dist/**/*",
       "python_dist/*",
       "python_dist/**/*",
+      "shared/**/*",
       "scripts/**/*",
       "simple_agent/**/*",
       "agent_runtime/**/*",

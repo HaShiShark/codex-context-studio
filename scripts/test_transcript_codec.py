@@ -14,6 +14,11 @@ from backend.transcript_codec import (  # noqa: E402
     input_items_to_transcript,
     transcript_to_input_items,
 )
+from backend.web_constants import (  # noqa: E402
+    CODEX_COMPACTION_ITEM_TYPES,
+    CODEX_TOOL_OUTPUT_TYPES_BY_CALL_TYPE,
+)
+from backend.web_context import tool_display_title_from_provider_item  # noqa: E402
 
 
 def message(role: str, text: str) -> dict[str, Any]:
@@ -78,6 +83,30 @@ def test_assistant_tool_call_and_output_group_together() -> None:
         "function_call_output",
         "message",
     ]
+    assert transcript_to_input_items(transcript) == input_items
+
+
+def test_provider_item_types_are_case_and_separator_sensitive() -> None:
+    wrong_case_call = {
+        "type": "Function_Call",
+        "call_id": "call_wrong_case",
+        "name": "get_weather",
+        "arguments": "{}",
+    }
+    wrong_separator_output = {
+        "type": "function-call-output",
+        "call_id": "call_wrong_case",
+        "output": "sunny",
+    }
+    input_items = [
+        message("assistant", "previous answer"),
+        wrong_case_call,
+        wrong_separator_output,
+    ]
+
+    transcript = input_items_to_transcript(input_items)
+
+    assert [node["role"] for node in transcript] == ["assistant", "unknown", "unknown"]
     assert transcript_to_input_items(transcript) == input_items
 
 
@@ -294,10 +323,26 @@ def test_append_roundtrip_order_for_orphan_output_compaction_and_unknown() -> No
     assert transcript_to_input_items(transcript) == [*input_items, *append_items]
 
 
+def test_codex_item_registry_contract_drives_backend_rules() -> None:
+    assert "context_compaction" in CODEX_COMPACTION_ITEM_TYPES
+    assert "local_shell_call_output" in CODEX_TOOL_OUTPUT_TYPES_BY_CALL_TYPE["local_shell_call"]
+    assert tool_display_title_from_provider_item({"type": "local_shell_call"}) == "local_shell"
+
+    transcript = input_items_to_transcript(
+        [
+            message("assistant", "previous answer"),
+            {"type": "context_compaction", "role": "context", "summary": "compressed"},
+        ]
+    )
+
+    assert [node["role"] for node in transcript] == ["assistant", "context"]
+
+
 def main() -> None:
     tests = [
         test_unknown_and_non_dict_items_roundtrip,
         test_assistant_tool_call_and_output_group_together,
+        test_provider_item_types_are_case_and_separator_sensitive,
         test_orphan_tool_output_uses_recent_assistant_or_creates_one,
         test_mcp_and_local_shell_outputs_group_with_assistant,
         test_compaction_is_independent_node,
@@ -307,6 +352,7 @@ def main() -> None:
         test_append_preserves_existing_user_node_id,
         test_append_assistant_tool_keeps_existing_assistant_node,
         test_append_roundtrip_order_for_orphan_output_compaction_and_unknown,
+        test_codex_item_registry_contract_drives_backend_rules,
     ]
     for test in tests:
         test()

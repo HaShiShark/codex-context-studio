@@ -160,10 +160,8 @@ function Stop-ProjectProcessOnPort {
     if ($commandLine -like "*hash-context-codex-lab*" -or
         $commandLine -like "*Codex Context Proxy*" -or
         $commandLine -like "*proxy_fastapi.py*" -or
-        $commandLine -like "*proxy_server.py*" -or
         $commandLine -like "*web_server.py*" -or
         $commandLine -like "*backend.proxy_fastapi*" -or
-        $commandLine -like "*backend.proxy_server*" -or
         $commandLine -like "*backend.web_server*" -or
         $commandLine -like "*hash-proxy-server*" -or
         $commandLine -like "*hash-web-server*") {

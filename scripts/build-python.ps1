@@ -6,6 +6,7 @@ $PythonExe = Join-Path $BuildVenv "Scripts\python.exe"
 $PythonDist = Join-Path $Root "python_dist"
 $WebWork = Join-Path $Root ".tmp-pyinstaller-web"
 $ProxyWork = Join-Path $Root ".tmp-pyinstaller-proxy"
+$RegistryData = "$(Join-Path $Root 'shared\codex-item-registry.json');shared"
 
 function Remove-WorkspacePath {
   param([Parameter(Mandatory = $true)][string]$Path)
@@ -41,6 +42,7 @@ Remove-WorkspacePath $ProxyWork
   --workpath $WebWork `
   --specpath $WebWork `
   --name hash-web-server `
+  --add-data $RegistryData `
   (Join-Path $Root "backend\web_server.py")
 
 & $PythonExe -m PyInstaller `
@@ -50,4 +52,5 @@ Remove-WorkspacePath $ProxyWork
   --workpath $ProxyWork `
   --specpath $ProxyWork `
   --name hash-proxy-server `
+  --add-data $RegistryData `
   (Join-Path $Root "backend\proxy_fastapi.py")

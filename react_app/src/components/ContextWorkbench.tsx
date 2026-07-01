@@ -4,10 +4,10 @@ import { flushSync } from 'react-dom';
 
 import {
   clearContextWorkbenchChatRequest,
+  fetchContextWorkbenchSettings,
   fetchProxySessionUsageRequest,
-  fetchSettings,
   resetProxyUsageRequest,
-  saveSettingsRequest,
+  saveContextWorkbenchSettingsRequest,
   streamContextChatRequest,
 } from '../api';
 import {
@@ -208,7 +208,7 @@ export default function ContextWorkbench({
   const [tokenCriticalThresholdDraft, setTokenCriticalThresholdDraft] = useState(
     String(DEFAULT_CONTEXT_TOKEN_THRESHOLDS.criticalThreshold),
   );
-  const [availableProviders] = useState<[]>([]);
+  const [availableWorkbenchModels, setAvailableWorkbenchModels] = useState<string[]>([]);
   const [isSettingsLoading, setIsSettingsLoading] = useState(true);
   const [settingsError, setSettingsError] = useState('');
   const [uiFontDraft, setUiFontDraft] = useState('Noto Serif SC');
@@ -233,8 +233,8 @@ export default function ContextWorkbench({
   );
   const selectedWorkbenchProvider = undefined;
   const workbenchModelOptions = useMemo(
-    () => buildWorkbenchModelOptions(selectedWorkbenchProvider, workbenchModelDraft),
-    [workbenchModelDraft],
+    () => buildWorkbenchModelOptions(selectedWorkbenchProvider, workbenchModelDraft, availableWorkbenchModels),
+    [availableWorkbenchModels, workbenchModelDraft],
   );
   const currentWorkbenchModelLabel =
     workbenchModelOptions.find((model) => (model.id || model.label || '').trim() === workbenchModelDraft)?.label
@@ -317,19 +317,28 @@ export default function ContextWorkbench({
       setIsSettingsLoading(true);
       setSettingsError('');
       try {
-        const response = await fetchSettings();
+        const response = await fetchContextWorkbenchSettings();
         if (cancelled) return;
-        const nextModel = response.workbench_model || DEFAULT_WORKBENCH_MODELS[0];
+        const settings = response.settings;
+        const nextModel = settings.context_workbench_model || DEFAULT_WORKBENCH_MODELS[0];
         setWorkbenchModelDraft(nextModel);
-        setWorkbenchProviderDraft(DEFAULT_WORKBENCH_PROVIDER_ID);
-        const loadedLocale = response.user_locale ? normalizeSupportedLocale(response.user_locale) : uiLocale;
+        setWorkbenchProviderDraft(settings.context_workbench_provider_id || DEFAULT_WORKBENCH_PROVIDER_ID);
+        setAvailableWorkbenchModels(response.models || []);
+        const loadedThresholds = normalizeContextTokenThresholds({
+          warningThreshold: settings.context_token_warning_threshold,
+          criticalThreshold: settings.context_token_critical_threshold,
+        });
+        setTokenWarningThresholdDraft(String(loadedThresholds.warningThreshold));
+        setTokenCriticalThresholdDraft(String(loadedThresholds.criticalThreshold));
+        onTokenThresholdsChange(loadedThresholds);
+        const loadedLocale = settings.user_locale ? normalizeSupportedLocale(settings.user_locale) : uiLocale;
         setUiLocaleDraft(loadedLocale);
         onUiLocaleChange?.(loadedLocale);
-        const loadedThemeMode = response.theme_mode === 'dark' ? 'dark' : 'light';
+        const loadedThemeMode = settings.theme_mode === 'dark' ? 'dark' : 'light';
         setThemeModeDraft(loadedThemeMode);
         onThemeModeChange?.(loadedThemeMode);
-        const loadedFont = response.ui_font || 'Noto Serif SC';
-        const loadedFontSize = response.ui_font_size || 15;
+        const loadedFont = settings.ui_font || 'Noto Serif SC';
+        const loadedFontSize = settings.ui_font_size || 15;
         setUiFontDraft(loadedFont);
         setUiFontSizeDraft(String(loadedFontSize));
         onUiFontChange?.(loadedFont, loadedFontSize);
@@ -462,7 +471,21 @@ export default function ContextWorkbench({
     onTokenThresholdsChange(thresholds);
 
     try {
-      await saveSettingsRequest({ workbench_model: nextModel, user_locale: updates?.locale ?? uiLocaleDraft });
+      const payload = {
+        context_workbench_model: nextModel,
+        user_locale: updates?.locale ?? uiLocaleDraft,
+      };
+      const shouldSaveThresholds = !updates?.model || Boolean(updates?.thresholds);
+      const response = await saveContextWorkbenchSettingsRequest(
+        shouldSaveThresholds
+          ? {
+              ...payload,
+              context_token_warning_threshold: thresholds.warningThreshold,
+              context_token_critical_threshold: thresholds.criticalThreshold,
+            }
+          : payload,
+      );
+      setAvailableWorkbenchModels(response.models || []);
     } catch (error) {
       setSettingsError(getThrownMessage(error));
     }
@@ -475,7 +498,7 @@ export default function ContextWorkbench({
     onUiLocaleChange?.(nextLocale);
     setSettingsError('');
     try {
-      await saveSettingsRequest({ user_locale: nextLocale });
+      await saveContextWorkbenchSettingsRequest({ user_locale: nextLocale });
     } catch (error) {
       setUiLocaleDraft(previousLocale);
       onUiLocaleChange?.(previousLocale);
@@ -490,7 +513,7 @@ export default function ContextWorkbench({
     onThemeModeChange?.(nextThemeMode);
     setSettingsError('');
     try {
-      await saveSettingsRequest({ theme_mode: nextThemeMode });
+      await saveContextWorkbenchSettingsRequest({ theme_mode: nextThemeMode });
     } catch (error) {
       setThemeModeDraft(previousThemeMode);
       onThemeModeChange?.(previousThemeMode);
@@ -510,7 +533,7 @@ export default function ContextWorkbench({
     onUiFontChange?.(font, size);
     setSettingsError('');
     try {
-      await saveSettingsRequest({ ui_font: font, ui_font_size: size });
+      await saveContextWorkbenchSettingsRequest({ ui_font: font, ui_font_size: size });
     } catch (error) {
       setSettingsError(getThrownMessage(error));
     }

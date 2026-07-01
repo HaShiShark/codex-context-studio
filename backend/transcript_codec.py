@@ -3,10 +3,10 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import re
 import uuid
 from typing import Any, Sequence, TypedDict
 
+from .codex_item_registry import CODEX_ITEM_REGISTRY
 from .codex_input_cursor import canonical_provider_item_for_request
 
 
@@ -26,28 +26,12 @@ class TranscriptNode(TypedDict):
 NON_DICT_PROVIDER_ITEM_MARKER = "__hash_context_non_dict_provider_item__"
 
 _MESSAGE_TYPE = "message"
-_AGENT_MESSAGE_TYPES = {"agentmessage"}
+_AGENT_MESSAGE_TYPES = CODEX_ITEM_REGISTRY.subagent_message_item_types
 _REASONING_TYPES = {"reasoning"}
-_TOOL_CALL_TYPES = {
-    "functioncall",
-    "customtoolcall",
-    "localshellcall",
-    "toolsearchcall",
-    "websearchcall",
-    "imagegenerationcall",
-}
-_TOOL_OUTPUT_TYPES = {
-    "functioncalloutput",
-    "customtoolcalloutput",
-    "localshellcalloutput",
-    "mcptoolcalloutput",
-    "toolsearchoutput",
-}
-_COMPACTION_TYPES = {
-    "compaction",
-    "contextcompaction",
-}
-_ADDITIONAL_TOOLS_TYPES = {"additionaltools"}
+_TOOL_CALL_TYPES = CODEX_ITEM_REGISTRY.tool_call_item_types
+_TOOL_OUTPUT_TYPES = CODEX_ITEM_REGISTRY.tool_output_item_types
+_COMPACTION_TYPES = CODEX_ITEM_REGISTRY.compaction_item_types
+_ADDITIONAL_TOOLS_TYPES = CODEX_ITEM_REGISTRY.developer_context_item_types
 
 
 def input_items_to_transcript(input_items: Sequence[Any]) -> list[TranscriptNode]:
@@ -152,7 +136,6 @@ def _append_node_item(
 ) -> TranscriptNode | None:
     provider_item = node_item["providerItem"]
     item_type = _item_type(provider_item)
-    canonical_type = _canonical_type(item_type)
 
     if _is_message(provider_item):
         role = _item_role(provider_item)
@@ -169,27 +152,27 @@ def _append_node_item(
         _append_new_node(transcript, role, node_item)
         return None
 
-    if canonical_type in _AGENT_MESSAGE_TYPES:
+    if item_type in _AGENT_MESSAGE_TYPES:
         _append_new_node(transcript, "subagent", node_item)
         return None
 
-    if canonical_type in _REASONING_TYPES or canonical_type in _TOOL_CALL_TYPES:
+    if item_type in _REASONING_TYPES or item_type in _TOOL_CALL_TYPES:
         target = _assistant_node(transcript, current_assistant)
         _append_item(target, node_item)
         return target
 
-    if canonical_type in _TOOL_OUTPUT_TYPES:
+    if item_type in _TOOL_OUTPUT_TYPES:
         target = _find_assistant_for_tool_output(transcript, provider_item)
         if target is None:
             target = _assistant_node(transcript, current_assistant)
         _append_item(target, node_item)
         return target
 
-    if canonical_type in _COMPACTION_TYPES:
+    if item_type in _COMPACTION_TYPES:
         _append_new_node(transcript, _item_role(provider_item), node_item)
         return None
 
-    if canonical_type in _ADDITIONAL_TOOLS_TYPES:
+    if item_type in _ADDITIONAL_TOOLS_TYPES:
         _append_new_node(transcript, "developer", node_item)
         return None
 
@@ -291,7 +274,7 @@ def _assistant_has_call_id(node: TranscriptNode, call_id: str) -> bool:
 
 
 def _is_message(item: dict[str, Any]) -> bool:
-    return _canonical_type(_item_type(item)) == _MESSAGE_TYPE
+    return _item_type(item) == _MESSAGE_TYPE
 
 
 def _item_type(item: dict[str, Any]) -> str:
@@ -310,10 +293,6 @@ def _item_role(item: dict[str, Any]) -> str:
     value = item.get("role")
     role = str(value).strip() if value is not None else ""
     return role or "unknown"
-
-
-def _canonical_type(item_type: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", item_type.lower())
 
 
 def _source_fingerprint(provider_item: dict[str, Any]) -> str:

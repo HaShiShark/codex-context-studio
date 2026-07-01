@@ -97,7 +97,7 @@ context window
 Download and run the Windows installer:
 
 ```text
-Codex Context Proxy Setup 0.3.0.exe
+Codex Context Proxy Setup 1.0.0.exe
 ```
 
 After installation, open a new terminal and enable the proxy:
@@ -188,7 +188,7 @@ npm run dist:win
 The installer is generated at:
 
 ```text
-release/Codex Context Proxy Setup 0.3.0.exe
+release/Codex Context Proxy Setup 1.0.0.exe
 ```
 
 ## Notes

@@ -415,7 +415,7 @@ backend/
 ├── compact_controller.py        # prompt replacement + compact success simulation
 ├── proxy_core.py                # 请求/响应统一主路径
 ├── proxy_session_storage.py     # transcript/cursor/session/workbench 落盘
-└── proxy_server.py              # HTTP/SSE/ctx fallback/路由外壳
+└── proxy_fastapi.py             # FastAPI HTTP/SSE/ctx fallback/路由外壳
 ```
 
 可选后续模块：
@@ -424,7 +424,9 @@ backend/
 transcript_editor.py             # 节点级编辑防错和批量操作，可后置
 ```
 
-`proxy_server.py` 可以保留 HTTP、SSE、鉴权转发、ctx fallback、WebSocket 推送等外壳逻辑；核心的 transcript/cursor/compact 状态转换应尽量委托给上面的纯模块。
+`proxy_fastapi.py` 保留 HTTP、SSE、鉴权转发、ctx fallback、WebSocket 推送等外壳逻辑；核心的 transcript/cursor/compact 状态转换应尽量委托给上面的纯模块。
+
+`agent_runtime/` 不属于本设计的 proxy transcript 主链路底座。它里面的 `TranscriptRecord` / `TranscriptRole` 是给轻量 agent adapter 和 `simple_agent` 使用的聊天历史契约，当前只表达 `user` / `assistant`；不能把它当成 proxy core 的 lossless transcript contract。proxy 主链路必须继续以 `backend/transcript_codec.py` 的 `TranscriptNode` / provider items 为准，保留 `system`、`developer`、`context`、`subagent`、`compaction` 以及未知 provider item。
 
 ## 12. 检查清单
 

@@ -15,6 +15,35 @@ from typing import Any
 
 
 DYNAMIC_FINGERPRINT_KEYS = frozenset({"id"})
+_DYNAMIC_ID_ITEM_TYPES = frozenset(
+    {
+        "message",
+        "agent_message",
+        "reasoning",
+        "function_call",
+        "function_call_output",
+        "custom_tool_call",
+        "custom_tool_call_output",
+        "local_shell_call",
+        "local_shell_call_output",
+        "tool_search_call",
+        "tool_search_output",
+        "web_search_call",
+        "image_generation_call",
+        "compaction",
+        "context_compaction",
+    }
+)
+_DYNAMIC_ID_CONTENT_PART_TYPES = frozenset(
+    {
+        "input_text",
+        "output_text",
+        "text",
+        "input_image",
+        "reasoning_text",
+        "summary_text",
+    }
+)
 
 
 def canonical_provider_item_for_request(item: Any) -> Any:
@@ -149,18 +178,19 @@ class CursorDiff:
 
 
 def normalize_provider_item(value: Any) -> Any:
-    """Return a stable semantic projection used for provider item hashing.
+    """Return a request-safe deep normalization of provider values.
 
-    Only exact ``id`` keys are removed.  Semantic identifiers such as
-    ``call_id`` or ``file_id`` are preserved, as are opaque reasoning fields
-    such as ``encrypted_content``.
+    This function deliberately preserves nested ``id`` keys. Tool schemas can
+    contain semantic fields named ``id`` (for example
+    ``parameters.properties.id``), and deleting them corrupts the request body.
+    Dynamic response item ids are ignored only by ``_pick`` at known item
+    boundaries and by the fingerprint-only normalization below.
     """
 
     if isinstance(value, Mapping):
         return {
             key: normalize_provider_item(child)
             for key, child in value.items()
-            if key not in DYNAMIC_FINGERPRINT_KEYS
         }
     if isinstance(value, list):
         return [normalize_provider_item(child) for child in value]
@@ -183,20 +213,26 @@ def fingerprint_provider_item(item: Any) -> str:
 
 
 def semantic_provider_item_for_fingerprint(value: Any) -> Any:
+    return _semantic_provider_item_for_fingerprint(value, depth=0)
+
+
+def _semantic_provider_item_for_fingerprint(value: Any, *, depth: int) -> Any:
     if isinstance(value, Mapping):
         item_type = str(value.get("type") or "").strip()
-        ignored_keys = {"id"}
+        ignored_keys: set[str] = set()
+        if depth == 0 or item_type in _DYNAMIC_ID_ITEM_TYPES | _DYNAMIC_ID_CONTENT_PART_TYPES:
+            ignored_keys.add("id")
         if item_type == "message":
             ignored_keys.add("phase")
         return {
-            key: semantic_provider_item_for_fingerprint(child)
+            key: _semantic_provider_item_for_fingerprint(child, depth=depth + 1)
             for key, child in value.items()
             if key not in ignored_keys
         }
     if isinstance(value, list):
-        return [semantic_provider_item_for_fingerprint(child) for child in value]
+        return [_semantic_provider_item_for_fingerprint(child, depth=depth + 1) for child in value]
     if isinstance(value, tuple):
-        return [semantic_provider_item_for_fingerprint(child) for child in value]
+        return [_semantic_provider_item_for_fingerprint(child, depth=depth + 1) for child in value]
     return value
 
 

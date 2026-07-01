@@ -8,6 +8,7 @@ import type {
   TranscriptEntry,
   TranscriptNode,
 } from './types';
+import codexItemRegistry from '../../shared/codex-item-registry.json';
 
 type TokenEncoder = {
   encode(text: string): unknown[];
@@ -141,31 +142,59 @@ type ProviderItemRecord = Record<string, unknown>;
 
 const NON_DICT_PROVIDER_ITEM_MARKER = '__hash_context_non_dict_provider_item__';
 
-const TOOL_CALL_ITEM_TYPES = new Set([
-  'functioncall',
-  'customtoolcall',
-  'localshellcall',
-  'toolsearchcall',
-  'websearchcall',
-  'imagegenerationcall',
-]);
-
-const TOOL_OUTPUT_ITEM_TYPES = new Set([
-  'functioncalloutput',
-  'customtoolcalloutput',
-  'localshellcalloutput',
-  'mcptoolcalloutput',
-  'toolsearchoutput',
-]);
-
-const PAIRED_TOOL_OUTPUT_TYPES_BY_CALL_TYPE: Record<string, Set<string>> = {
-  functioncall: new Set(['functioncalloutput', 'mcptoolcalloutput']),
-  localshellcall: new Set(['functioncalloutput', 'localshellcalloutput']),
-  customtoolcall: new Set(['customtoolcalloutput']),
-  toolsearchcall: new Set(['toolsearchoutput']),
+type CodexItemRegistryContract = {
+  schema_version: number;
+  tool_call_item_types: string[];
+  tool_output_item_types: string[];
+  paired_tool_output_types_by_call_type: Record<string, string[]>;
+  compaction_item_types: string[];
+  display_hints_by_item_type?: Record<string, { title?: string; event_name?: string }>;
 };
 
-const COMPACTION_ITEM_TYPES = new Set(['compaction', 'contextcompaction', 'compactionsummary']);
+const CODEX_ITEM_REGISTRY = codexItemRegistry as CodexItemRegistryContract;
+
+const TOOL_CALL_ITEM_TYPES = exactTypeSet(CODEX_ITEM_REGISTRY.tool_call_item_types);
+const TOOL_OUTPUT_ITEM_TYPES = exactTypeSet(CODEX_ITEM_REGISTRY.tool_output_item_types);
+const PAIRED_TOOL_OUTPUT_TYPES_BY_CALL_TYPE = exactTypeSetMap(
+  CODEX_ITEM_REGISTRY.paired_tool_output_types_by_call_type,
+);
+const COMPACTION_ITEM_TYPES = exactTypeSet(CODEX_ITEM_REGISTRY.compaction_item_types);
+const ITEM_DISPLAY_HINTS_BY_TYPE = exactDisplayHints(
+  CODEX_ITEM_REGISTRY.display_hints_by_item_type || {},
+);
+
+function exactTypeSet(itemTypes: string[]): Set<string> {
+  return new Set(itemTypes.map((itemType) => String(itemType || '').trim()).filter(Boolean));
+}
+
+function exactTypeSetMap(value: Record<string, string[]>): Record<string, Set<string>> {
+  return Object.entries(value).reduce<Record<string, Set<string>>>((result, [callType, outputTypes]) => {
+    const exactCallType = String(callType || '').trim();
+    if (exactCallType) {
+      result[exactCallType] = exactTypeSet(outputTypes);
+    }
+    return result;
+  }, {});
+}
+
+function exactDisplayHints(
+  value: Record<string, { title?: string; event_name?: string }>,
+): Record<string, { title?: string; eventName?: string }> {
+  return Object.entries(value).reduce<Record<string, { title?: string; eventName?: string }>>(
+    (result, [itemType, hint]) => {
+      const exactItemType = String(itemType || '').trim();
+      if (!exactItemType) {
+        return result;
+      }
+      result[exactItemType] = {
+        title: String(hint.title || '').trim() || undefined,
+        eventName: String(hint.event_name || '').trim() || undefined,
+      };
+      return result;
+    },
+    {},
+  );
+}
 
 function isRecord(value: unknown): value is ProviderItemRecord {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
@@ -210,11 +239,7 @@ function providerItemsFromTranscriptNode(node: TranscriptNode): ProviderItem[] {
 }
 
 function providerItemType(item: ProviderItemRecord | undefined): string {
-  return String(item?.type || '').trim();
-}
-
-function providerItemCanonicalType(item: ProviderItemRecord | undefined): string {
-  return providerItemType(item).toLowerCase().replace(/[^a-z0-9]+/g, '');
+  return item?.type === undefined || item.type === null ? '' : String(item.type);
 }
 
 function providerItemCallId(item: ProviderItemRecord | undefined, allowIdFallback = true): string {
@@ -414,11 +439,11 @@ function toolOutputTextFromProviderItem(item: ProviderItemRecord | undefined): s
     return '';
   }
 
-  const itemType = providerItemCanonicalType(item);
-  if (itemType === 'toolsearchoutput') {
+  const itemType = providerItemType(item);
+  if (itemType === 'tool_search_output') {
     return providerPayloadText(item.tools);
   }
-  if (itemType === 'imagegenerationcall') {
+  if (itemType === 'image_generation_call') {
     return providerPayloadText(item.result);
   }
   return providerPayloadText(item.output ?? item.result);
@@ -457,20 +482,20 @@ function toolCallArgumentsValue(item: ProviderItemRecord | undefined): unknown {
     return '';
   }
 
-  const itemType = providerItemCanonicalType(item);
-  if (itemType === 'functioncall') {
+  const itemType = providerItemType(item);
+  if (itemType === 'function_call') {
     return parseJsonish(item.arguments ?? '{}');
   }
-  if (itemType === 'customtoolcall') {
+  if (itemType === 'custom_tool_call') {
     return parseJsonish(item.input ?? '');
   }
-  if (itemType === 'localshellcall' || itemType === 'websearchcall') {
+  if (itemType === 'local_shell_call' || itemType === 'web_search_call') {
     return item.action ?? '';
   }
-  if (itemType === 'toolsearchcall') {
+  if (itemType === 'tool_search_call') {
     return parseJsonish(item.arguments ?? '');
   }
-  if (itemType === 'imagegenerationcall') {
+  if (itemType === 'image_generation_call') {
     return String(item.revised_prompt || item.prompt || '').trim();
   }
   return parseJsonish(item.arguments ?? item.input ?? item.action ?? '');
@@ -481,21 +506,13 @@ function toolDisplayTitleFromProviderItem(item: ProviderItemRecord | undefined):
     return 'tool';
   }
 
-  const itemType = providerItemCanonicalType(item);
-  if (itemType === 'functioncall' || itemType === 'customtoolcall') {
+  const itemType = providerItemType(item);
+  if (itemType === 'function_call' || itemType === 'custom_tool_call') {
     return String(item.name || '').trim() || 'tool';
   }
-  if (itemType === 'localshellcall') {
-    return 'local_shell';
-  }
-  if (itemType === 'toolsearchcall') {
-    return 'tool_search';
-  }
-  if (itemType === 'websearchcall') {
-    return 'web_search';
-  }
-  if (itemType === 'imagegenerationcall') {
-    return 'image_generation';
+  const displayHint = ITEM_DISPLAY_HINTS_BY_TYPE[itemType];
+  if (displayHint?.title) {
+    return displayHint.title;
   }
   if (TOOL_OUTPUT_ITEM_TYPES.has(itemType)) {
     return String(item.name || providerItemType(item) || 'tool_output').trim();
@@ -512,18 +529,10 @@ function toolEventNameFromProviderItems(
     return 'tool';
   }
 
-  const itemType = providerItemCanonicalType(source);
-  if (itemType === 'websearchcall') {
-    return 'web_search';
-  }
-  if (itemType === 'imagegenerationcall') {
-    return 'image_generation';
-  }
-  if (itemType === 'toolsearchcall') {
-    return 'tool_search';
-  }
-  if (itemType === 'localshellcall') {
-    return 'local_shell';
+  const itemType = providerItemType(source);
+  const displayHint = ITEM_DISPLAY_HINTS_BY_TYPE[itemType];
+  if (displayHint?.eventName) {
+    return displayHint.eventName;
   }
   return String(source.name || toolDisplayTitleFromProviderItem(source)).trim() || 'tool';
 }
@@ -533,7 +542,7 @@ function toolDisplayDetailFromProviderItem(item: ProviderItemRecord | undefined)
     return '';
   }
 
-  const itemType = providerItemCanonicalType(item);
+  const itemType = providerItemType(item);
   const callName = String(item.name || '').trim();
   const argumentsValue = toolCallArgumentsValue(item);
 
@@ -549,7 +558,7 @@ function toolDisplayDetailFromProviderItem(item: ProviderItemRecord | undefined)
   if (callName === 'write_stdin' && isRecord(argumentsValue)) {
     return providerPayloadText(argumentsValue.stdin || argumentsValue.input || '').trim();
   }
-  if (itemType === 'localshellcall') {
+  if (itemType === 'local_shell_call') {
     const action = item.action;
     if (isRecord(action)) {
       const command = action.command;
@@ -562,10 +571,10 @@ function toolDisplayDetailFromProviderItem(item: ProviderItemRecord | undefined)
     }
     return previewText(action);
   }
-  if (itemType === 'websearchcall') {
+  if (itemType === 'web_search_call') {
     return webSearchActionDetail(item.action);
   }
-  if (itemType === 'imagegenerationcall') {
+  if (itemType === 'image_generation_call') {
     return previewText(item.revised_prompt || item.prompt);
   }
 
@@ -621,12 +630,12 @@ function fallbackProviderItemText(item: ProviderItemRecord): string {
 
 function readableTextFromProviderItem(item: ProviderItem): string {
   const itemRecord = item as ProviderItemRecord;
-  const itemType = providerItemCanonicalType(itemRecord);
+  const itemType = providerItemType(itemRecord);
 
   if (itemType === 'message') {
     return messageTextFromProviderItem(itemRecord);
   }
-  if (itemType === 'agentmessage') {
+  if (itemType === 'agent_message') {
     return agentMessageTextFromProviderItem(itemRecord);
   }
   if (itemType === 'reasoning') {
@@ -666,7 +675,7 @@ function buildAssistantDisplayFromProviderItems(
   const outputIndexesByCallId = new Map<string, number[]>();
   providerItems.forEach((item, index) => {
     const itemRecord = item as ProviderItemRecord;
-    if (!TOOL_OUTPUT_ITEM_TYPES.has(providerItemCanonicalType(itemRecord))) {
+    if (!TOOL_OUTPUT_ITEM_TYPES.has(providerItemType(itemRecord))) {
       return;
     }
     const callId = providerItemCallId(itemRecord, false);
@@ -694,7 +703,7 @@ function buildAssistantDisplayFromProviderItems(
       return undefined;
     }
 
-    const allowedTypes = PAIRED_TOOL_OUTPUT_TYPES_BY_CALL_TYPE[providerItemCanonicalType(callItem)];
+    const allowedTypes = PAIRED_TOOL_OUTPUT_TYPES_BY_CALL_TYPE[providerItemType(callItem)];
     if (!allowedTypes) {
       return undefined;
     }
@@ -704,7 +713,7 @@ function buildAssistantDisplayFromProviderItems(
         continue;
       }
       const outputItem = providerItems[outputIndex] as ProviderItemRecord;
-      if (!allowedTypes.has(providerItemCanonicalType(outputItem))) {
+      if (!allowedTypes.has(providerItemType(outputItem))) {
         continue;
       }
       consumedOutputIndexes.add(outputIndex);
@@ -716,7 +725,7 @@ function buildAssistantDisplayFromProviderItems(
 
   providerItems.forEach((item, index) => {
     const itemRecord = item as ProviderItemRecord;
-    const itemType = providerItemCanonicalType(itemRecord);
+    const itemType = providerItemType(itemRecord);
 
     if (itemType === 'message') {
       const text = messageTextFromProviderItem(itemRecord);

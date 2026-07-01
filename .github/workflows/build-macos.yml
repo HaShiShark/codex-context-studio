@@ -118,10 +118,14 @@ jobs:
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
           body: |
+            大重构更新。
+
             Updates:
-            - Fix compact summary duplication.
-            - Improve manual and automatic compact prompts.
-            - Improve auto compact detection during running assistant turns.
+            - Refactor the backend proxy architecture around the FastAPI proxy entry.
+            - Unify frontend and backend transcript/context contracts.
+            - Split proxy storage, SSE, session id, and item registry responsibilities into dedicated modules.
+            - Expand frontend contract and backend proxy core tests for the rebuilt protocol paths.
+            - Update packaging so shared modules are included in release installers.
           files: |
             release-artifacts/*.dmg
             release-artifacts/*.zip

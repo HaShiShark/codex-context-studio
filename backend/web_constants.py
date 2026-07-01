@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from simple_agent.agent import SimpleAgent
+from backend.codex_item_registry import CODEX_ITEM_REGISTRY
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REACT_DIST_DIR = REPO_ROOT / "react_app" / "dist"
@@ -36,42 +37,27 @@ _TOKEN_ENCODING: Any | None = None
 _TOKEN_ENCODING_LOAD_FAILED = False
 CONTEXT_INPUT_MESSAGE_ROLES = {"system", "developer", "user", "assistant"}
 CONTEXT_INPUT_RECORD_ROLES = {*CONTEXT_INPUT_MESSAGE_ROLES, "compaction", "context"}
-CODEX_PAIRED_TOOL_CALL_ITEM_TYPES = {
-    "function_call",
-    "local_shell_call",
-    "custom_tool_call",
-    "tool_search_call",
-}
-CODEX_STANDALONE_TOOL_CALL_ITEM_TYPES = {
-    "web_search_call",
-    "image_generation_call",
-}
-CODEX_TOOL_CALL_ITEM_TYPES = {
-    *CODEX_PAIRED_TOOL_CALL_ITEM_TYPES,
-    *CODEX_STANDALONE_TOOL_CALL_ITEM_TYPES,
-}
-CODEX_TOOL_OUTPUT_ITEM_TYPES = {
-    "function_call_output",
-    "custom_tool_call_output",
-    "mcp_tool_call_output",
-    "tool_search_output",
-    "local_shell_call_output",
-}
+CODEX_PAIRED_TOOL_CALL_ITEM_TYPES = set(CODEX_ITEM_REGISTRY.paired_tool_call_item_types)
+CODEX_STANDALONE_TOOL_CALL_ITEM_TYPES = set(CODEX_ITEM_REGISTRY.standalone_tool_call_item_types)
+CODEX_TOOL_CALL_ITEM_TYPES = set(CODEX_ITEM_REGISTRY.tool_call_item_types)
+CODEX_TOOL_OUTPUT_ITEM_TYPES = set(CODEX_ITEM_REGISTRY.tool_output_item_types)
 CODEX_TOOL_OUTPUT_TYPES_BY_CALL_TYPE = {
-    "function_call": {"function_call_output", "mcp_tool_call_output"},
-    "local_shell_call": {"function_call_output", "local_shell_call_output"},
-    "custom_tool_call": {"custom_tool_call_output"},
-    "tool_search_call": {"tool_search_output"},
+    call_type: set(output_types)
+    for call_type, output_types in CODEX_ITEM_REGISTRY.tool_output_types_by_call_type.items()
 }
-CODEX_TOOL_CALL_TYPES_BY_OUTPUT_TYPE: dict[str, set[str]] = {}
-for _call_type, _output_types in CODEX_TOOL_OUTPUT_TYPES_BY_CALL_TYPE.items():
-    for _output_type in _output_types:
-        CODEX_TOOL_CALL_TYPES_BY_OUTPUT_TYPE.setdefault(_output_type, set()).add(_call_type)
+CODEX_TOOL_CALL_TYPES_BY_OUTPUT_TYPE = {
+    output_type: set(call_types)
+    for output_type, call_types in CODEX_ITEM_REGISTRY.tool_call_types_by_output_type.items()
+}
+CODEX_COMPACTION_ITEM_TYPES = set(CODEX_ITEM_REGISTRY.compaction_item_types)
+CODEX_ITEM_DISPLAY_HINTS_BY_ITEM_TYPE = {
+    item_type: dict(hint)
+    for item_type, hint in CODEX_ITEM_REGISTRY.display_hints_by_item_type.items()
+}
 CONTEXT_EDITABLE_PROVIDER_ITEM_TYPES = {
     "message",
     "reasoning",
-    "compaction",
-    "compaction_summary",
+    *CODEX_COMPACTION_ITEM_TYPES,
     *CODEX_TOOL_CALL_ITEM_TYPES,
     *CODEX_TOOL_OUTPUT_ITEM_TYPES,
 }

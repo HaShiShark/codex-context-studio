@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import copy
-import io
+import json
 import sys
 import tempfile
 from http import HTTPStatus
@@ -13,12 +13,18 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from backend import proxy_server  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+
+from backend import proxy_fastapi  # noqa: E402
 from backend.compact_controller import (  # noqa: E402
     LOCAL_COMPACT_PROMPT_PREFIX,
     LOCAL_COMPACT_SUMMARY_PREFIX,
     MANUAL_LOCAL_COMPACT_PROMPT,
 )
+from backend.proxy_core import ProxyState  # noqa: E402
+from backend.proxy_routes_support import CONTEXT_CONTROL_NOTICE_TEXT  # noqa: E402
+from backend.proxy_session_storage import json_loads_value  # noqa: E402
+from backend.proxy_store import ProxySession, ProxyStore, read_message_text  # noqa: E402
 from backend.transcript_codec import input_items_to_transcript, transcript_to_input_items  # noqa: E402
 
 
@@ -40,42 +46,17 @@ def typed_message(role: str, text: str) -> dict[str, Any]:
     return {"type": "message", "role": role, "content": [{"type": "input_text", "text": text}]}
 
 
-def new_store(temp_dir: str) -> proxy_server.ProxyStore:
-    return proxy_server.ProxyStore(Path(temp_dir) / "proxy_state.json")
+def new_store(temp_dir: str) -> ProxyStore:
+    return ProxyStore(Path(temp_dir) / "proxy_state.json")
 
 
-def proxy_items(session: proxy_server.ProxySession) -> list[Any]:
+def proxy_items(session: ProxySession) -> list[Any]:
     return transcript_to_input_items(session.proxy_state.transcript)
 
 
 def message_text(item: Any) -> str:
     assert isinstance(item, dict)
-    return proxy_server.read_message_text(item)
-
-
-class FakeHandler:
-    def __init__(self, path: str) -> None:
-        self.path = path
-        self.headers: dict[str, str] = {
-            "content-type": "application/json",
-            "content-encoding": "",
-            "content-length": "0",
-        }
-        self.rfile = io.BytesIO(b"")
-        self.status: HTTPStatus | None = None
-        self.payload: dict[str, Any] | None = None
-
-    def _send_json(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
-        self.status = status
-        self.payload = payload
-
-    def _read_json(self) -> dict[str, Any]:
-        raw_body = self.rfile.read(int(self.headers.get("content-length", "0") or "0"))
-        if not raw_body:
-            return {}
-        data = proxy_server.json.loads(raw_body.decode("utf-8"))
-        assert isinstance(data, dict)
-        return data
+    return read_message_text(item)
 
 
 def assert_no_legacy_payload_fields(payload: dict[str, Any]) -> None:
@@ -132,10 +113,10 @@ def test_legacy_override_status_no_longer_drives_main_request_path() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         store = new_store(temp_dir)
         stale_input = [message("user", "old mirrored text")]
-        store.sessions[SESSION_ID] = proxy_server.ProxySession(
+        store.sessions[SESSION_ID] = ProxySession(
             id=SESSION_ID,
             title="Legacy Override Session",
-            proxy_state=proxy_server.ProxyState(
+            proxy_state=ProxyState(
                 transcript=input_items_to_transcript(stale_input),
                 codex_input_cursor=copy.deepcopy(stale_input),
             ),
@@ -242,10 +223,10 @@ def test_persistence_writes_proxy_session_folder_layout() -> None:
         session = store.sessions[SESSION_ID]
         session_dir = store._session_dir(session)
 
-        index = proxy_server.json_loads_value((Path(temp_dir) / "index.json").read_text(encoding="utf-8"), {})
-        session_json = proxy_server.json_loads_value((session_dir / "session.json").read_text(encoding="utf-8"), {})
-        transcript_json = proxy_server.json_loads_value((session_dir / "transcript.json").read_text(encoding="utf-8"), {})
-        cursor_json = proxy_server.json_loads_value((session_dir / "cursor.json").read_text(encoding="utf-8"), {})
+        index = json_loads_value((Path(temp_dir) / "index.json").read_text(encoding="utf-8"), {})
+        session_json = json_loads_value((session_dir / "session.json").read_text(encoding="utf-8"), {})
+        transcript_json = json_loads_value((session_dir / "transcript.json").read_text(encoding="utf-8"), {})
+        cursor_json = json_loads_value((session_dir / "cursor.json").read_text(encoding="utf-8"), {})
 
         assert index["active_session_id"] == SESSION_ID
         assert session_json["id"] == SESSION_ID
@@ -266,40 +247,36 @@ def test_persistence_writes_proxy_session_folder_layout() -> None:
 
 def test_transcript_replace_route_updates_proxy_state() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
-        original_store = proxy_server.STORE
+        original_store = proxy_fastapi.STORE
         try:
-            proxy_server.STORE = new_store(temp_dir)
+            proxy_fastapi.STORE = new_store(temp_dir)
             replacement_input = [
                 message("developer", "new instructions"),
                 message("user", "replacement"),
             ]
-            payload_bytes = proxy_server.json.dumps(
-                {"transcript": input_items_to_transcript(replacement_input)}
-            ).encode("utf-8")
-            handler = FakeHandler(f"/api/proxy/sessions/{SESSION_ID}/transcript")
-            handler.rfile = io.BytesIO(payload_bytes)
-            handler.headers["content-length"] = str(len(payload_bytes))
+            with TestClient(proxy_fastapi.app) as client:
+                response = client.post(
+                    f"/api/proxy/sessions/{SESSION_ID}/transcript",
+                    content=json.dumps({"transcript": input_items_to_transcript(replacement_input)}),
+                    headers={"content-type": "application/json"},
+                )
 
-            proxy_server.Handler.do_POST(handler)  # type: ignore[arg-type]
-
-            assert handler.status is None or handler.status == HTTPStatus.OK
-            assert handler.payload is not None
-            assert handler.payload["changed"] is True
-            assert_no_legacy_payload_fields(handler.payload)
-            session = proxy_server.STORE.sessions[SESSION_ID]
+            assert response.status_code == HTTPStatus.OK
+            payload = response.json()
+            assert payload["changed"] is True
+            assert_no_legacy_payload_fields(payload)
+            session = proxy_fastapi.STORE.sessions[SESSION_ID]
             assert proxy_items(session) == replacement_input
             assert session.proxy_state.codex_input_cursor == []
         finally:
-            proxy_server.STORE = original_store
+            proxy_fastapi.STORE = original_store
 
 
 def test_session_reset_route_is_removed() -> None:
-    handler = FakeHandler(f"/api/proxy/sessions/{SESSION_ID}/reset")
+    with TestClient(proxy_fastapi.app) as client:
+        response = client.post(f"/api/proxy/sessions/{SESSION_ID}/reset")
 
-    proxy_server.Handler.do_POST(handler)  # type: ignore[arg-type]
-
-    assert handler.status == HTTPStatus.NOT_FOUND
-    assert handler.payload == {"error": "not found"}
+    assert response.status_code in {HTTPStatus.NOT_FOUND, HTTPStatus.METHOD_NOT_ALLOWED}
 
 
 def test_transcript_replace_does_not_accept_legacy_record_payload() -> None:
@@ -380,7 +357,7 @@ def test_control_intercept_fallback_keeps_control_turn_in_context() -> None:
         assert session.proxy_state.codex_input_cursor == control_input
         assert session.request_log[-1]["kind"] == "context_control_intercept"
 
-        notice = message("assistant", proxy_server.CONTEXT_CONTROL_NOTICE_TEXT)
+        notice = message("assistant", CONTEXT_CONTROL_NOTICE_TEXT)
         next_user = message("user", "continue after opening context")
         next_input = [*copy.deepcopy(control_input), copy.deepcopy(notice), copy.deepcopy(next_user)]
 
@@ -480,6 +457,41 @@ def test_compact_failure_rolls_back_transcript_and_cursor() -> None:
         assert session.last_error == "upstream failed"
 
 
+def test_prune_sessions_missing_from_codex_deletes_only_missing_proxy_sessions() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        store = new_store(temp_dir)
+        keep_id = "019f1c86-0574-73a0-8f5e-b40cb6184de9"
+        delete_id = "019f1c7c-a3ed-7b52-9258-e9f577da3d55"
+        fallback_id = "session-fallback"
+        for session_id in (keep_id, delete_id, fallback_id):
+            store.begin_request(
+                session_id,
+                {"input": [message("user", session_id)]},
+                {"x-codex-session-id": session_id},
+            )
+
+        delete_dir = store.storage.session_dir(delete_id)
+        fallback_dir = store.storage.session_dir(fallback_id)
+        assert delete_dir.exists()
+        assert fallback_dir.exists()
+
+        result = store.prune_sessions_missing_from_codex({keep_id})
+
+        assert result["status"] == "ok"
+        assert result["deleted_session_ids"] == [delete_id]
+        assert keep_id in store.sessions
+        assert fallback_id in store.sessions
+        assert delete_id not in store.sessions
+        assert not delete_dir.exists()
+        assert fallback_dir.exists()
+
+        index = json_loads_value((Path(temp_dir) / "index.json").read_text(encoding="utf-8"), {})
+        indexed_ids = {item["id"] for item in index["sessions"]}
+        assert keep_id in indexed_ids
+        assert fallback_id in indexed_ids
+        assert delete_id not in indexed_ids
+
+
 def main() -> None:
     tests = [
         test_begin_request_and_complete_response_use_proxy_state,
@@ -494,6 +506,7 @@ def main() -> None:
         test_control_intercept_fallback_keeps_control_turn_in_context,
         test_compact_request_is_handled_by_proxy_core_state,
         test_compact_failure_rolls_back_transcript_and_cursor,
+        test_prune_sessions_missing_from_codex_deletes_only_missing_proxy_sessions,
     ]
     for test in tests:
         test()

@@ -27,6 +27,8 @@ from backend.web_constants import (
     ATTACHMENTS_DIR,
     ATTACHMENTS_ROUTE,
     CODEX_LOCAL_SESSIONS_DIR,
+    CODEX_COMPACTION_ITEM_TYPES,
+    CODEX_ITEM_DISPLAY_HINTS_BY_ITEM_TYPE,
     CODEX_PAIRED_TOOL_CALL_ITEM_TYPES,
     CODEX_STANDALONE_TOOL_CALL_ITEM_TYPES,
     CODEX_TOOL_CALL_ITEM_TYPES,
@@ -1521,14 +1523,9 @@ def tool_display_title_from_provider_item(item: dict[str, Any] | None) -> str:
     item_type = provider_item_type(item)
     if item_type in {"function_call", "custom_tool_call"}:
         return sanitize_text(item.get("name") or "").strip() or "tool"
-    if item_type == "local_shell_call":
-        return "local_shell"
-    if item_type == "tool_search_call":
-        return "tool_search"
-    if item_type == "web_search_call":
-        return "web_search"
-    if item_type == "image_generation_call":
-        return "image_generation"
+    display_hint = CODEX_ITEM_DISPLAY_HINTS_BY_ITEM_TYPE.get(item_type, {})
+    if display_hint.get("title"):
+        return display_hint["title"]
     if item_type in CODEX_TOOL_OUTPUT_ITEM_TYPES:
         return sanitize_text(item.get("name") or item_type or "tool_output").strip()
     return item_type or "tool"
@@ -1626,7 +1623,7 @@ def provider_item_detail(item: dict[str, Any], item_number: int) -> dict[str, ob
         detail["preview"] = block_text_preview(output, limit=180)
         return detail
 
-    if item_type in {"compaction", "compaction_summary"}:
+    if item_type in CODEX_COMPACTION_ITEM_TYPES:
         encoded_content = sanitize_text(item.get("encrypted_content") or "")
         detail["encoded_content_preview"] = block_text_preview(encoded_content, limit=220)
         detail["preview"] = block_text_preview(encoded_content, limit=180)
@@ -1762,7 +1759,7 @@ def context_model_blocks_from_provider_items(
             )
             continue
 
-        if item_type in {"compaction", "compaction_summary"}:
+        if item_type in CODEX_COMPACTION_ITEM_TYPES:
             append_context_model_text_block(
                 blocks,
                 node_number=node_number,
@@ -1896,7 +1893,7 @@ def compile_record_from_provider_items(
                 )
             continue
 
-        if item_type in {"compaction", "compaction_summary"}:
+        if item_type in CODEX_COMPACTION_ITEM_TYPES:
             visible_text = visible_text_from_compaction_provider_item(item)
             if visible_text:
                 blocks.append(
@@ -2725,7 +2722,7 @@ class ContextWorkbenchDraft:
             return extract_text_from_provider_message_content(item.get("content"))
         if item_type == "reasoning":
             return provider_payload_text(item.get("summary") or item.get("content") or item.get("text"))
-        if item_type in {"compaction", "compaction_summary"}:
+        if item_type in CODEX_COMPACTION_ITEM_TYPES:
             return visible_text_from_compaction_provider_item(item)
         if item_type in CODEX_TOOL_CALL_ITEM_TYPES:
             return provider_payload_text(tool_call_arguments_value(item))

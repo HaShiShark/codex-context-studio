@@ -518,10 +518,8 @@ function Get-ProjectPortOwners {
       if ($commandLine -and (
           $commandLine.Contains($projectRoot.Path) -or
           $commandLine -like "*proxy_fastapi.py*" -or
-          $commandLine -like "*proxy_server.py*" -or
           $commandLine -like "*web_server.py*" -or
           $commandLine -like "*backend.proxy_fastapi*" -or
-          $commandLine -like "*backend.proxy_server*" -or
           $commandLine -like "*backend.web_server*" -or
           $commandLine -like "*hash-proxy-server*" -or
           $commandLine -like "*hash-web-server*" -or
@@ -570,10 +568,8 @@ function Get-ProjectServiceProcesses {
         $inProject = $commandLine.Contains($projectPath)
         (
           $commandLine -like "*proxy_fastapi.py*" -or
-          $commandLine -like "*proxy_server.py*" -or
           $commandLine -like "*web_server.py*" -or
           $commandLine -like "*backend.proxy_fastapi*" -or
-          $commandLine -like "*backend.proxy_server*" -or
           $commandLine -like "*backend.web_server*" -or
           $commandLine -like "*hash-proxy-server*" -or
           $commandLine -like "*hash-web-server*" -or
@@ -616,9 +612,7 @@ function Test-SourceProxyRunning {
   $owners = Get-ProjectPortOwners -Ports @([int] $proxyPort)
   foreach ($owner in $owners) {
     if ($owner.CommandLine -like "*proxy_fastapi.py*" -or
-        $owner.CommandLine -like "*proxy_server.py*" -or
-        $owner.CommandLine -like "*backend.proxy_fastapi*" -or
-        $owner.CommandLine -like "*backend.proxy_server*") {
+        $owner.CommandLine -like "*backend.proxy_fastapi*") {
       return $true
     }
   }
@@ -795,6 +789,18 @@ function Start-DesktopServices {
   return $process.Id
 }
 
+function Invoke-ProxySessionPrune {
+  $url = "http://${serviceProbeHost}:$proxyPort/api/proxy/sessions/prune-codex"
+  try {
+    $response = Invoke-RestMethod -Method Post -Uri $url -TimeoutSec 8
+    $deleted = @($response.deleted_session_ids).Count
+    $codexCount = if ($null -ne $response.codex_thread_count) { [int] $response.codex_thread_count } else { 0 }
+    Write-Host "[hash-context] proxy session prune: deleted=$deleted codex_threads=$codexCount"
+  } catch {
+    Write-Host "[hash-context] proxy session prune skipped: $($_.Exception.Message)" -ForegroundColor DarkYellow
+  }
+}
+
 function Update-ServicePid {
   param([int] $ServiceProcessId)
   $state = Read-DesktopState
@@ -928,6 +934,7 @@ switch ($Command) {
     }
     $serviceProcessId = Start-DesktopServices
     Update-ServicePid -ServiceProcessId $serviceProcessId
+    Invoke-ProxySessionPrune
     if ($upstreamInfo.kind -eq "third_party") {
       Write-Host "[hash-context] upstream: $($upstreamInfo.effective_base_url) (third-party)" -ForegroundColor Cyan
     }
@@ -948,6 +955,7 @@ switch ($Command) {
     }
     $serviceProcessId = Start-DesktopServices
     Update-ServicePid -ServiceProcessId $serviceProcessId
+    Invoke-ProxySessionPrune
     if ($upstreamInfo.kind -eq "third_party") {
       Write-Host "[hash-context] upstream: $($upstreamInfo.effective_base_url) (third-party)" -ForegroundColor Cyan
     }
