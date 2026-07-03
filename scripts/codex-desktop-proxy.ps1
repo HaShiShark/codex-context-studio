@@ -129,6 +129,53 @@ function ConvertTo-TomlBasicString {
   return '"' + $Value.Replace("\", "\\").Replace('"', '\"') + '"'
 }
 
+function ConvertFrom-TomlInlineStringArray {
+  param(
+    [string] $Text,
+    [string] $Key
+  )
+
+  $match = [regex]::Match($Text, "(?m)^\s*$([regex]::Escape($Key))\s*=\s*\[(?<body>[^\r\n]*)\]")
+  if (-not $match.Success) {
+    return @()
+  }
+
+  $values = @()
+  $body = $match.Groups["body"].Value
+  $stringMatches = [regex]::Matches($body, '"((?:\\.|[^"\\])*)"|''([^'']*)''')
+  foreach ($stringMatch in $stringMatches) {
+    if ($stringMatch.Groups[1].Success) {
+      $values += ($stringMatch.Groups[1].Value.Replace('\"', '"').Replace('\\', '\'))
+    } elseif ($stringMatch.Groups[2].Success) {
+      $values += $stringMatch.Groups[2].Value
+    }
+  }
+  return $values
+}
+
+function ConvertTo-TomlInlineStringArray {
+  param([string[]] $Values)
+  $quoted = @()
+  foreach ($value in $Values) {
+    $quoted += (ConvertTo-TomlBasicString $value)
+  }
+  return "[ " + ($quoted -join ", ") + " ]"
+}
+
+function Normalize-OriginalNotifyArgs {
+  param([string[]] $NotifyArgs)
+  if (-not $NotifyArgs -or $NotifyArgs.Count -eq 0) {
+    return @()
+  }
+  if ([string] $NotifyArgs[0] -like "*codex-turn-ended-notify.cmd") {
+    if ($NotifyArgs.Count -gt 1) {
+      return @($NotifyArgs[1..($NotifyArgs.Count - 1)])
+    }
+    return @()
+  }
+  return @($NotifyArgs)
+}
+
 function Remove-DesktopManagedConfig {
   param(
     [string] $Text,
@@ -137,6 +184,7 @@ function Remove-DesktopManagedConfig {
 
   $clean = $Text
   $clean = [regex]::Replace($clean, '(?m)^\s*hooks\.UserPromptSubmit\s*=.*\r?\n?', '')
+  $clean = [regex]::Replace($clean, '(?m)^\s*notify\s*=\s*\[[^\r\n]*\]\s*\r?\n?', '')
   $clean = [regex]::Replace($clean, '(?ms)(?:^|\r?\n)\s*\[model_providers\.hash-context\]\s*\r?\n.*?(?=(?:\r?\n\s*\[)|\z)', "`r`n")
   if ($RemoveContextWindow) {
     $clean = [regex]::Replace($clean, '(?m)^\s*model_context_window\s*=\s*\d+\s*\r?\n?', '')
@@ -361,12 +409,16 @@ function Set-DesktopConfigEnabled {
   if ($originalProvider -eq "hash-context" -and $existingState -and $existingState.original_provider) {
     $originalProvider = [string] $existingState.original_provider
   }
+  $originalNotifyArgs = Normalize-OriginalNotifyArgs -NotifyArgs (ConvertFrom-TomlInlineStringArray -Text $text -Key "notify")
 
   $text = Remove-DesktopManagedConfig -Text $text -RemoveContextWindow:(-not $RequiresOpenAiAuth)
   $text = $text -replace '(?m)^\s*model_provider\s*=\s*"[^"]*"\s*\r?\n?', ''
 
   $hookPath = (Join-Path $projectRoot.Path "scripts\codex-context-hook.cmd").Replace("\", "/")
   $hookCommand = ConvertTo-TomlBasicString $hookPath
+  $notifyPath = (Join-Path $projectRoot.Path "scripts\codex-turn-ended-notify.cmd").Replace("\", "/")
+  $notifyArgs = @($notifyPath) + @($originalNotifyArgs)
+  $notifyConfig = ConvertTo-TomlInlineStringArray -Values $notifyArgs
 
   if ($text -notmatch '(?ms)\bhooks\s*=\s*true') {
     if ($text -match '(?m)^\[features\]') {
@@ -393,6 +445,7 @@ supports_websockets = false
 
   $hookBlock = @"
 hooks.UserPromptSubmit = [{ matcher = "*", hooks = [{ type = "command", command = $hookCommand, timeout = 10, statusMessage = "HashContext" }] }]
+notify = $notifyConfig
 "@
 
   $text = $text.TrimEnd()
@@ -420,6 +473,7 @@ hooks.UserPromptSubmit = [{ matcher = "*", hooks = [{ type = "command", command 
     upstream_base_url = if ($UpstreamInfo) { [string] $UpstreamInfo.effective_base_url } else { "" }
     upstream_api_key = if ($UpstreamInfo) { [string] $UpstreamInfo.api_key } else { "" }
     upstream_provider_id = if ($UpstreamInfo) { [string] $UpstreamInfo.provider_id } else { "" }
+    original_notify_args = @($originalNotifyArgs)
   }
   Save-DesktopState $stateData
 }
@@ -437,6 +491,13 @@ function Restore-DesktopConfig {
   }
 
   $text = Repair-ProjectTables -Text (Get-Content -Raw -Path $configPath)
+  $currentNotifyArgs = Normalize-OriginalNotifyArgs -NotifyArgs (ConvertFrom-TomlInlineStringArray -Text $text -Key "notify")
+  $originalNotifyArgs = @()
+  if ($state.PSObject.Properties.Name -contains "original_notify_args") {
+    $originalNotifyArgs = @($state.original_notify_args)
+  } elseif ($currentNotifyArgs.Count -gt 0) {
+    $originalNotifyArgs = @($currentNotifyArgs)
+  }
 
   $text = Remove-DesktopManagedConfig -Text $text -RemoveContextWindow:($state.upstream_kind -eq "third_party")
   $text = $text -replace '(?m)^\s*model_provider\s*=\s*"hash-context"\s*\r?\n?', ''
@@ -445,6 +506,11 @@ function Restore-DesktopConfig {
   if ($text -and $text -notmatch '(?m)^\s*model_provider\s*=' -and $state.original_provider) {
     $providerId = [string] $state.original_provider
     $text = "model_provider = `"$providerId`"`r`n`r`n" + $text
+  }
+
+  if ($originalNotifyArgs.Count -gt 0) {
+    $notifyConfig = ConvertTo-TomlInlineStringArray -Values @($originalNotifyArgs)
+    $text = "notify = $notifyConfig`r`n" + $text.TrimStart()
   }
 
   if ($text.Trim()) {

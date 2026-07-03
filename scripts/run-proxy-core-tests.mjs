@@ -9,6 +9,7 @@ const tests = [
   'scripts/test_transcript_codec.py',
   'scripts/test_cursor_delta.py',
   'scripts/test_compact_controller.py',
+  'scripts/test_prompt_settings.py',
   'scripts/test_proxy_core.py',
   'scripts/test_context_hook.py',
   'scripts/test_workbench_transcript_commit.py',

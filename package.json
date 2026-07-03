@@ -33,7 +33,6 @@
     "test:proxy-core": "node scripts/run-proxy-core-tests.mjs",
     "test:frontend-contract": "node scripts/run-frontend-contract-tests.mjs",
     "test:compact-proxy": "npm run test:proxy-core",
-    "test:compact-proxy:legacy": "node scripts/run-compact-proxy-test.mjs",
     "build": "npm run build:react",
     "build:react": "vite build --config react_app/vite.config.ts",
     "build:python": "node scripts/build-python.mjs",

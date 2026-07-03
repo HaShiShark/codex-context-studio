@@ -7,7 +7,7 @@ import uuid
 from typing import Any, Sequence, TypedDict
 
 from .codex_item_registry import CODEX_ITEM_REGISTRY
-from .codex_input_cursor import canonical_provider_item_for_request
+from .codex_input_cursor import normalize_provider_item
 
 
 class NodeItem(TypedDict):
@@ -296,18 +296,6 @@ def _item_role(item: dict[str, Any]) -> str:
 
 
 def _source_fingerprint(provider_item: dict[str, Any]) -> str:
-    normalized = _normalize_for_source_map(canonical_provider_item_for_request(provider_item))
+    normalized = normalize_provider_item(provider_item)
     payload = json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _normalize_for_source_map(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {
-            key: _normalize_for_source_map(inner_value)
-            for key, inner_value in value.items()
-            if key != "id"
-        }
-    if isinstance(value, list):
-        return [_normalize_for_source_map(item) for item in value]
-    return value

@@ -23,6 +23,10 @@ try:
         handle_request as proxy_core_handle_request,
         handle_response_completed as proxy_core_handle_response_completed,
     )
+    from .node_locking import (
+        effective_node_lock_overrides,
+        transcript_node_ids,
+    )
     from .proxy_session_storage import ProxySessionStorage
     from .transcript_codec import (
         input_items_to_transcript as core_input_items_to_transcript,
@@ -36,6 +40,10 @@ except ImportError:
         ProxyState,
         handle_request as proxy_core_handle_request,
         handle_response_completed as proxy_core_handle_response_completed,
+    )
+    from backend.node_locking import (
+        effective_node_lock_overrides,
+        transcript_node_ids,
     )
     from backend.proxy_session_storage import ProxySessionStorage
     from backend.transcript_codec import (
@@ -376,6 +384,13 @@ class ProxySession:
     last_codex_session_headers: dict[str, str] = field(default_factory=dict)
     last_turn_metadata_header: str = ""
     last_error: str = ""
+    node_locks: dict[str, bool] = field(default_factory=dict)
+    node_lock_revision: int = 0
+    context_request_id: str = ""
+    context_started_at: str = ""
+    main_turn_id: str = ""
+    main_turn_started_at: str = ""
+    main_turn_updated_at: str = ""
     created_at: str = field(default_factory=utc_timestamp)
     updated_at: str = field(default_factory=utc_timestamp)
     payloads_loaded: bool = True
@@ -393,16 +408,39 @@ class ProxySession:
             return summary
         return usage_summary_from_events(self.id, self.usage_events)
 
+    def effective_status(self) -> str:
+        if self.status in {"running", "compacting"} and self.inflight_before_request is None:
+            return "mirror"
+        return self.status
+
+    def is_main_turn_running(self) -> bool:
+        return bool(self.main_turn_id)
+
+    def clear_main_turn(self) -> None:
+        self.main_turn_id = ""
+        self.main_turn_started_at = ""
+        self.main_turn_updated_at = ""
+
     def metadata_payload(self) -> dict[str, Any]:
+        self.node_locks = effective_node_lock_overrides(self.node_locks, self.proxy_state.transcript)
+        effective_status = self.effective_status()
+        is_main_turn_running = self.is_main_turn_running()
         return {
             "id": self.id,
             "title": self.title,
-            "status": self.status,
-            "is_running": self.status in {"running", "compacting"},
+            "status": effective_status,
+            "is_running": effective_status in {"running", "compacting"},
+            "is_context_running": bool(self.context_request_id),
+            "is_main_turn_running": is_main_turn_running,
+            "main_turn_id": self.main_turn_id if is_main_turn_running else "",
+            "main_turn_started_at": self.main_turn_started_at if is_main_turn_running else "",
+            "main_turn_updated_at": self.main_turn_updated_at if is_main_turn_running else "",
             "last_error": self.last_error,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "transcript_version": self.transcript_version,
+            "node_locks": copy.deepcopy(self.node_locks),
+            "node_lock_revision": int(self.node_lock_revision or 0),
             "usage_summary": self.usage_summary(),
         }
 
@@ -476,6 +514,7 @@ class ProxyStore:
         storage_root = path if path.suffix == "" else path.parent
         self.storage = ProxySessionStorage(storage_root)
         self.lock = threading.RLock()
+        self.context_condition = threading.Condition(self.lock)
         self.sessions: dict[str, ProxySession] = {}
         self.active_session_id = ""
         self.load()
@@ -523,6 +562,8 @@ class ProxyStore:
             request_log=[],
             usage_events=usage_events,
             usage_summary_cache=usage_summary_cache,
+            node_locks=effective_node_lock_overrides(metadata.get("node_locks"), proxy_state.transcript),
+            node_lock_revision=int(metadata.get("node_lock_revision") or 0),
             last_codex_session_headers={
                 str(key): str(value)
                 for key, value in (metadata.get("last_codex_session_headers") or {}).items()
@@ -553,6 +594,8 @@ class ProxyStore:
             session.workbench_history = loaded.workbench_history
             session.usage_events = loaded.usage_events
             session.usage_summary_cache = loaded.usage_summary_cache
+            session.node_locks = loaded.node_locks
+            session.node_lock_revision = loaded.node_lock_revision
             session.last_codex_session_headers = loaded.last_codex_session_headers
             session.last_turn_metadata_header = loaded.last_turn_metadata_header
             session.last_error = loaded.last_error
@@ -563,6 +606,7 @@ class ProxyStore:
 
     def _persist_session(self, session: ProxySession) -> None:
         _ensure_session_proxy_state(session)
+        session.node_locks = effective_node_lock_overrides(session.node_locks, session.proxy_state.transcript)
         session.request_log = session.request_log[-20:]
         session.usage_events = session.usage_events[-USAGE_EVENT_LIMIT:]
         session.usage_summary_cache = session.usage_summary()
@@ -757,6 +801,7 @@ class ProxyStore:
             result = proxy_core_handle_response_completed(draft_state, response_items, text)
             session.proxy_state = draft_state
             _sync_session_from_proxy_state(session)
+            session.node_locks = effective_node_lock_overrides(session.node_locks, session.proxy_state.transcript)
             if session.proxy_state.transcript != previous_transcript:
                 session.transcript_version += 1
             session.status = "mirror"
@@ -879,6 +924,7 @@ class ProxyStore:
             next_input = core_transcript_to_input_items(next_core_transcript)
             session.proxy_state.transcript = copy.deepcopy(next_core_transcript)
             session.proxy_state.tail_conflict = False
+            session.node_locks = effective_node_lock_overrides(session.node_locks, next_core_transcript)
             session.transcript_version += 1
             _sync_session_from_proxy_state(session)
             session.status = "mirror"
@@ -888,6 +934,123 @@ class ProxyStore:
             payload = session.to_payload()
             payload["changed"] = previous_input != next_input
             return payload
+
+    def set_node_lock(
+        self,
+        session_id: str,
+        node_id: str,
+        locked: bool,
+        *,
+        expected_revision: int | None = None,
+    ) -> dict[str, Any]:
+        safe_session_id = sanitize_id(session_id)
+        safe_node_id = str(node_id or "").strip()
+        if not safe_session_id:
+            raise ValueError("session_id is required")
+        if not safe_node_id:
+            raise ValueError("node_id is required")
+
+        with self.lock:
+            session = self.sessions.get(safe_session_id)
+            if session is None:
+                raise KeyError("session not found")
+            self._ensure_session_payloads_loaded(session)
+            _ensure_session_proxy_state(session)
+            if session.context_request_id:
+                raise RuntimeError("context_model_running")
+            current_revision = int(session.node_lock_revision or 0)
+            if expected_revision is not None and int(expected_revision) != current_revision:
+                raise RuntimeError("node_lock_revision_mismatch")
+
+            session.node_locks = effective_node_lock_overrides(session.node_locks, session.proxy_state.transcript)
+            if safe_node_id not in transcript_node_ids(session.proxy_state.transcript):
+                raise ValueError("node_id not found")
+
+            previous_locks = dict(session.node_locks)
+            session.node_locks[safe_node_id] = bool(locked)
+            session.node_locks = effective_node_lock_overrides(session.node_locks, session.proxy_state.transcript)
+            if session.node_locks != previous_locks:
+                session.node_lock_revision = current_revision + 1
+                session.updated_at = utc_timestamp()
+                self.save(session.id)
+            return session.to_payload()
+
+    def set_context_run_state(self, session_id: str, request_id: str, running: bool) -> dict[str, Any]:
+        safe_session_id = sanitize_id(session_id)
+        safe_request_id = str(request_id or "").strip()
+        if not safe_session_id:
+            raise ValueError("session_id is required")
+        if not safe_request_id:
+            raise ValueError("request_id is required")
+
+        with self.context_condition:
+            session = self.sessions.get(safe_session_id)
+            if session is None:
+                session = ProxySession(id=safe_session_id, title=f"Codex {safe_session_id[:8]}")
+                self.sessions[safe_session_id] = session
+            else:
+                self._ensure_session_payloads_loaded(session)
+
+            if running:
+                if session.context_request_id and session.context_request_id != safe_request_id:
+                    raise RuntimeError("context_model_running")
+                session.context_request_id = safe_request_id
+                session.context_started_at = utc_timestamp()
+            elif session.context_request_id == safe_request_id:
+                session.context_request_id = ""
+                session.context_started_at = ""
+
+            session.updated_at = utc_timestamp()
+            self.context_condition.notify_all()
+            return session.to_payload()
+
+    def set_main_turn_state(self, session_id: str, turn_id: str, running: bool) -> dict[str, Any]:
+        safe_session_id = sanitize_id(session_id)
+        safe_turn_id = str(turn_id or "").strip()
+        if not safe_session_id:
+            raise ValueError("session_id is required")
+
+        with self.lock:
+            session = self.sessions.get(safe_session_id)
+            if session is None:
+                if not running:
+                    raise KeyError("session not found")
+                session = ProxySession(id=safe_session_id, title=f"Codex {safe_session_id[:8]}")
+                self.sessions[safe_session_id] = session
+            else:
+                self._ensure_session_payloads_loaded(session)
+
+            if running:
+                if not safe_turn_id:
+                    safe_turn_id = uuid.uuid4().hex
+                timestamp = utc_timestamp()
+                if session.main_turn_id != safe_turn_id:
+                    session.main_turn_started_at = timestamp
+                session.main_turn_id = safe_turn_id
+                session.main_turn_updated_at = timestamp
+                self.active_session_id = safe_session_id
+            elif not safe_turn_id or session.main_turn_id == safe_turn_id:
+                session.clear_main_turn()
+
+            session.updated_at = utc_timestamp()
+            return session.to_payload()
+
+    def wait_context_idle(self, session_id: str, timeout_seconds: float = 900.0) -> bool:
+        safe_session_id = sanitize_id(session_id)
+        if not safe_session_id:
+            return True
+
+        deadline = time.monotonic() + max(0.1, float(timeout_seconds or 0.1))
+        with self.context_condition:
+            while True:
+                session = self.sessions.get(safe_session_id)
+                if session is None or not session.context_request_id:
+                    return True
+
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self.context_condition.wait(min(remaining, 1.0))
 
 
 STORE = ProxyStore(STATE_PATH)

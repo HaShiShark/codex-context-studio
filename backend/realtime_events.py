@@ -51,6 +51,7 @@ def session_status(session: dict[str, Any], *, reason: str) -> dict[str, Any]:
         "session_id": _session_id(session),
         "status": str(session.get("status") or "mirror"),
         "is_running": bool(session.get("is_running")),
+        "is_main_turn_running": bool(session.get("is_main_turn_running")),
         "last_error": str(session.get("last_error") or ""),
         "reason": reason,
         "session": _session_metadata(session),

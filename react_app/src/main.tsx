@@ -17,6 +17,8 @@ const phosphorIconCodes: Record<string, string> = {
   'ph-circle-notch': '\\eb44',
   'ph-copy': '\\e1ca',
   'ph-cpu': '\\e610',
+  'ph-arrows-in-simple': '\\e09e',
+  'ph-arrows-out-simple': '\\e0a6',
   'ph-file-text': '\\e23a',
   'ph-gear': '\\e270',
   'ph-hand-pointing': '\\e29a',

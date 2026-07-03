@@ -14,6 +14,7 @@ from typing import Any
 
 from .codex_input_cursor import fingerprint_provider_item
 from .transcript_codec import input_items_to_transcript, transcript_to_input_items
+from simple_agent.config import load_settings
 
 
 TURN_METADATA_KEY = "x-codex-turn-metadata"
@@ -293,7 +294,10 @@ def is_compact_request(body: Mapping[str, Any] | None) -> bool:
 def replacement_local_compact_prompt(compact_kind: str) -> str:
     """Return the custom local compact prompt for ``manual`` or ``auto``."""
 
-    return AUTO_LOCAL_COMPACT_PROMPT if compact_kind == "auto" else MANUAL_LOCAL_COMPACT_PROMPT
+    settings = load_settings()
+    if compact_kind == "auto":
+        return str(getattr(settings, "auto_local_compact_prompt", "") or "").strip() or AUTO_LOCAL_COMPACT_PROMPT
+    return str(getattr(settings, "manual_local_compact_prompt", "") or "").strip() or MANUAL_LOCAL_COMPACT_PROMPT
 
 
 def replace_last_local_compact_prompt(
@@ -449,7 +453,18 @@ def is_local_compact_prompt_text(text: str) -> bool:
     """Return true for original or proxy-provided local compact prompts."""
 
     value = str(text or "")
-    return is_codex_original_local_compact_prompt_text(value) or value in CUSTOM_LOCAL_COMPACT_PROMPTS
+    return is_codex_original_local_compact_prompt_text(value) or value in current_local_compact_prompt_texts()
+
+
+def current_local_compact_prompt_texts() -> tuple[str, ...]:
+    settings = load_settings()
+    prompts = [
+        MANUAL_LOCAL_COMPACT_PROMPT,
+        AUTO_LOCAL_COMPACT_PROMPT,
+        str(getattr(settings, "manual_local_compact_prompt", "") or "").strip(),
+        str(getattr(settings, "auto_local_compact_prompt", "") or "").strip(),
+    ]
+    return tuple(prompt for prompt in prompts if prompt)
 
 
 def is_local_compact_summary_text(text: str) -> bool:

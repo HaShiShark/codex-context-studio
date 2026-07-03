@@ -30,6 +30,8 @@ interface ContextMapNodeListProps {
   onJumpToMessage: (index: number) => void;
   onGutterMouseDown: (index: number, event: ReactMouseEvent<HTMLButtonElement>) => void;
   onGutterKeyDown: (index: number, event: ReactKeyboardEvent<HTMLButtonElement>) => void;
+  isNodeLockDisabled: boolean;
+  nodeLockPendingIds: Set<string>;
 }
 
 interface ContextMapNodeRowProps {
@@ -38,8 +40,9 @@ interface ContextMapNodeRowProps {
   index: number;
   isExpanded: boolean;
   isInteractive: boolean;
-  isInternal: boolean;
-  isSelectable: boolean;
+  isLocked: boolean;
+  isLockDisabled: boolean;
+  isLockPending: boolean;
   isSelected: boolean;
   message: MessageRecord;
   stage: 0 | 1 | 2;
@@ -60,8 +63,9 @@ const ContextMapNodeRow = memo(function ContextMapNodeRow({
   index,
   isExpanded,
   isInteractive,
-  isInternal,
-  isSelectable,
+  isLocked,
+  isLockDisabled,
+  isLockPending,
   isSelected,
   message,
   stage,
@@ -75,29 +79,32 @@ const ContextMapNodeRow = memo(function ContextMapNodeRow({
 }: ContextMapNodeRowProps) {
   const roleClass = contextNodeClassName(message.role);
   const selectedClass = isSelected ? 'selected' : '';
-  const lockedClass = isInternal ? 'locked' : '';
+  const lockedClass = isLocked ? 'locked' : '';
   const canJumpToChat = stage === 1;
+  const nodeNumberLabel = displayNodeNumber ?? index + 1;
+  const lockTooltip = sidebarText(uiLocale, 'Double-click to lock/unlock', '双击锁定/解锁');
 
   return (
     <div
       className={`context-node-row ${roleClass} ${isExpanded ? 'expanded' : ''} ${selectedClass} ${lockedClass} ${stage === 1 ? 'without-gutter' : ''}`}
       ref={(node) => setNodeRef(index, node)}
     >
-      {stage !== 1 && isSelectable ? (
+      {stage !== 1 ? (
         <button
-          className="context-node-gutter"
+          className={`context-node-gutter ${isLocked ? 'locked' : ''} ${isLockPending ? 'pending' : ''}`}
           type="button"
           onMouseDown={(event) => onGutterMouseDown(index, event)}
           onKeyDown={(event) => onGutterKeyDown(index, event)}
-          aria-label={sidebarText(uiLocale, `Select node ${index + 1}`, `选择第 ${index + 1} 个节点`)}
+          disabled={isLockPending}
+          aria-disabled={isLockDisabled || isLockPending}
+          aria-label={isLocked
+            ? sidebarText(uiLocale, `Unlock node ${nodeNumberLabel}`, `解锁第 ${nodeNumberLabel} 个节点`)
+            : sidebarText(uiLocale, `Select node ${nodeNumberLabel}; double-click to lock`, `选择第 ${nodeNumberLabel} 个节点；双击锁定`)}
           aria-pressed={isSelected}
+          title={lockTooltip}
         >
-          <span>{displayNodeNumber}</span>
+          {isLocked ? <i className="ph-light ph-lock-simple" /> : <span>{displayNodeNumber}</span>}
         </button>
-      ) : stage !== 1 ? (
-        <div className="context-node-gutter locked" aria-hidden="true">
-          <i className="ph-light ph-lock-simple" />
-        </div>
       ) : null}
 
       <div className={`context-map-item ${roleClass} ${isExpanded ? 'expanded' : ''} ${selectedClass}`}>
@@ -172,6 +179,8 @@ function ContextMapNodeList({
   onJumpToMessage,
   onGutterMouseDown,
   onGutterKeyDown,
+  isNodeLockDisabled,
+  nodeLockPendingIds,
 }: ContextMapNodeListProps) {
   return (
     <div className="context-map-scroll-shell" ref={scrollRef}>
@@ -193,8 +202,9 @@ function ContextMapNodeList({
                 index={index}
                 isExpanded={isExpanded}
                 isInteractive={canToggleExpand || canJumpToChat}
-                isInternal={Boolean(meta?.internalKind)}
-                isSelectable={Boolean(meta?.selectable)}
+                isLocked={Boolean(meta?.locked)}
+                isLockDisabled={isNodeLockDisabled}
+                isLockPending={Boolean(message.nodeId && nodeLockPendingIds.has(message.nodeId))}
                 isSelected={isSelected}
                 key={`${message.role}-${index}`}
                 message={message}

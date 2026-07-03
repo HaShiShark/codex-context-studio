@@ -1,49 +1,36 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
-import base64
 import json
-import mimetypes
 import time
 import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
 from http import HTTPStatus
-from pathlib import Path
 from typing import Any
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote, urlparse, urlunparse
 from simple_agent.agent import BridgedFunctionCall, SimpleAgent, ToolEvent, sanitize_text
-from simple_agent.config import CODEX_PROXY_BASE_URL, CODEX_PROXY_PROVIDER_ID, Settings
-from simple_agent.tools import ToolExecution
+from simple_agent.config import CODEX_PROXY_BASE_URL, CODEX_PROXY_PROVIDER_ID, DEFAULT_CODEX_PROXY_MODELS, Settings
+from simple_agent.codex_tool_registry import ToolExecution
 try:
     import tiktoken
 except ImportError:
     tiktoken = None
 
-from backend.web_constants import (
-    ATTACHMENTS_DIR,
-    DATA_URL_PATTERN,
-    MAX_ATTACHMENT_BYTES,
-    MAX_TOTAL_ATTACHMENT_BYTES,
-    PROVIDER_MODEL_TYPES,
-    SessionState,
-)
+from backend.web_constants import PROVIDER_MODEL_TYPES, SessionState
 
 from backend.web_state import AppState
+from backend.compact_controller import AUTO_LOCAL_COMPACT_PROMPT, MANUAL_LOCAL_COMPACT_PROMPT
 
 from backend.web_context import (
     ContextWorkbenchDraft,
     ContextWorkbenchToolRegistry,
-    attachment_url_path,
-    build_attachment_input,
-    build_attachment_path_note,
     build_context_workspace_snapshot,
     editable_context_node_count,
     extract_text_from_provider_message_content,
     model_options,
     normalize_context_chat_history,
-    normalize_provider_items,
     normalize_selected_node_indexes,
     normalize_transcript,
     sanitize_value,
@@ -53,10 +40,10 @@ from backend.web_context import (
 )
 
 def context_workbench_settings_payload(settings: Settings) -> dict[str, object]:
+    default_context_model = sanitize_text(DEFAULT_CODEX_PROXY_MODELS[0].get("id") or "").strip() or "gpt-5.5"
     return {
-        "context_workbench_model": sanitize_text(settings.context_workbench_model or settings.model).strip()
-        or sanitize_text(settings.model).strip()
-        or "gpt-5.5",
+        "context_workbench_model": sanitize_text(settings.context_workbench_model or "").strip()
+        or default_context_model,
         "context_workbench_provider_id": CODEX_PROXY_PROVIDER_ID,
         "context_token_warning_threshold": int(settings.context_token_warning_threshold or 5000),
         "context_token_critical_threshold": int(settings.context_token_critical_threshold or 10000),
@@ -64,6 +51,14 @@ def context_workbench_settings_payload(settings: Settings) -> dict[str, object]:
         "theme_mode": "dark" if sanitize_text(settings.theme_mode or "").strip() == "dark" else "light",
         "ui_font": sanitize_text(settings.ui_font or "").strip() or "Noto Serif SC",
         "ui_font_size": int(settings.ui_font_size or 15),
+        "codex_system_prompt": sanitize_text(settings.codex_system_prompt or "").strip(),
+        "codex_system_prompt_default": sanitize_text(settings.codex_system_prompt_default or "").strip(),
+        "manual_local_compact_prompt": sanitize_text(settings.manual_local_compact_prompt or "").strip()
+        or MANUAL_LOCAL_COMPACT_PROMPT,
+        "manual_local_compact_prompt_default": MANUAL_LOCAL_COMPACT_PROMPT,
+        "auto_local_compact_prompt": sanitize_text(settings.auto_local_compact_prompt or "").strip()
+        or AUTO_LOCAL_COMPACT_PROMPT,
+        "auto_local_compact_prompt_default": AUTO_LOCAL_COMPACT_PROMPT,
     }
 
 def prepare_context_chat_history_for_model(raw_history: Any, *, limit: int = 12) -> list[dict[str, str]]:
@@ -73,7 +68,7 @@ def prepare_context_chat_history_for_model(raw_history: Any, *, limit: int = 12)
     for item in history:
         if item["role"] == "assistant":
             content = sanitize_text(item["content"])
-            if "我已经读完当前上下文了，但这次没能稳定产出文字答复" in content:
+            if "empty response" in content.lower():
                 continue
         filtered.append(item)
 
@@ -81,68 +76,24 @@ def prepare_context_chat_history_for_model(raw_history: Any, *, limit: int = 12)
         return filtered[-limit:]
     return filtered
 
-def extract_response_output_text(response: Any) -> str:
-    direct_text = sanitize_text(getattr(response, "output_text", "") or "").strip()
-    if direct_text:
-        return direct_text
-
-    text_parts: list[str] = []
-    for item in getattr(response, "output", []) or []:
-        if sanitize_text(getattr(item, "type", "")).strip() != "message":
-            continue
-
-        for content_item in getattr(item, "content", None) or []:
-            if sanitize_text(getattr(content_item, "type", "")).strip() != "output_text":
-                continue
-            text_parts.append(sanitize_text(getattr(content_item, "text", "") or ""))
-
-    return sanitize_text("".join(text_parts)).strip()
-
-def response_output_to_turn_items(response: Any) -> tuple[list[dict[str, Any]], list[Any]]:
-    turn_items: list[dict[str, Any]] = []
-    function_calls: list[Any] = []
-
-    for item in getattr(response, "output", []) or []:
-        item_type = sanitize_text(getattr(item, "type", "")).strip()
-        if item_type == "message":
-            role = sanitize_text(getattr(item, "role", "")).strip() or "assistant"
-            text_parts: list[str] = []
-            for content_item in getattr(item, "content", None) or []:
-                if sanitize_text(getattr(content_item, "type", "")).strip() != "output_text":
-                    continue
-                text_parts.append(sanitize_text(getattr(content_item, "text", "") or ""))
-
-            message_text = "".join(text_parts)
-            if message_text.strip():
-                turn_items.append(SimpleAgent._message(role, message_text))
-            continue
-
-        if item_type == "function_call":
-            function_calls.append(item)
-            turn_items.append(
-                {
-                    "type": "function_call",
-                    "call_id": sanitize_text(getattr(item, "call_id", "") or ""),
-                    "name": sanitize_text(getattr(item, "name", "") or ""),
-                    "arguments": sanitize_text(getattr(item, "arguments", "") or "{}") or "{}",
-                }
-            )
-
-    return normalize_provider_items(turn_items), function_calls
-
 def build_context_chat_runtime(
+    settings: Settings,
     session: SessionState,
     *,
     message: str,
     selected_indexes: list[int] | None = None,
 ) -> tuple[str, str, ContextWorkbenchDraft, ContextWorkbenchToolRegistry, list[dict[str, Any]]]:
     safe_selected_indexes = normalize_selected_node_indexes(selected_indexes or [], len(session.transcript))
-    draft = ContextWorkbenchDraft(session.transcript, safe_selected_indexes)
+    draft = ContextWorkbenchDraft(
+        session.transcript,
+        safe_selected_indexes,
+        getattr(session, "node_locks", {}),
+        int(getattr(session, "node_lock_revision", 0) or 0),
+    )
     snapshot = build_context_workspace_snapshot(session, selected_indexes=safe_selected_indexes)
     tool_registry = ContextWorkbenchToolRegistry(
         draft,
         session_title=sanitize_text(session.title or ""),
-        session_scope=sanitize_text(session.scope or ""),
     )
     history = prepare_context_chat_history_for_model(session.context_workbench_history)
 
@@ -161,7 +112,7 @@ def build_context_chat_runtime(
             "developer",
             "\n\n".join(
                 [
-                    "这里是主 Codex 对话的当前上下文快照。本轮回答和编辑都以这份快照为准；前面的右侧手动页历史可能提到旧节点或旧内容。",
+                    "Current Codex context snapshot. Treat this snapshot as the source of truth for this turn. The manual-page chat history may mention stale nodes or stale content.",
                     snapshot,
                 ]
             ),
@@ -175,130 +126,25 @@ def build_context_chat_runtime(
         )
     )
 
-    request_model = sanitize_text(
-        session.agent.settings.context_workbench_model or session.agent.settings.model
-    ).strip() or "gpt-5.5"
-    instructions = (
-        "你是主 Codex 对话的上下文维护助手，运行在右侧手动页中。\n"
-        "目标：维护、查看、压缩或删除主 Codex 的上下文节点。\n"
-        "不要搞混你自己的右侧手动页聊天历史和主 Codex 的聊天历史。\n"
-        "不要继续进行主 Codex 的任务；用户让你处理的是当前主 Codex 上下文。\n"
-        "\n"
-        "你会收到一条 developer 消息，标题为：# 当前主 Codex 上下文快照\n"
-        "这份快照是本轮唯一可信来源。右侧手动页历史仅供参考，节点编号以最新快照为准。\n"
-        "\n"
-        "快照规则：\n"
-        "- user/developer 节点已给全文，assistant 节点只给首句预览。\n"
-        "- 处理 assistant 节点内容前，先用 get_nodes 展开完整 items。\n"
-        "- 纯删除不需要展开。\n"
-        "\n"
-        "工具：\n"
-        "\n"
-        "- get_nodes(node_numbers)\n"
-        "  展开一个或多个节点的完整 item 结构。\n"
-        "  只对 assistant 节点调用；非 assistant 节点全文已在快照中。\n"
-        "  返回 nodes 数组，每个节点含 items 列表，每个 item 有 item_number 和 content/arguments/output。\n"
-        "\n"
-        "- write_nodes(delete?, inserts?)\n"
-        "  节点级批量操作：删除和/或插入节点，一次调用完成所有变更。\n"
-        "  delete：要删除的节点编号列表，引用初始快照，可不连续。\n"
-        "  inserts：[{after: 锁点编号, role: user|assistant|developer, content: 新内容}]\n"
-        "    role 可省略，默认 user；压缩多个节点得到的摘要节点默认也用 user。\n"
-        "    除非用户明确要求插入 assistant/developer 节点，否则不要设置 role。\n"
-        "    after 引用初始快照编号；即使该节点也被删除，位置游标仍然有效；after:0 = 插在最前。\n"
-        "  返回 updated_snapshot，直接用它向用户确认结果。无需额外 confirm 步骤。\n"
-        "  示例（删除 #5-7 替换为摘要，同时纯删 #8）：\n"
-        "  {delete:[5,6,7,8], inserts:[{after:7, content:5-7讨论了X...}]}\n"
-        "\n"
-        "- write_items(node_number, delete?, inserts?)\n"
-        "  节点内 item 级精细操作。先 get_nodes 拿到 item 编号，再调此工具。\n"
-        "  delete：item 编号列表；inserts：[{after: item编号, content: 新内容, kind?: text|tool}]。\n"
-        "  返回简短确认，不返回节点内容。\n"
-        "\n"
-        "推荐工作流：\n"
-        "1. 纯删除任意节点：直接 write_nodes，无需展开。\n"
-        "2. 压缩/替换 assistant 节点：先 get_nodes，再 write_nodes 一次完成所有变更。\n"
-        "3. 删某个 tool 输出：先 get_nodes，再 write_items。\n"
-        "4. write_nodes 返回 updated_snapshot 后直接回复用户，不需要额外确认。\n"
-        "\n"
-        "原则：\n"
-        "- 选最短工具路径，不重复展开，不反复确认显而易见的范围。\n"
-        "- 对于删除 3-50、压缩这些节点等范围指令，直接处理，不过度拆分。\n"
-        "- 模糊请求按节点级/主题级处理，不要默认拆到 item 级。\n"
-        "- 只用用户的语言简短说明操作结果。"
+    default_context_model = sanitize_text(DEFAULT_CODEX_PROXY_MODELS[0].get("id") or "").strip() or "gpt-5.5"
+    request_model = sanitize_text(settings.context_workbench_model or "").strip() or default_context_model
+    instructions = "\n".join(
+        [
+            "You are a context-maintenance assistant for a Codex conversation.",
+            "You run in the manual Context Workbench, not in the main Codex task.",
+            "Maintain, inspect, compress, replace, or delete context nodes only when the user asks.",
+            "Do not continue the main Codex task. Work only on the current context snapshot.",
+            "The developer snapshot is the source of truth for node numbers and content in this turn.",
+            "Locked nodes are omitted from the snapshot and cannot be read, deleted, or edited by tools.",
+            "If a developer node appears in the snapshot, it is unlocked and should be treated like a normal editable node.",
+            "Use get_nodes before editing assistant nodes whose full items are not visible in the snapshot.",
+            "Use write_nodes for node-level delete/insert/replace work. Use write_items only after get_nodes when item-level edits are required.",
+            "For pure deletion, call write_nodes directly; no extra confirmation step is needed.",
+            "When write_nodes returns an updated snapshot, summarize the result to the user briefly.",
+            "Prefer the shortest adequate tool path and avoid repeating read-only tool calls.",
+        ]
     )
     return instructions, request_model, draft, tool_registry, context_input
-
-def resolve_context_workbench_provider_id(settings: Settings, model_id: str) -> str:
-    requested_provider_id = sanitize_text(
-        settings.context_workbench_provider_id or settings.active_provider_id
-    ).strip()
-    enabled_providers = [
-        provider
-        for provider in settings.response_providers
-        if bool(provider.get("enabled"))
-    ]
-    enabled_provider_ids = {
-        sanitize_text(provider.get("id") or "").strip()
-        for provider in enabled_providers
-        if sanitize_text(provider.get("id") or "").strip()
-    }
-    if CODEX_PROXY_PROVIDER_ID in enabled_provider_ids:
-        return CODEX_PROXY_PROVIDER_ID
-
-    cleaned_model_id = sanitize_text(model_id).strip()
-    if cleaned_model_id:
-        if requested_provider_id and requested_provider_id in enabled_provider_ids:
-            requested_provider = next(
-                (
-                    provider
-                    for provider in enabled_providers
-                    if sanitize_text(provider.get("id") or "").strip() == requested_provider_id
-                ),
-                None,
-            )
-            requested_provider_model_ids = {
-                sanitize_text(model.get("id") or "").strip()
-                for model in (requested_provider or {}).get("models") or []
-                if sanitize_text(model.get("id") or "").strip()
-            }
-            if cleaned_model_id in requested_provider_model_ids:
-                return requested_provider_id
-
-        for provider in enabled_providers:
-            provider_id = sanitize_text(provider.get("id") or "").strip()
-            if not provider_id:
-                continue
-            provider_model_ids = {
-                sanitize_text(model.get("id") or "").strip()
-                for model in provider.get("models") or []
-                if sanitize_text(model.get("id") or "").strip()
-            }
-            if cleaned_model_id in provider_model_ids:
-                return provider_id
-
-    if requested_provider_id and requested_provider_id in enabled_provider_ids:
-        return requested_provider_id
-
-    if CODEX_PROXY_PROVIDER_ID in enabled_provider_ids:
-        return CODEX_PROXY_PROVIDER_ID
-
-    active_provider_id = sanitize_text(settings.active_provider_id or "").strip()
-    if active_provider_id in enabled_provider_ids:
-        return active_provider_id
-
-    return next(iter(enabled_provider_ids), active_provider_id or "openai")
-
-def context_workbench_provider(settings: Settings, provider_id: str) -> dict[str, Any]:
-    cleaned_provider_id = sanitize_text(provider_id).strip()
-    return next(
-        (
-            item
-            for item in settings.response_providers
-            if sanitize_text(item.get("id") or "").strip() == cleaned_provider_id
-        ),
-        settings.active_provider(),
-    )
 
 def model_supports_minimal_reasoning(model_id: str) -> bool:
     cleaned_model_id = sanitize_text(model_id).strip().lower()
@@ -307,7 +153,6 @@ def model_supports_minimal_reasoning(model_id: str) -> bool:
 def resolve_context_reasoning_effort(
     settings: Settings,
     *,
-    provider_id: str,
     model_id: str,
     requested_effort: str | None,
 ) -> str | None:
@@ -319,12 +164,7 @@ def resolve_context_reasoning_effort(
         return None
 
     if cleaned_effort == "none":
-        provider = context_workbench_provider(settings, provider_id)
-        provider_type = sanitize_text(provider.get("provider_type") or "").strip()
-        if (
-            provider_type in {"responses", "chat_completion"}
-            and model_supports_minimal_reasoning(model_id)
-        ):
+        if model_supports_minimal_reasoning(model_id):
             return "minimal"
         return None
 
@@ -332,39 +172,6 @@ def resolve_context_reasoning_effort(
         return cleaned_effort
 
     return None
-
-def build_context_workbench_agent(settings: Settings, provider_id: str) -> SimpleAgent:
-    resolved_provider_id = sanitize_text(provider_id).strip() or sanitize_text(settings.active_provider_id).strip() or "openai"
-    provider = context_workbench_provider(settings, resolved_provider_id)
-    if resolved_provider_id == CODEX_PROXY_PROVIDER_ID:
-        provider_api_key = "not-needed"
-        provider_base_url = CODEX_PROXY_BASE_URL
-    else:
-        provider_api_key = sanitize_text(provider.get("api_key") or "").strip() or settings.openai_api_key
-        provider_base_url = sanitize_text(provider.get("api_base_url") or "").strip() or settings.openai_base_url
-    scoped_settings = Settings(
-        model=settings.model,
-        default_reasoning_effort=settings.default_reasoning_effort,
-        context_workbench_model=settings.context_workbench_model,
-        context_workbench_provider_id=resolved_provider_id,
-        project_root=settings.project_root,
-        max_tool_rounds=settings.max_tool_rounds,
-        tool_settings=settings.tool_settings,
-        response_providers=settings.response_providers,
-        active_provider_id=resolved_provider_id,
-        context_token_warning_threshold=settings.context_token_warning_threshold,
-        context_token_critical_threshold=settings.context_token_critical_threshold,
-        openai_api_key=provider_api_key,
-        openai_base_url=provider_base_url,
-        assistant_name="",
-        assistant_greeting="",
-        assistant_prompt="",
-        user_name="",
-        user_locale="",
-        user_timezone="",
-        user_profile="",
-    )
-    return SimpleAgent(scoped_settings, include_default_instructions=False)
 
 def extract_context_proxy_message_text(item: dict[str, Any]) -> str:
     if sanitize_text(item.get("type") or "").strip() != "message":
@@ -616,6 +423,7 @@ def stream_context_codex_proxy_response_with_retry(
     raise RuntimeError("Context proxy stream returned no response")
 
 def run_context_chat_turn(
+    settings: Settings,
     session: SessionState,
     *,
     message: str,
@@ -627,18 +435,16 @@ def run_context_chat_turn(
     check_cancelled: Callable[[], None] | None = None,
 ) -> tuple[str, str, ContextWorkbenchDraft, list[ToolEvent]]:
     instructions, request_model, draft, tool_registry, context_input = build_context_chat_runtime(
+        settings,
         session,
         message=message,
         selected_indexes=selected_indexes,
     )
-    context_provider_id = resolve_context_workbench_provider_id(session.agent.settings, request_model)
     request_reasoning_effort = resolve_context_reasoning_effort(
-        session.agent.settings,
-        provider_id=context_provider_id,
+        settings,
         model_id=request_model,
         requested_effort=reasoning_effort,
     )
-    context_agent = build_context_workbench_agent(session.agent.settings, context_provider_id)
     tool_events: list[ToolEvent] = []
     readonly_tool_result_cache: dict[str, str] = {}
     readonly_tool_cache_names = {"get_nodes"}
@@ -674,31 +480,12 @@ def run_context_chat_turn(
             )
             return request
 
-        try:
-            request = build_request()
-            if context_provider_id == CODEX_PROXY_PROVIDER_ID:
-                response = stream_context_codex_proxy_response_with_retry(
-                    request,
-                    on_text_delta=on_text_delta,
-                    check_cancelled=check_cancelled,
-                )
-            else:
-                response = context_agent._stream_response(
-                    **request,
-                    on_text_delta=on_text_delta,
-                )
-        except Exception as exc:
-            if (
-                context_provider_id == CODEX_PROXY_PROVIDER_ID
-                or not context_agent._should_fallback_to_developer(exc)
-            ):
-                raise
-
-            context_agent._fallback_to_developer_context()
-            response = context_agent._stream_response(
-                **build_request(),
-                on_text_delta=on_text_delta,
-            )
+        request = build_request()
+        response = stream_context_codex_proxy_response_with_retry(
+            request,
+            on_text_delta=on_text_delta,
+            check_cancelled=check_cancelled,
+        )
         if check_cancelled is not None:
             check_cancelled()
 
@@ -784,7 +571,7 @@ def run_context_chat_turn(
             tool_event = ToolEvent(
                 name=safe_call_name,
                 arguments=safe_arguments,
-                output_preview=session.agent._preview(result),
+                output_preview=SimpleAgent._preview(result),
                 raw_output=result,
                 display_title=execution.display_title,
                 display_detail=execution.display_detail,
@@ -813,21 +600,6 @@ def run_context_chat_turn(
 
     # Note: Loop continues until returns or error inside
 
-def create_context_chat_answer(
-    session: SessionState,
-    *,
-    message: str,
-    selected_indexes: list[int] | None = None,
-    reasoning_effort: str | None = None,
-) -> tuple[str, str, ContextWorkbenchDraft]:
-    answer, request_model, draft, _tool_events = run_context_chat_turn(
-        session,
-        message=message,
-        selected_indexes=selected_indexes,
-        reasoning_effort=reasoning_effort,
-    )
-    return answer, request_model, draft
-
 def build_context_chat_response_payload(
     app_state: AppState,
     session: SessionState,
@@ -840,6 +612,8 @@ def build_context_chat_response_payload(
 ) -> dict[str, object]:
     proxy_transcript_sync: dict[str, object] | None = None
     if draft.has_changes:
+        if int(getattr(session, "node_lock_revision", 0) or 0) != int(getattr(draft, "node_lock_revision", 0) or 0):
+            raise ValueError("Node lock state changed while the context model was running. Please retry.")
         conversation = app_state.apply_context_workbench_mutation(
             session,
             transcript=draft.committed_transcript(),
@@ -870,77 +644,6 @@ def build_context_chat_response_payload(
         payload["proxy_transcript_sync"] = proxy_transcript_sync
     return payload
 
-def parse_data_url(data_url: str) -> tuple[str, bytes]:
-    match = DATA_URL_PATTERN.match(sanitize_text(data_url))
-    if not match:
-        raise ValueError("attachment data_url is invalid")
-
-    mime_type = sanitize_text(match.group("mime") or "").strip() or "application/octet-stream"
-    try:
-        raw_bytes = base64.b64decode(match.group("data"), validate=True)
-    except Exception as exc:  # noqa: BLE001
-        raise ValueError("附件编码解析失败") from exc
-
-    if not raw_bytes:
-        raise ValueError("附件内容为空")
-
-    return mime_type, raw_bytes
-
-def persist_request_attachments(raw_attachments: Any) -> tuple[list[dict[str, object]], list[dict[str, Any]]]:
-    if raw_attachments in (None, ""):
-        return [], []
-    if not isinstance(raw_attachments, list):
-        raise ValueError("attachments must be a list")
-
-    ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
-    transcript_attachments: list[dict[str, object]] = []
-    agent_inputs: list[dict[str, Any]] = []
-    total_size = 0
-
-    for raw_item in raw_attachments:
-        if not isinstance(raw_item, dict):
-            continue
-
-        original_name = sanitize_text(raw_item.get("name") or "").strip() or "upload"
-        data_url = sanitize_text(raw_item.get("data_url") or "")
-        payload_mime_type = sanitize_text(raw_item.get("mime_type") or "").strip()
-        parsed_mime_type, raw_bytes = parse_data_url(data_url)
-        mime_type = payload_mime_type or parsed_mime_type or "application/octet-stream"
-        total_size += len(raw_bytes)
-
-        if len(raw_bytes) > MAX_ATTACHMENT_BYTES:
-            raise ValueError(f"附件 {original_name} 超过 50 MB")
-        if total_size > MAX_TOTAL_ATTACHMENT_BYTES:
-            raise ValueError("本轮附件总大小超过 50 MB")
-
-        suffix = Path(original_name).suffix
-        if not suffix:
-            guessed_extension = mimetypes.guess_extension(mime_type or "") or ""
-            suffix = guessed_extension
-
-        attachment_id = uuid.uuid4().hex
-        stored_name = f"{attachment_id}{suffix}"
-        stored_path = ATTACHMENTS_DIR / stored_name
-        stored_path.write_bytes(raw_bytes)
-
-        relative_path = attachment_url_path(stored_name)
-        kind = "image" if mime_type.startswith("image/") else "file"
-
-        transcript_attachments.append(
-            {
-                "id": attachment_id,
-                "name": original_name,
-                "mime_type": mime_type,
-                "kind": kind,
-                "size_bytes": len(raw_bytes),
-                "relative_path": relative_path,
-                "url": f"/{relative_path}",
-            }
-        )
-        agent_inputs.append(build_attachment_path_note(original_name, mime_type, stored_path.resolve()))
-        agent_inputs.append(build_attachment_input(original_name, mime_type, data_url))
-
-    return transcript_attachments, agent_inputs
 
 def normalize_provider_type(raw_type: Any, provider_id: str = "") -> str:
     cleaned_type = sanitize_text(raw_type or "").strip()
@@ -1049,7 +752,7 @@ def fetch_models_from_provider(
     safe_provider_type = normalize_provider_type(provider_type)
     models_urls = build_provider_models_url_candidates(api_base_url, safe_provider_type)
     if not models_urls:
-        raise ValueError("请先填写有效的 API 地址")
+        raise ValueError("A valid API base URL is required")
 
     headers = {
         "Accept": "application/json",
@@ -1082,68 +785,32 @@ def fetch_models_from_provider(
         except urllib_error.URLError as exc:
             raise ValueError(sanitize_text(exc.reason or str(exc))) from exc
         except json.JSONDecodeError as exc:
-            raise ValueError("模型接口返回的不是合法 JSON") from exc
+            raise ValueError("Model endpoint returned invalid JSON") from exc
 
         models = normalize_fetched_provider_models(payload, safe_provider_type)
         if models:
             return models
-        last_error = ValueError("这个供应商没有返回可用模型")
+        last_error = ValueError("Provider returned no usable models")
 
-    raise last_error or ValueError("这个供应商没有返回可用模型")
-
-def clone_provider_settings_payloads(settings: Settings) -> list[dict[str, Any]]:
-    payloads: list[dict[str, Any]] = []
-    for provider in settings.response_providers:
-        payloads.append(
-            {
-                "id": sanitize_text(provider.get("id") or "").strip(),
-                "enabled": bool(provider.get("enabled")),
-                "supports_model_fetch": bool(provider.get("supports_model_fetch")),
-                "supports_responses": bool(provider.get("supports_responses")),
-                "api_base_url": sanitize_text(provider.get("api_base_url") or "").strip(),
-                "default_model": sanitize_text(provider.get("default_model") or "").strip(),
-                "models": sanitize_value(provider.get("models") or []),
-                "last_sync_at": sanitize_text(provider.get("last_sync_at") or "").strip(),
-                "last_sync_error": sanitize_text(provider.get("last_sync_error") or "").strip(),
-            }
-        )
-    return payloads
-
-def provider_model_ids_from_payloads(provider_payloads: list[dict[str, Any]], provider_id: str) -> list[str]:
-    cleaned_provider_id = sanitize_text(provider_id).strip()
-    provider = next(
-        (
-            item
-            for item in provider_payloads
-            if sanitize_text(item.get("id") or "").strip() == cleaned_provider_id
-        ),
-        None,
-    )
-    if provider is None:
-        return []
-    model_ids: list[str] = []
-    for model in provider.get("models") or []:
-        if not isinstance(model, dict):
-            continue
-        model_id = sanitize_text(model.get("id") or "").strip()
-        if model_id and model_id not in model_ids:
-            model_ids.append(model_id)
-    return model_ids
+    raise last_error or ValueError("Provider returned no usable models")
 
 def context_workbench_provider_payloads(settings: Settings, *, refresh_codex_proxy_models: bool = False) -> list[dict[str, Any]]:
-    payload = settings.public_payload()
-    raw_providers = payload.get("response_providers")
-    provider_payloads = [dict(item) for item in raw_providers if isinstance(item, dict)] if isinstance(raw_providers, list) else []
-    for provider in provider_payloads:
-        provider_id = sanitize_text(provider.get("id") or "").strip()
-        if provider_id != CODEX_PROXY_PROVIDER_ID:
-            continue
-        provider["api_base_url"] = CODEX_PROXY_BASE_URL
-        context_model = sanitize_text(settings.context_workbench_model or "").strip()
-        if context_model:
-            provider["default_model"] = context_model
-        if not refresh_codex_proxy_models:
-            continue
+    context_model = sanitize_text(settings.context_workbench_model or "").strip()
+    models = [dict(model) for model in DEFAULT_CODEX_PROXY_MODELS]
+    provider: dict[str, Any] = {
+        "id": CODEX_PROXY_PROVIDER_ID,
+        "name": "Codex",
+        "provider_type": "responses",
+        "enabled": True,
+        "supports_model_fetch": True,
+        "supports_responses": True,
+        "api_base_url": CODEX_PROXY_BASE_URL,
+        "default_model": context_model or sanitize_text(DEFAULT_CODEX_PROXY_MODELS[0].get("id") or "").strip(),
+        "models": models,
+        "last_sync_at": "",
+        "last_sync_error": "",
+    }
+    if refresh_codex_proxy_models:
         try:
             fetched_models = fetch_models_from_provider(
                 CODEX_PROXY_BASE_URL,
@@ -1153,8 +820,7 @@ def context_workbench_provider_payloads(settings: Settings, *, refresh_codex_pro
             )
         except Exception as exc:
             provider["last_sync_error"] = "" if provider.get("models") else sanitize_text(str(exc))
-            continue
-        if fetched_models:
+        else:
             if context_model and not any(
                 sanitize_text(item.get("id") or "").strip() == context_model
                 for item in fetched_models
@@ -1172,14 +838,20 @@ def context_workbench_provider_payloads(settings: Settings, *, refresh_codex_pro
             provider["models"] = fetched_models
             provider["last_sync_error"] = ""
             provider["last_sync_at"] = datetime.now(timezone.utc).isoformat()
-        break
-    return provider_payloads
+    return [provider]
 
 def context_workbench_models_payload(settings: Settings, provider_payloads: list[dict[str, Any]]) -> list[str]:
     settings_data = context_workbench_settings_payload(settings)
     context_model = sanitize_text(settings_data.get("context_workbench_model") or "").strip()
-    provider_id = sanitize_text(settings_data.get("context_workbench_provider_id") or "").strip()
-    return model_options(context_model, provider_model_ids_from_payloads(provider_payloads, provider_id))
+    model_ids: list[str] = []
+    for provider in provider_payloads:
+        for model in provider.get("models") or []:
+            if not isinstance(model, dict):
+                continue
+            model_id = sanitize_text(model.get("id") or "").strip()
+            if model_id and model_id not in model_ids:
+                model_ids.append(model_id)
+    return model_options(context_model, model_ids)
 
 def codex_proxy_control_url(path: str) -> str:
     control_base = CODEX_PROXY_BASE_URL.rstrip("/")
@@ -1236,6 +908,31 @@ def get_codex_proxy_control_json(path: str, timeout_seconds: float = 3) -> dict[
         raise ValueError("Proxy returned invalid payload")
     return sanitize_value(result)
 
+
+def set_proxy_context_run_state(session_id: str, request_id: str, running: bool) -> dict[str, Any]:
+    safe_session_id = sanitize_text(session_id or "").strip()
+    safe_request_id = sanitize_text(request_id or "").strip()
+    if not safe_session_id or not safe_request_id:
+        return {"status": "skipped", "reason": "missing_session_or_request"}
+    return post_codex_proxy_control_json(
+        f"/api/proxy/sessions/{quote(safe_session_id, safe='')}/context-run",
+        {
+            "request_id": safe_request_id,
+            "running": bool(running),
+        },
+        timeout_seconds=3,
+    )
+
+
+def safe_set_proxy_context_run_state(session_id: str, request_id: str, running: bool) -> dict[str, Any]:
+    try:
+        return set_proxy_context_run_state(session_id, request_id, running)
+    except ValueError as exc:
+        return {
+            "status": "error",
+            "error": sanitize_text(str(exc) or "proxy context run state update failed"),
+        }
+
 def proxy_state_contains_session(session_id: str) -> bool:
     safe_session_id = sanitize_text(session_id or "").strip()
     if not safe_session_id:
@@ -1281,7 +978,10 @@ def sync_proxy_session_transcript_if_known(
             session_id,
             summary="Context has been edited.",
             edit_version=0,
-            node_count=editable_context_node_count(visible_transcript),
+            node_count=editable_context_node_count(
+                visible_transcript,
+                getattr(session, "node_locks", {}),
+            ),
         )
     return {
         "status": "synced",
@@ -1328,13 +1028,19 @@ def refresh_session_from_proxy_active_context_if_known(
         session_id=session_id,
         title=sanitize_text(proxy_payload.get("title") or "").strip() or session.title,
         transcript=transcript,
-        is_running=bool(proxy_payload.get("is_running")),
+        is_main_turn_running=bool(proxy_payload.get("is_main_turn_running")),
+        main_turn_id=sanitize_text(proxy_payload.get("main_turn_id") or "").strip(),
+        main_turn_started_at=sanitize_text(proxy_payload.get("main_turn_started_at") or "").strip(),
+        main_turn_updated_at=sanitize_text(proxy_payload.get("main_turn_updated_at") or "").strip(),
+        node_locks=proxy_payload.get("node_locks") if isinstance(proxy_payload.get("node_locks"), dict) else {},
+        node_lock_revision=int(proxy_payload.get("node_lock_revision") or 0),
     )
 
 def append_proxy_transcript_sync_warning(answer: str, error_message: str) -> str:
     warning = (
-        "注意：这次上下文编辑已经写入本地视图，但同步到 Codex 代理 transcript 失败："
-        f"{sanitize_text(error_message)}。下一轮主模型可能仍会看到旧上下文。"
+        "Note: this context edit was written to the local workbench view, "
+        "but syncing it back to the Codex proxy transcript failed: "
+        f"{sanitize_text(error_message)}. The next main Codex turn may still see the previous context."
     )
     safe_answer = sanitize_text(answer).rstrip()
     if not safe_answer:

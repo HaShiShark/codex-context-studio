@@ -10,12 +10,11 @@ from urllib.parse import urlparse, urlunparse
 
 from dotenv import load_dotenv
 
-from simple_agent.tools import normalize_tool_settings
+from simple_agent.codex_tool_registry import normalize_tool_settings
 
 
 MODULE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = MODULE_DIR.parent
-LEGACY_DATA_DIR = REPO_ROOT / "data"
 DEFAULT_DATA_DIR = Path.home() / ".hash-context-codex"
 
 
@@ -30,7 +29,6 @@ def _resolve_data_dir() -> Path:
 
 DATA_DIR = _resolve_data_dir()
 SETTINGS_FILE = DATA_DIR / "openai_settings.json"
-LEGACY_SETTINGS_FILE = LEGACY_DATA_DIR / "openai_settings.json"
 CODEX_PROXY_PROVIDER_ID = "codex-proxy"
 CODEX_PROXY_BASE_URL = (
     f"http://{os.getenv('HASH_CONTEXT_PROXY_HOST', os.getenv('HASH_CONTEXT_HOST', 'localhost'))}:"
@@ -87,12 +85,12 @@ DEFAULT_RESPONSE_PROVIDERS: tuple[dict[str, object], ...] = (
     },
 )
 PROVIDER_IDS = {str(spec["id"]) for spec in DEFAULT_RESPONSE_PROVIDERS}
-LEGACY_DEFAULT_PROVIDER_IDS = {"openrouter", "newapi", "siliconflow", "lmstudio"}
 PROVIDER_TYPES = {"chat_completion", "responses", "gemini", "claude"}
 REASONING_EFFORTS = {"default", "none", "low", "medium", "high"}
 DEFAULT_REASONING_EFFORT = "default"
 DEFAULT_CONTEXT_TOKEN_WARNING_THRESHOLD = 5000
 DEFAULT_CONTEXT_TOKEN_CRITICAL_THRESHOLD = 10000
+DEFAULT_CODEX_SYSTEM_PROMPT = ""
 DEFAULT_ASSISTANT_NAME = "Hanako"
 DEFAULT_ASSISTANT_GREETING = "对话开始时先接住情绪，再推进任务，不要一上来就像客服一样念模板。"
 DEFAULT_ASSISTANT_PROMPT = "你是一个温柔、可靠、说人话的助手。先理解我的真实意图，再给出清晰直接的建议；少一些官话，多一些陪我一起把事情做完的感觉。"
@@ -184,25 +182,15 @@ def _clean_string(value: Any) -> str:
 
 
 def _read_settings_file() -> dict[str, Any]:
-    candidates = [SETTINGS_FILE]
-    allow_legacy_settings = os.getenv("HASH_ALLOW_LEGACY_SETTINGS", "1").strip().lower()
-    if allow_legacy_settings not in {"0", "false", "no"} and LEGACY_SETTINGS_FILE.resolve() != SETTINGS_FILE.resolve():
-        candidates.append(LEGACY_SETTINGS_FILE)
+    if not SETTINGS_FILE.exists():
+        return {}
 
-    for settings_path in candidates:
-        if not settings_path.exists():
-            continue
+    try:
+        raw_value = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
 
-        try:
-            raw_value = json.loads(settings_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-
-        return raw_value if isinstance(raw_value, dict) else {}
-
-    return {}
-
-
+    return raw_value if isinstance(raw_value, dict) else {}
 
 def _normalize_optional_float(value: Any, *, min_value: float, max_value: float) -> float | None:
     if value in (None, ""):
@@ -431,28 +419,6 @@ def _normalize_active_provider_id(raw_provider_id: Any, providers: list[dict[str
     return all_ids[0] if all_ids else "openai"
 
 
-def _infer_provider_id_for_model(model_id: Any, providers: list[dict[str, Any]], fallback_provider_id: str = "") -> str:
-    matched_provider_id = _find_provider_id_for_model(model_id, providers)
-    if matched_provider_id:
-        return matched_provider_id
-
-    return _normalize_active_provider_id(fallback_provider_id, providers)
-
-
-def _find_provider_id_for_model(model_id: Any, providers: list[dict[str, Any]]) -> str:
-    cleaned_model_id = _clean_string(model_id)
-    if cleaned_model_id:
-        for provider in providers:
-            provider_id = _clean_string(provider.get("id"))
-            if not provider_id:
-                continue
-            for model in _normalize_provider_models(provider.get("models")):
-                if _clean_string(model.get("id")) == cleaned_model_id:
-                    return provider_id
-
-    return ""
-
-
 def _public_provider_payload(record: dict[str, Any]) -> dict[str, object]:
     api_key = _clean_string(record.get("api_key")) or None
     return {
@@ -487,6 +453,10 @@ class Settings:
     assistant_name: str = DEFAULT_ASSISTANT_NAME
     assistant_greeting: str = DEFAULT_ASSISTANT_GREETING
     assistant_prompt: str = DEFAULT_ASSISTANT_PROMPT
+    codex_system_prompt: str = DEFAULT_CODEX_SYSTEM_PROMPT
+    codex_system_prompt_default: str = DEFAULT_CODEX_SYSTEM_PROMPT
+    manual_local_compact_prompt: str = ""
+    auto_local_compact_prompt: str = ""
     temperature: float | None = None
     top_p: float | None = None
     context_message_limit: int | None = None
@@ -535,6 +505,10 @@ class Settings:
             "assistant_name": self.assistant_name,
             "assistant_greeting": self.assistant_greeting,
             "assistant_prompt": self.assistant_prompt,
+            "codex_system_prompt": self.codex_system_prompt,
+            "codex_system_prompt_default": self.codex_system_prompt_default,
+            "manual_local_compact_prompt": self.manual_local_compact_prompt,
+            "auto_local_compact_prompt": self.auto_local_compact_prompt,
             "temperature": self.temperature,
             "top_p": self.top_p,
             "context_message_limit": self.context_message_limit,
@@ -625,17 +599,16 @@ def load_settings() -> Settings:
     model = _clean_string(active_provider.get("default_model")) or model
     openai_base_url = _clean_string(active_provider.get("api_base_url")) or None
     openai_api_key = _clean_string(active_provider.get("api_key")) or None
-    context_workbench_provider_id = _normalize_active_provider_id(
-        _find_provider_id_for_model(context_workbench_model, response_providers)
-        or stored.get("context_workbench_provider_id")
-        or active_provider_id,
-        response_providers,
-    )
+    context_workbench_provider_id = CODEX_PROXY_PROVIDER_ID
     tool_settings = normalize_tool_settings(stored.get("tool_settings"))
 
     assistant_name = _clean_string(stored.get("assistant_name")) or DEFAULT_ASSISTANT_NAME
     assistant_greeting = _clean_string(stored.get("assistant_greeting")) or DEFAULT_ASSISTANT_GREETING
     assistant_prompt = _clean_string(stored.get("assistant_prompt")) or DEFAULT_ASSISTANT_PROMPT
+    codex_system_prompt_default = _clean_string(stored.get("codex_system_prompt_default"))
+    codex_system_prompt = _clean_string(stored.get("codex_system_prompt")) or codex_system_prompt_default
+    manual_local_compact_prompt = _clean_string(stored.get("manual_local_compact_prompt"))
+    auto_local_compact_prompt = _clean_string(stored.get("auto_local_compact_prompt"))
     temperature = _normalize_optional_float(stored.get("temperature"), min_value=0, max_value=2)
     top_p = _normalize_optional_float(stored.get("top_p"), min_value=0, max_value=1)
     context_message_limit = _normalize_optional_int(stored.get("context_message_limit"), min_value=1)
@@ -682,6 +655,10 @@ def load_settings() -> Settings:
         assistant_name=assistant_name,
         assistant_greeting=assistant_greeting,
         assistant_prompt=assistant_prompt,
+        codex_system_prompt=codex_system_prompt,
+        codex_system_prompt_default=codex_system_prompt_default,
+        manual_local_compact_prompt=manual_local_compact_prompt,
+        auto_local_compact_prompt=auto_local_compact_prompt,
         temperature=temperature,
         top_p=top_p,
         context_message_limit=context_message_limit,
@@ -719,6 +696,10 @@ def save_settings(
     assistant_name: str | None = None,
     assistant_greeting: str | None = None,
     assistant_prompt: str | None = None,
+    codex_system_prompt: str | None = None,
+    codex_system_prompt_default: str | None = None,
+    manual_local_compact_prompt: str | None = None,
+    auto_local_compact_prompt: str | None = None,
     temperature: float | None | object = _UNSET,
     top_p: float | None | object = _UNSET,
     context_message_limit: int | None | object = _UNSET,
@@ -895,15 +876,7 @@ def save_settings(
             next_context_workbench_model = _clean_string(current.get("model")) or loaded.model
     current["context_workbench_model"] = next_context_workbench_model
 
-    next_context_workbench_provider_id = _normalize_active_provider_id(
-        context_workbench_provider_id
-        or _find_provider_id_for_model(next_context_workbench_model, ordered_records)
-        or current.get("context_workbench_provider_id")
-        or loaded.context_workbench_provider_id
-        or next_active_provider_id,
-        ordered_records,
-    )
-    current["context_workbench_provider_id"] = next_context_workbench_provider_id
+    current["context_workbench_provider_id"] = CODEX_PROXY_PROVIDER_ID
 
     next_context_token_warning_threshold, next_context_token_critical_threshold = _normalize_context_token_thresholds(
         (
@@ -929,13 +902,20 @@ def save_settings(
         current["assistant_greeting"] = _clean_string(assistant_greeting)
     if assistant_prompt is not None:
         current["assistant_prompt"] = _clean_string(assistant_prompt)
+    if codex_system_prompt is not None:
+        current["codex_system_prompt"] = _clean_string(codex_system_prompt)
+    if codex_system_prompt_default is not None:
+        current["codex_system_prompt_default"] = _clean_string(codex_system_prompt_default)
+    if manual_local_compact_prompt is not None:
+        current["manual_local_compact_prompt"] = _clean_string(manual_local_compact_prompt)
+    if auto_local_compact_prompt is not None:
+        current["auto_local_compact_prompt"] = _clean_string(auto_local_compact_prompt)
     if temperature is not _UNSET:
         current["temperature"] = _normalize_optional_float(temperature, min_value=0, max_value=2)
     if top_p is not _UNSET:
         current["top_p"] = _normalize_optional_float(top_p, min_value=0, max_value=1)
     if context_message_limit is not _UNSET:
         current["context_message_limit"] = _normalize_optional_int(context_message_limit, min_value=1)
-    current.pop("thinking_budget", None)
     if streaming is not None:
         current["streaming"] = bool(streaming)
     if user_name is not None:

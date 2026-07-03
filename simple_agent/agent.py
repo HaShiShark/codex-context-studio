@@ -26,7 +26,7 @@ from agent_runtime.core.stream_events import (
 )
 from simple_agent.config import Settings
 from simple_agent.provider_clients import ClaudeRESTClient, GeminiRESTClient
-from simple_agent.tools import ToolRegistry
+from simple_agent.codex_tool_registry import ToolRegistry
 
 
 @dataclass(slots=True)
@@ -107,7 +107,6 @@ class SimpleAgent:
         self.client = self._build_provider_client()
         self.tools = ToolRegistry(settings.project_root, settings.tool_settings)
         self.history: list[dict[str, Any]] = []
-        self.context_role = "developer"
         self.instructions = self._build_instructions() if include_default_instructions else ""
         self.adapter = self._build_adapter()
 
@@ -259,8 +258,6 @@ class SimpleAgent:
             sanitize_text=sanitize_text,
             sanitize_value=sanitize_value,
             preview_text=self._preview,
-            should_fallback_to_developer=self._should_fallback_to_developer,
-            fallback_to_developer=self._fallback_to_developer_context,
             check_cancelled=check_cancelled,
         )
         return core.run_turn(
@@ -431,7 +428,7 @@ class SimpleAgent:
     def _request_input(self, turn_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return sanitize_value(
             [
-                self._message(self.context_role, self.instructions),
+                self._message("developer", self.instructions),
                 *self.history,
                 *turn_items,
             ]
@@ -462,7 +459,7 @@ class SimpleAgent:
         provider_config: dict[str, Any] = self._provider_config()
 
         if self.provider_type == _RESPONSES_PROVIDER_TYPE:
-            prompt_message = self._message(self.context_role, self.instructions)
+            prompt_message = self._message("developer", self.instructions)
             transcript_items = [prompt_message, *transcript_items]
             prompt_blocks = ()
             provider_config["instructions"] = ""
@@ -510,7 +507,7 @@ class SimpleAgent:
         if instructions:
             prompt_blocks.append(
                 PromptBlock(
-                    kind=self._prompt_block_kind(),
+                    kind="developer",
                     text=instructions,
                     source="legacy_instructions",
                 )
@@ -526,7 +523,7 @@ class SimpleAgent:
                 if text:
                     prompt_blocks.append(
                         PromptBlock(
-                            kind=role if role in {"system", "developer"} else "developer",
+                            kind="developer",
                             text=text,
                             source="legacy_input",
                         )
@@ -564,14 +561,11 @@ class SimpleAgent:
     def _prompt_blocks(self) -> list[PromptBlock]:
         return [
             PromptBlock(
-                kind=self._prompt_block_kind(),
+                kind="developer",
                 text=self.instructions,
                 source="simple_agent",
             )
         ]
-
-    def _prompt_block_kind(self) -> str:
-        return self.context_role if self.context_role in {"system", "developer"} else "developer"
 
     def _assert_supported_content_parts(self, items: Sequence[Any]) -> None:
         allowed_types = _NON_RESPONSE_ALLOWED_PARTS.get(self.provider_type)
@@ -642,14 +636,6 @@ class SimpleAgent:
 
     def _make_assistant_message(self, text: str) -> dict[str, Any]:
         return self._message("assistant", text)
-
-    def _fallback_to_developer_context(self) -> None:
-        self.context_role = "developer"
-
-    @staticmethod
-    def _should_fallback_to_developer(exc: Exception) -> bool:
-        message = str(exc).lower()
-        return "system messages are not allowed" in message
 
     @staticmethod
     def _message(

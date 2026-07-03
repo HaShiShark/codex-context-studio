@@ -21,7 +21,7 @@ _TOKEN_ENCODING_LOAD_FAILED = False
 
 from simple_agent.agent import SimpleAgent, ToolEvent, sanitize_text
 from simple_agent.config import Settings
-from simple_agent.tools import ToolExecution
+from simple_agent.codex_tool_registry import ToolExecution
 
 from backend.web_constants import (
     ATTACHMENTS_DIR,
@@ -49,6 +49,11 @@ from backend.web_constants import (
 from backend.transcript_codec import (
     input_items_to_transcript as core_input_items_to_transcript,
     transcript_to_input_items as core_transcript_to_input_items,
+)
+from backend.node_locking import (
+    is_node_locked,
+    normalize_node_locks,
+    transcript_node_id,
 )
 
 def sanitize_value(value: Any) -> Any:
@@ -663,6 +668,7 @@ def normalize_context_records(raw_records: Any) -> list[dict[str, object]]:
             provider_items = core_items
         records.append(
             {
+                "id": sanitize_text(item.get("id") or "").strip(),
                 "role": role,
                 "text": safe_text,
                 "attachments": [],
@@ -756,7 +762,6 @@ def debug_request_item_summary(item: Any, index: int) -> dict[str, object]:
             argument_summary: dict[str, object] = {}
             for key in [
                 "node_numbers",
-                "node_indexes",
                 "item_number",
                 "item_numbers",
                 "item_refs",
@@ -842,29 +847,38 @@ def is_environment_context_record(record: dict[str, object]) -> bool:
         return False
     return sanitize_text(record.get("text") or "").lstrip().lower().startswith("<environment_context>")
 
+def context_record_node_id(record: dict[str, object]) -> str:
+    return transcript_node_id(record)
+
+
+def is_context_record_locked(record: dict[str, object], node_locks: dict[str, bool] | None = None) -> bool:
+    return is_node_locked(record, node_locks)
+
+
+def context_node_locked_indexes(
+    transcript: list[dict[str, object]],
+    node_locks: dict[str, bool] | None = None,
+) -> set[int]:
+    return {
+        index
+        for index, record in enumerate(transcript)
+        if isinstance(record, dict) and is_context_record_locked(record, node_locks)
+    }
+
+
 def internal_context_prefix_indexes(transcript: list[dict[str, object]]) -> set[int]:
-    internal_indexes: set[int] = set()
-    environment_index: int | None = None
+    return context_node_locked_indexes(transcript)
 
-    for index, record in enumerate(transcript):
-        role = sanitize_text(record.get("role") or "").strip()
-        if role in {"system", "developer"}:
-            internal_indexes.add(index)
-            continue
-        if environment_index is None and is_environment_context_record(record):
-            environment_index = index
 
-    if environment_index is not None:
-        internal_indexes.add(environment_index)
-
-    return internal_indexes
-
-def editable_context_node_entries(transcript: list[dict[str, object]]) -> list[dict[str, object]]:
-    internal_indexes = internal_context_prefix_indexes(transcript)
+def editable_context_node_entries(
+    transcript: list[dict[str, object]],
+    node_locks: dict[str, bool] | None = None,
+) -> list[dict[str, object]]:
+    locked_indexes = context_node_locked_indexes(transcript, node_locks)
     entries: list[dict[str, object]] = []
     node_number = 0
     for index, record in enumerate(transcript):
-        if index in internal_indexes:
+        if index in locked_indexes:
             continue
         node_number += 1
         entries.append(
@@ -876,17 +890,21 @@ def editable_context_node_entries(transcript: list[dict[str, object]]) -> list[d
         )
     return entries
 
-def editable_context_node_count(transcript: list[dict[str, object]]) -> int:
-    return len(editable_context_node_entries(transcript))
+def editable_context_node_count(
+    transcript: list[dict[str, object]],
+    node_locks: dict[str, bool] | None = None,
+) -> int:
+    return len(editable_context_node_entries(transcript, node_locks))
 
 def selected_display_node_numbers(
     transcript: list[dict[str, object]],
     selected_indexes: list[int],
+    node_locks: dict[str, bool] | None = None,
 ) -> list[int]:
     selected_index_set = set(selected_indexes)
     return [
         int(entry["node_number"])
-        for entry in editable_context_node_entries(transcript)
+        for entry in editable_context_node_entries(transcript, node_locks)
         if int(entry["raw_index"]) in selected_index_set
     ]
 
@@ -1290,10 +1308,11 @@ def context_record_overview(record: dict[str, object], *, node_number: int, sele
 def context_workbench_suggestions_payload(session: SessionState) -> dict[str, object]:
     nodes: list[dict[str, object]] = []
     transcript = normalize_context_records(session.transcript)
-    internal_indexes = internal_context_prefix_indexes(transcript)
+    node_locks = normalize_node_locks(getattr(session, "node_locks", {}))
+    locked_indexes = context_node_locked_indexes(transcript, node_locks)
     display_number_by_raw_index = {
         int(entry["raw_index"]): int(entry["node_number"])
-        for entry in editable_context_node_entries(transcript)
+        for entry in editable_context_node_entries(transcript, node_locks)
     }
     stats_total_token_count = 0
     stats_tool_token_count = 0
@@ -1305,7 +1324,7 @@ def context_workbench_suggestions_payload(session: SessionState) -> dict[str, ob
         tool_token_count = int(overview.get("tool_token_estimate") or 0)
         stats_total_token_count += token_count
         stats_tool_token_count += tool_token_count
-        if index in internal_indexes:
+        if index in locked_indexes:
             continue
         nodes.append(
             {
@@ -1993,17 +2012,18 @@ def build_context_workspace_snapshot(
     selected_indexes: list[int] | None = None,
 ) -> str:
     transcript = normalize_context_records(session.transcript)
+    node_locks = normalize_node_locks(getattr(session, "node_locks", {}))
     safe_selected_indexes = normalize_selected_node_indexes(selected_indexes or [], len(transcript))
-    selected_numbers = selected_display_node_numbers(transcript, safe_selected_indexes)
-    editable_entries = editable_context_node_entries(transcript)
+    selected_numbers = selected_display_node_numbers(transcript, safe_selected_indexes, node_locks)
+    editable_entries = editable_context_node_entries(transcript, node_locks)
     lines = [
         "# 当前主 Codex 上下文快照",
         f"- 会话标题：{session.title}",
-        f"- 会话类型：{session.scope}",
         f"- 当前节点数：{len(editable_entries)}",
         f"- 当前选中节点：{format_node_ranges(selected_numbers) or '未单独选中，默认面向全局'}",
         "- 这一轮里所有 Node # 都以这份快照为准。",
-        "- 系统/开发者指令和默认环境说明属于内部前缀，不在本快照中展示，也不能被选择或编辑。",
+        "- 已锁定节点不在本快照中展示，也不能被选择或编辑。",
+        "- developer 节点默认锁定；如果已解锁，它会像普通节点一样出现在本快照中。",
         "- 非 assistant 节点直接给全文，assistant 节点默认只给首句预览，预览后面的内容你不可见。",
         "- 压缩 assistant 节点前必须先调用 get_nodes 获取完整节点内容；不要用首句预览编写压缩摘要。",
         "- 如果你需要精细编辑 content item，先用明确的 Node # 调用 get_nodes，再根据返回的 item # 用 write_items 操作。",
@@ -2370,21 +2390,29 @@ class ContextWorkbenchDraftNode:
     editable: bool = True
 
 class ContextWorkbenchDraft:
-    def __init__(self, transcript: list[dict[str, object]], selected_indexes: list[int]) -> None:
+    def __init__(
+        self,
+        transcript: list[dict[str, object]],
+        selected_indexes: list[int],
+        node_locks: dict[str, bool] | None = None,
+        node_lock_revision: int = 0,
+    ) -> None:
         normalized_transcript = normalize_transcript(transcript)
         display_records = normalize_context_records(normalized_transcript)
+        self.node_locks = normalize_node_locks(node_locks or {})
+        self.node_lock_revision = max(0, int(node_lock_revision or 0))
         safe_selected = normalize_selected_node_indexes(selected_indexes, len(display_records))
-        self.selected_node_numbers = selected_display_node_numbers(display_records, safe_selected)
-        internal_indexes = internal_context_prefix_indexes(display_records)
+        self.selected_node_numbers = selected_display_node_numbers(display_records, safe_selected, self.node_locks)
+        locked_indexes = context_node_locked_indexes(display_records, self.node_locks)
         editable_numbers_by_raw_index = {
             int(entry["raw_index"]): int(entry["node_number"])
-            for entry in editable_context_node_entries(display_records)
+            for entry in editable_context_node_entries(display_records, self.node_locks)
         }
         self.nodes: list[ContextWorkbenchDraftNode] = []
         for raw_index, record in enumerate(display_records):
             node_number = editable_numbers_by_raw_index.get(raw_index)
-            is_internal = raw_index in internal_indexes
-            label = f"Node #{node_number}" if node_number is not None else "Internal Prefix"
+            is_locked = raw_index in locked_indexes
+            label = f"Node #{node_number}" if node_number is not None else "Locked Node"
             self.nodes.append(
                 ContextWorkbenchDraftNode(
                     order=float(raw_index + 1),
@@ -2393,9 +2421,9 @@ class ContextWorkbenchDraft:
                     active=True,
                     source_node_number=node_number,
                     source_index=raw_index,
-                    kind="internal" if is_internal else "existing",
-                    status="locked" if is_internal else "active",
-                    editable=not is_internal,
+                    kind="locked" if is_locked else "existing",
+                    status="locked" if is_locked else "active",
+                    editable=not is_locked,
                 )
         )
         self.operations: list[dict[str, object]] = []
@@ -2547,10 +2575,6 @@ class ContextWorkbenchDraft:
         explicit_numbers = normalize_node_numbers(arguments.get("node_numbers"), self.max_node_number())
         if explicit_numbers:
             return self._nodes_by_number(explicit_numbers, include_inactive=include_inactive)
-
-        legacy_indexes = normalize_selected_node_indexes(arguments.get("node_indexes"), self.max_node_number())
-        if legacy_indexes:
-            return self._nodes_by_number([index + 1 for index in legacy_indexes], include_inactive=include_inactive)
 
         del allow_selected
 
@@ -3457,7 +3481,11 @@ class ContextWorkbenchDraft:
             provider_items = self._provider_items_for_node(node)
             if not provider_items:
                 continue
-            core_nodes.extend(core_input_items_to_transcript(provider_items))
+            next_nodes = core_input_items_to_transcript(provider_items)
+            existing_id = context_record_node_id(node.record)
+            if existing_id and len(next_nodes) == 1 and isinstance(next_nodes[0], dict):
+                next_nodes[0]["id"] = existing_id
+            core_nodes.extend(next_nodes)
         return reindex_transcript_input_indexes(core_nodes)
 
     def _make_insert_provider_item(self, node: ContextWorkbenchDraftNode, ins: dict[str, Any]) -> dict[str, Any]:
@@ -3585,13 +3613,12 @@ class ContextWorkbenchDraft:
         })
         return {"applied": True, "node": node_number, "items_deleted": len(safe_deletes), "items_inserted": len(inserts)}
 
-    def build_draft_snapshot_text(self, session_title: str, session_scope: str) -> str:
+    def build_draft_snapshot_text(self, session_title: str) -> str:
         active = [n for n in sorted(self.nodes, key=lambda n: n.order) if n.active and n.editable]
         selected_numbers = self.selected_node_numbers
         lines = [
             "# 当前主 Codex 上下文快照（已更新）",
             f"- 会话标题：{session_title}",
-            f"- 会话类型：{session_scope}",
             f"- 当前节点数：{len(active)}",
             "",
             "## 节点概览",
@@ -3623,11 +3650,9 @@ class ContextWorkbenchToolRegistry:
         self,
         draft: ContextWorkbenchDraft,
         session_title: str = "",
-        session_scope: str = "",
     ) -> None:
         self.draft = draft
         self._session_title = session_title
-        self._session_scope = session_scope
         self._tools = {
             definition.name: definition
             for definition in [
@@ -3739,7 +3764,7 @@ class ContextWorkbenchToolRegistry:
                     display_result="Provide delete and/or inserts.", status="error",
                 )
             result = self.draft.apply_write_nodes(delete_numbers, inserts)
-            new_snapshot = self.draft.build_draft_snapshot_text(self._session_title, self._session_scope)
+            new_snapshot = self.draft.build_draft_snapshot_text(self._session_title)
             return ToolExecution(
                 output_text=json.dumps({"result": result, "updated_snapshot": new_snapshot}, ensure_ascii=False),
                 display_title="Write Nodes",

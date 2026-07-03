@@ -16,6 +16,7 @@ export interface ContextMessageTokenStat {
   toolTokens: number;
   weightClass: ContextTokenWeightClass;
   editable: boolean;
+  locked: boolean;
   internalKind?: 'instruction' | 'environment';
 }
 
@@ -31,6 +32,7 @@ export interface ContextMapNodeMeta {
   displayNodeNumber: number | null;
   editable: boolean;
   selectable: boolean;
+  locked: boolean;
   internalKind?: 'instruction' | 'environment';
 }
 
@@ -69,28 +71,36 @@ function countImageContentItems(value: unknown): number {
   return Object.values(value).reduce<number>((total, item) => total + countImageContentItems(item), 0);
 }
 
-function isEnvironmentContextMessage(message: MessageRecord) {
-  return message.role === 'user' && message.text.trimStart().toLowerCase().startsWith('<environment_context>');
+function hasOwnLock(nodeLocks: Record<string, boolean>, nodeId: string) {
+  return Object.prototype.hasOwnProperty.call(nodeLocks, nodeId);
 }
 
-export function buildContextMapNodeMeta(messages: MessageRecord[]): ContextMapNodeMeta[] {
-  const environmentIndex = messages.findIndex(isEnvironmentContextMessage);
+export function isContextMapNodeLocked(
+  message: MessageRecord,
+  nodeLocks: Record<string, boolean> = {},
+) {
+  const nodeId = String(message.nodeId || '').trim();
+  if (nodeId && hasOwnLock(nodeLocks, nodeId)) {
+    return Boolean(nodeLocks[nodeId]);
+  }
+  return message.role === 'developer';
+}
+
+export function buildContextMapNodeMeta(
+  messages: MessageRecord[],
+  nodeLocks: Record<string, boolean> = {},
+): ContextMapNodeMeta[] {
   let displayNodeNumber = 0;
 
-  return messages.map((message, index) => {
-    const internalKind =
-      message.role === 'system' || message.role === 'developer'
-        ? 'instruction'
-        : index === environmentIndex && isEnvironmentContextMessage(message)
-          ? 'environment'
-          : undefined;
+  return messages.map((message) => {
+    const locked = isContextMapNodeLocked(message, nodeLocks);
 
-    if (internalKind) {
+    if (locked) {
       return {
         displayNodeNumber: null,
         editable: false,
         selectable: false,
-        internalKind,
+        locked: true,
       };
     }
 
@@ -99,6 +109,7 @@ export function buildContextMapNodeMeta(messages: MessageRecord[]): ContextMapNo
       displayNodeNumber,
       editable: true,
       selectable: true,
+      locked: false,
     };
   });
 }

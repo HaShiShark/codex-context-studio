@@ -14,107 +14,75 @@ from dataclasses import dataclass
 from typing import Any
 
 
-DYNAMIC_FINGERPRINT_KEYS = frozenset({"id"})
-_DYNAMIC_ID_ITEM_TYPES = frozenset(
-    {
-        "message",
-        "agent_message",
-        "reasoning",
-        "function_call",
-        "function_call_output",
-        "custom_tool_call",
-        "custom_tool_call_output",
-        "local_shell_call",
-        "local_shell_call_output",
-        "tool_search_call",
-        "tool_search_output",
-        "web_search_call",
-        "image_generation_call",
-        "compaction",
-        "context_compaction",
-    }
-)
-_DYNAMIC_ID_CONTENT_PART_TYPES = frozenset(
-    {
-        "input_text",
-        "output_text",
-        "text",
-        "input_image",
-        "reasoning_text",
-        "summary_text",
-    }
-)
+_MESSAGE_FIELDS = ("type", "role", "content", "phase", "internal_chat_message_metadata_passthrough")
+_AGENT_MESSAGE_FIELDS = ("type", "author", "recipient", "content", "internal_chat_message_metadata_passthrough")
+_REASONING_FIELDS = ("type", "summary", "content", "encrypted_content", "internal_chat_message_metadata_passthrough")
+_COMPACTION_TYPES = {"compaction", "compaction_summary"}
+_SIMPLE_RESPONSE_ITEM_FIELDS: dict[str, tuple[str, ...]] = {
+    "function_call": ("type", "name", "namespace", "arguments", "call_id", "internal_chat_message_metadata_passthrough"),
+    "function_call_output": ("type", "call_id", "output", "internal_chat_message_metadata_passthrough"),
+    "custom_tool_call": ("type", "status", "call_id", "name", "input", "internal_chat_message_metadata_passthrough"),
+    "custom_tool_call_output": ("type", "call_id", "name", "output", "internal_chat_message_metadata_passthrough"),
+    "local_shell_call": ("type", "call_id", "status", "action", "internal_chat_message_metadata_passthrough"),
+    "tool_search_call": ("type", "call_id", "status", "execution", "arguments", "internal_chat_message_metadata_passthrough"),
+    "tool_search_output": ("type", "call_id", "status", "execution", "tools", "internal_chat_message_metadata_passthrough"),
+    "web_search_call": ("type", "status", "action", "internal_chat_message_metadata_passthrough"),
+    "image_generation_call": ("type", "status", "revised_prompt", "result", "internal_chat_message_metadata_passthrough"),
+    "context_compaction": ("type", "encrypted_content", "internal_chat_message_metadata_passthrough"),
+    "additional_tools": ("type", "role", "tools"),
+}
 
 
-def canonical_provider_item_for_request(item: Any) -> Any:
-    """Return the Responses item shape Codex is expected to resend as input."""
+def response_item_to_request_item(item: Any, *, include_id: bool = False) -> Any:
+    """Project an upstream response item into the shape Codex resends as input."""
 
     if not isinstance(item, Mapping):
         return normalize_provider_item(item)
 
     item_type = str(item.get("type") or "").strip()
     if item_type == "message":
-        result = _pick(item, "type", "role", "content", "phase", "internal_chat_message_metadata_passthrough")
+        result = _pick(item, *_MESSAGE_FIELDS, include_id=include_id)
         if "content" in result:
-            result["content"] = _canonical_message_content(result["content"])
+            result["content"] = _canonical_message_content(result["content"], include_id=include_id)
         return result
     if item_type == "agent_message":
-        result = _pick(item, "type", "author", "recipient", "content", "internal_chat_message_metadata_passthrough")
+        result = _pick(item, *_AGENT_MESSAGE_FIELDS, include_id=include_id)
         if "content" in result:
-            result["content"] = _canonical_agent_message_content(result["content"])
+            result["content"] = _canonical_agent_message_content(result["content"], include_id=include_id)
         return result
     if item_type == "reasoning":
-        return _canonical_reasoning_item(item)
-    if item_type == "function_call":
-        return _pick(item, "type", "name", "namespace", "arguments", "call_id", "internal_chat_message_metadata_passthrough")
-    if item_type == "function_call_output":
-        return _pick(item, "type", "call_id", "output", "internal_chat_message_metadata_passthrough")
-    if item_type == "custom_tool_call":
-        return _pick(item, "type", "status", "call_id", "name", "input", "internal_chat_message_metadata_passthrough")
-    if item_type == "custom_tool_call_output":
-        return _pick(item, "type", "call_id", "name", "output", "internal_chat_message_metadata_passthrough")
-    if item_type == "local_shell_call":
-        return _pick(item, "type", "call_id", "status", "action", "internal_chat_message_metadata_passthrough")
-    if item_type == "tool_search_call":
-        return _pick(item, "type", "call_id", "status", "execution", "arguments", "internal_chat_message_metadata_passthrough")
-    if item_type == "tool_search_output":
-        return _pick(item, "type", "call_id", "status", "execution", "tools", "internal_chat_message_metadata_passthrough")
-    if item_type == "web_search_call":
-        return _pick(item, "type", "status", "action", "internal_chat_message_metadata_passthrough")
-    if item_type == "image_generation_call":
-        return _pick(item, "type", "status", "revised_prompt", "result", "internal_chat_message_metadata_passthrough")
-    if item_type in {"compaction", "compaction_summary"}:
-        result = _pick(item, "type", "encrypted_content", "internal_chat_message_metadata_passthrough")
+        return _canonical_reasoning_item(item, include_id=include_id)
+
+    if item_type in _COMPACTION_TYPES:
+        result = _pick(item, "type", "encrypted_content", "internal_chat_message_metadata_passthrough", include_id=include_id)
         result["type"] = "compaction"
         return result
-    if item_type == "context_compaction":
-        return _pick(item, "type", "encrypted_content", "internal_chat_message_metadata_passthrough")
-    if item_type == "additional_tools":
-        return _pick(item, "type", "role", "tools")
+
+    fields = _SIMPLE_RESPONSE_ITEM_FIELDS.get(item_type)
+    if fields is not None:
+        return _pick(item, *fields, include_id=include_id)
 
     return normalize_provider_item(item)
 
 
-def canonical_provider_items_for_request(items: Sequence[Any]) -> list[Any]:
-    return [canonical_provider_item_for_request(item) for item in items]
+def response_items_to_request_items(items: Sequence[Any], *, include_ids: bool = False) -> list[Any]:
+    return [response_item_to_request_item(item, include_id=include_ids) for item in items]
 
 
-def _pick(item: Mapping[str, Any], *keys: str) -> dict[str, Any]:
-    return {
-        key: normalize_provider_item(item[key])
-        for key in keys
-        if key in item and key not in DYNAMIC_FINGERPRINT_KEYS
-    }
+def _pick(item: Mapping[str, Any], *keys: str, include_id: bool = False) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    if include_id and "id" in item:
+        result["id"] = normalize_provider_item(item["id"])
+    for key in keys:
+        if key in item and key != "id":
+            result[key] = normalize_provider_item(item[key])
+    return result
 
 
-def _drop_none(item: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in item.items() if value is not None}
-
-
-def _canonical_reasoning_item(item: Mapping[str, Any]) -> dict[str, Any]:
-    result = _drop_none(
-        _pick(item, "type", "summary", "content", "encrypted_content", "internal_chat_message_metadata_passthrough")
-    )
+def _canonical_reasoning_item(item: Mapping[str, Any], *, include_id: bool) -> dict[str, Any]:
+    result = _pick(item, *_REASONING_FIELDS, include_id=include_id)
+    if result.get("internal_chat_message_metadata_passthrough") is None:
+        result.pop("internal_chat_message_metadata_passthrough", None)
     content = result.get("content")
     if isinstance(content, list) and not _should_serialize_reasoning_content(content):
         del result["content"]
@@ -125,7 +93,7 @@ def _should_serialize_reasoning_content(content: list[Any]) -> bool:
     return any(isinstance(part, Mapping) and part.get("type") == "reasoning_text" for part in content)
 
 
-def _canonical_message_content(content: Any) -> Any:
+def _canonical_message_content(content: Any, *, include_id: bool) -> Any:
     if not isinstance(content, list):
         return normalize_provider_item(content)
 
@@ -136,15 +104,15 @@ def _canonical_message_content(content: Any) -> Any:
             continue
         part_type = str(part.get("type") or "").strip()
         if part_type in {"input_text", "output_text"}:
-            canonical.append(_pick(part, "type", "text"))
+            canonical.append(_pick(part, "type", "text", include_id=include_id))
         elif part_type == "input_image":
-            canonical.append(_pick(part, "type", "image_url", "detail"))
+            canonical.append(_pick(part, "type", "image_url", "detail", include_id=include_id))
         else:
             canonical.append(normalize_provider_item(part))
     return canonical
 
 
-def _canonical_agent_message_content(content: Any) -> Any:
+def _canonical_agent_message_content(content: Any, *, include_id: bool) -> Any:
     if not isinstance(content, list):
         return normalize_provider_item(content)
 
@@ -155,9 +123,9 @@ def _canonical_agent_message_content(content: Any) -> Any:
             continue
         part_type = str(part.get("type") or "").strip()
         if part_type == "input_text":
-            canonical.append(_pick(part, "type", "text"))
+            canonical.append(_pick(part, "type", "text", include_id=include_id))
         elif part_type == "encrypted_content":
-            canonical.append(_pick(part, "type", "encrypted_content"))
+            canonical.append(_pick(part, "type", "encrypted_content", include_id=include_id))
         else:
             canonical.append(normalize_provider_item(part))
     return canonical
@@ -200,9 +168,9 @@ def normalize_provider_item(value: Any) -> Any:
 
 
 def fingerprint_provider_item(item: Any) -> str:
-    """Hash a provider item after semantic normalization."""
+    """Hash a provider item without suppressing protocol fields."""
 
-    normalized = semantic_provider_item_for_fingerprint(canonical_provider_item_for_request(item))
+    normalized = normalize_provider_item(item)
     payload = json.dumps(
         normalized,
         ensure_ascii=False,
@@ -212,32 +180,8 @@ def fingerprint_provider_item(item: Any) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def semantic_provider_item_for_fingerprint(value: Any) -> Any:
-    return _semantic_provider_item_for_fingerprint(value, depth=0)
-
-
-def _semantic_provider_item_for_fingerprint(value: Any, *, depth: int) -> Any:
-    if isinstance(value, Mapping):
-        item_type = str(value.get("type") or "").strip()
-        ignored_keys: set[str] = set()
-        if depth == 0 or item_type in _DYNAMIC_ID_ITEM_TYPES | _DYNAMIC_ID_CONTENT_PART_TYPES:
-            ignored_keys.add("id")
-        if item_type == "message":
-            ignored_keys.add("phase")
-        return {
-            key: _semantic_provider_item_for_fingerprint(child, depth=depth + 1)
-            for key, child in value.items()
-            if key not in ignored_keys
-        }
-    if isinstance(value, list):
-        return [_semantic_provider_item_for_fingerprint(child, depth=depth + 1) for child in value]
-    if isinstance(value, tuple):
-        return [_semantic_provider_item_for_fingerprint(child, depth=depth + 1) for child in value]
-    return value
-
-
 def provider_items_equal(left: Any, right: Any) -> bool:
-    """Compare two provider items by normalized fingerprint."""
+    """Compare two provider items by exact normalized fingerprint."""
 
     return fingerprint_provider_item(left) == fingerprint_provider_item(right)
 

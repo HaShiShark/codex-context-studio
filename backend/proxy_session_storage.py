@@ -10,6 +10,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+try:
+    from .node_locking import normalize_node_locks
+except ImportError:
+    from backend.node_locking import normalize_node_locks
+
 
 STORAGE_VERSION = 1
 DEFAULT_SESSION_TITLE = "Codex Session"
@@ -286,6 +291,8 @@ class ProxySessionStorage:
             "compact_pending": bool(metadata.get("compact_pending")),
             "compact_kind": str(metadata.get("compact_kind") or ""),
             "transcript_version": int(metadata.get("transcript_version") or 0),
+            "node_locks": normalize_node_locks(metadata.get("node_locks")),
+            "node_lock_revision": int(metadata.get("node_lock_revision") or 0),
             "last_error": str(metadata.get("last_error") or ""),
             "status": str(metadata.get("status") or "mirror"),
             "usage_events": copy.deepcopy(metadata.get("usage_events") or []),
@@ -312,6 +319,8 @@ class ProxySessionStorage:
             "compact_pending": bool(getattr(proxy_state, "compact_pending", False)),
             "compact_kind": str(getattr(proxy_state, "compact_kind", "") or ""),
             "transcript_version": int(getattr(session, "transcript_version", 0) or 0),
+            "node_locks": normalize_node_locks(getattr(session, "node_locks", {})),
+            "node_lock_revision": int(getattr(session, "node_lock_revision", 0) or 0),
             "last_error": str(getattr(session, "last_error", "") or ""),
             "status": str(getattr(session, "status", "") or "mirror"),
             "usage_events": copy.deepcopy(getattr(session, "usage_events", []) or []),

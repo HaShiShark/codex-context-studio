@@ -6,8 +6,6 @@ const TEXT_TRANSLATIONS: Record<string, string> = {
   '本地工作台已经就绪。': 'Local workspace is ready.',
   '默认权限': 'Default permissions',
   '完全访问权限': 'Full access',
-  '项目配置权限': 'Project config access',
-  '已切换到项目配置权限。': 'Switched to project config access.',
   '纸墨白': 'Paper Ink White',
   '鸢尾紫': 'Iris Purple',
   '冷静蓝': 'Calm Blue',
@@ -17,7 +15,6 @@ const TEXT_TRANSLATIONS: Record<string, string> = {
   '自动化入口后面再补，现在先把主链路跑通。': 'Automation will be added later. The main flow comes first.',
   '这个入口我先没动，当前还是直接在会话里描述需求。': 'This entry is not wired yet. Describe the request in chat for now.',
   '这里现在支持上传文件和图片了。': 'Files and images can now be uploaded here.',
-  '已创建新项目。': 'New project created.',
   '已创建新对话。': 'New chat created.',
   '当前对话已清空。': 'Current chat cleared.',
   '对话已删除。': 'Chat deleted.',
@@ -69,20 +66,12 @@ const TEXT_TRANSLATIONS: Record<string, string> = {
   '查看': 'View',
   '窗口': 'Window',
   '帮助': 'Help',
-  '我的项目': 'My Projects',
   '我的对话': 'My Chats',
-  '新项目': 'New Project',
   '新对话': 'New Chat',
-  '还没有项目，点右侧加号先建一个。': 'No projects yet. Use the plus button on the right to create one.',
   '这里还没有对话，点右侧加号新建。': 'No chats yet. Use the plus button on the right to create one.',
-  '这个项目里还没有对话': 'No chats in this project yet',
-  '项目菜单': 'Project menu',
-  '固定项目': 'Pin project',
   '在资源管理器中打开': 'Open in File Explorer',
-  '重命名项目': 'Rename project',
   '归档对话': 'Archive chats',
   '移除': 'Remove',
-  '新建项目对话': 'New project chat',
   '正在回复': 'Responding',
   '删除对话': 'Delete chat',
   '切换侧栏': 'Toggle sidebar',
@@ -95,14 +84,7 @@ const TEXT_TRANSLATIONS: Record<string, string> = {
   '需要在桌面端选择本地文件夹。': 'Choose a local folder in the desktop app.',
   '没有拿到文件夹路径。': 'No folder path was returned.',
   '没找到这条对话。': 'This chat was not found.',
-  '项目已移除。': 'Project removed.',
-  '项目已置顶。': 'Project pinned.',
-  '项目已重命名。': 'Project renamed.',
-  '这个项目没有绑定本地文件夹。': 'This project is not linked to a local folder.',
   '需要在桌面端打开资源管理器。': 'Open File Explorer from the desktop app.',
-  '已打开项目所在父文件夹。': 'Opened the project parent folder.',
-  '这个项目还没有可归档的对话。': 'This project has no chats to archive.',
-  '项目对话已归档。': 'Project chats archived.',
   '没找到当前会话。': 'Current session was not found.',
   '没找到这条消息。': 'This message was not found.',
   '这条消息已经删掉了。': 'This message has been deleted.',
@@ -362,8 +344,6 @@ function applyDynamicTranslation(text: string): string {
   output = output.replace(/已切换到 (.+?)。/g, (_, label: string) => `Switched to ${translatePhrase(label, 'en-US')}.`);
   output = output.replace(/模型已切换到 (.+?)。/g, 'Model switched to $1.');
   output = output.replace(/推理强度已切换到 (.+?)。/g, (_, label: string) => `Reasoning effort switched to ${translatePhrase(label, 'en-US')}.`);
-  output = output.replace(/移除项目“(.+?)”会删除它下面的项目对话，确定继续吗？/g, 'Remove project "$1" and delete its project chats?');
-  output = output.replace(/归档项目“(.+?)”下的 (\d+) 条对话？/g, 'Archive $2 chats under project "$1"?');
   output = output.replace(/读取附件失败：(.+)/g, 'Failed to read attachment: $1');
   output = output.replace(/附件：(.+)/g, 'Attachments: $1');
   output = output.replace(/退出码 (\d+) · 成功/g, 'Exit code $1 · Succeeded');
@@ -388,9 +368,7 @@ function applyDynamicTranslation(text: string): string {
 }
 
 const COMMON_REPLACEMENTS: Array<[string, string]> = [
-  ['我的项目', 'My Projects'],
   ['我的对话', 'My Chats'],
-  ['新项目', 'New Project'],
   ['新对话', 'New Chat'],
   ['手动页会优先围绕', 'The manual page will prioritize'],
   [' 来看。', '.'],

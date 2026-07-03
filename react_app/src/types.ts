@@ -99,6 +99,7 @@ export type MessageBlock = TextMessageBlock | ReasoningMessageBlock | ThinkingMe
 export type TranscriptEntry = TranscriptNode;
 
 export interface MessageRecord {
+  nodeId: string;
   role: 'user' | 'an' | 'subagent' | 'system' | 'developer' | 'compaction' | 'context';
   text: string;
   attachments: AttachmentRecord[];
@@ -109,61 +110,9 @@ export interface MessageRecord {
   sourceText: string;
 }
 
-export interface SessionSummary {
-  id: string;
-  title: string;
-  scope: 'chat' | 'project';
-  project_id: string | null;
-}
-
-export interface ProjectSummary {
-  id: string;
-  title: string;
-  root_path?: string;
-  sessions: SessionSummary[];
-}
-
 export interface ReasoningOption {
   value: string;
   label: string;
-}
-
-export interface OpenAISettings {
-  default_model: string;
-  default_reasoning_effort: string;
-  context_workbench_model: string;
-  context_workbench_provider_id: string;
-  context_token_warning_threshold: number;
-  context_token_critical_threshold: number;
-  openai_base_url: string;
-  max_tool_rounds: number;
-  assistant_name: string;
-  assistant_greeting: string;
-  assistant_prompt: string;
-  temperature: number | null;
-  top_p: number | null;
-  context_message_limit: number | null;
-  streaming: boolean;
-  user_name: string;
-  user_locale: string;
-  user_timezone: string;
-  user_profile: string;
-  theme_color: string;
-  theme_mode: 'light' | 'dark';
-  background_color: string;
-  ui_font: string;
-  code_font: string;
-  ui_font_size: number;
-  code_font_size: number;
-  appearance_contrast: number;
-  service_hints_enabled: boolean;
-  has_api_key: boolean;
-  api_key_preview: string;
-  openai_api_key?: string;
-  project_root: string;
-  active_provider_id: string;
-  response_providers: ResponseProviderSettings[];
-  tool_settings: ToolSetting[];
 }
 
 export interface ResponseProviderModel {
@@ -173,53 +122,11 @@ export interface ResponseProviderModel {
   provider?: string;
 }
 
-export type ProviderType = 'chat_completion' | 'responses' | 'gemini' | 'claude';
-
-export interface ResponseProviderSettings {
-  id: string;
-  name: string;
-  provider_type: ProviderType;
-  enabled: boolean;
-  supports_model_fetch: boolean;
-  supports_responses: boolean;
-  api_base_url: string;
-  default_model: string;
-  has_api_key: boolean;
-  api_key_preview: string;
-  api_key?: string;
-  models: ResponseProviderModel[];
-  last_sync_at: string;
-  last_sync_error: string;
-}
-
-export interface ResponseProviderDraft {
-  id: string;
-  name: string;
-  provider_type: ProviderType;
-  enabled: boolean;
-  supports_model_fetch: boolean;
-  supports_responses: boolean;
-  api_base_url: string;
-  api_key_input: string;
-  clear_api_key: boolean;
-  default_model: string;
-  models: ResponseProviderModel[];
-  last_sync_at: string;
-  last_sync_error: string;
-}
-
 export interface ContextWorkbenchToolCatalogItem {
   id: string;
   label: string;
   description: string;
   status: 'available' | 'preview';
-}
-
-export interface ToolSetting {
-  name: string;
-  label: string;
-  description: string;
-  enabled: boolean;
 }
 
 export interface ContextWorkbenchChatMessage {
@@ -247,30 +154,6 @@ export interface ProxyUsageSummary extends ProxyUsageBucket {
   by_model?: Record<string, ProxyUsageBucket>;
 }
 
-export interface SettingsDraft {
-  openai_api_key: string;
-  openai_base_url: string;
-  default_model: string;
-  max_tool_rounds: number;
-  assistant_name: string;
-  assistant_greeting: string;
-  assistant_prompt: string;
-  temperature: string;
-  temperature_enabled: boolean;
-  top_p: string;
-  top_p_enabled: boolean;
-  context_message_limit: string;
-  context_message_limit_enabled: boolean;
-  streaming: boolean;
-  user_name: string;
-  user_locale: string;
-  user_timezone: string;
-  user_profile: string;
-  active_provider_id: string;
-  response_providers: ResponseProviderDraft[];
-  tool_settings: ToolSetting[];
-}
-
 export interface InitPayload {
   settings?: {
     workbench_model?: string;
@@ -285,78 +168,6 @@ export interface InitPayload {
   context_workbench_histories?: Record<string, ContextWorkbenchChatMessage[]>;
 }
 
-export interface SidebarPayload {
-  projects?: ProjectSummary[];
-  chat_sessions?: SessionSummary[];
-}
-
-export interface SettingsResponse {
-  settings: OpenAISettings;
-  models: string[];
-}
-
-export interface ProviderModelsResponse extends SettingsResponse {
-  provider_id: string;
-  fetched_count: number;
-}
-
-export interface ProviderModelCandidatesResponse {
-  provider_id: string;
-  fetched_count: number;
-  models: ResponseProviderModel[];
-}
-
-export interface CreateProjectResponse extends SidebarPayload {
-  project: {
-    id: string;
-    title: string;
-    root_path?: string;
-  };
-}
-
-export interface ProjectActionResponse extends SidebarPayload {
-  project: {
-    id: string;
-    title: string;
-    root_path?: string;
-  };
-}
-
-export interface ArchiveProjectSessionsResponse extends ProjectActionResponse {
-  archived_session_ids: string[];
-}
-
-export interface CreateSessionResponse extends SidebarPayload {
-  session: SessionSummary;
-}
-
-export interface DeleteSessionResponse extends SidebarPayload {
-  deleted_session_id: string;
-  deleted_scope: 'chat' | 'project';
-  deleted_project_id: string | null;
-}
-
-export interface DeleteProjectResponse extends SidebarPayload {
-  deleted_project_id: string;
-  deleted_session_ids: string[];
-}
-
-export interface ResetSessionResponse extends SidebarPayload {
-  session: SessionSummary;
-}
-
-export interface TruncateSessionResponse extends SidebarPayload {
-  session: SessionSummary;
-  conversation: TranscriptEntry[];
-}
-
-export interface SendMessageResponse extends SidebarPayload {
-  answer: string;
-  tool_events: ToolEvent[];
-  blocks?: MessageBlock[];
-  session: SessionSummary;
-}
-
 export interface ContextChatResponse {
   answer: string;
   used_model?: string;
@@ -368,16 +179,20 @@ export interface ContextChatResponse {
 export interface ContextWorkbenchSettingsResponse {
   settings: {
     context_workbench_model: string;
-    context_workbench_provider_id: string;
     context_token_warning_threshold: number;
     context_token_critical_threshold: number;
     user_locale?: string;
     theme_mode?: 'light' | 'dark';
     ui_font?: string;
     ui_font_size?: number;
+    codex_system_prompt: string;
+    codex_system_prompt_default: string;
+    manual_local_compact_prompt: string;
+    manual_local_compact_prompt_default: string;
+    auto_local_compact_prompt: string;
+    auto_local_compact_prompt_default: string;
   };
   models: string[];
-  response_providers?: ResponseProviderSettings[];
   tool_catalog: ContextWorkbenchToolCatalogItem[];
 }
 
@@ -399,14 +214,6 @@ export interface StreamReasoningDoneEvent {
   type: 'reasoning_done';
 }
 
-export interface StreamModelStartEvent {
-  type: 'model_start';
-}
-
-export interface StreamModelDoneEvent {
-  type: 'model_done';
-}
-
 export interface StreamToolEvent {
   type: 'tool_event';
   tool_event: ToolEvent;
@@ -417,29 +224,10 @@ export interface ContextChatFinalizingEvent {
   stage?: 'commit' | string;
 }
 
-export interface StreamDoneEvent extends SidebarPayload {
-  type: 'done';
-  answer: string;
-  tool_events: ToolEvent[];
-  blocks?: MessageBlock[];
-  session: SessionSummary;
-}
-
 export interface StreamErrorEvent {
   type: 'error';
   error: string;
 }
-
-export type SendMessageStreamEvent =
-  | StreamDeltaEvent
-  | StreamResetEvent
-  | StreamModelStartEvent
-  | StreamModelDoneEvent
-  | StreamReasoningStartEvent
-  | StreamReasoningDoneEvent
-  | StreamToolEvent
-  | StreamDoneEvent
-  | StreamErrorEvent;
 
 export interface ContextChatStreamDoneEvent {
   type: 'done';

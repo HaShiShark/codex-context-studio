@@ -6,6 +6,7 @@ import {
   fetchProxySessionsRequest,
   proxyRealtimeUrl,
   syncProxySessionRequest,
+  updateProxySessionNodeLockRequest,
   type ProxyRealtimeEvent,
   type ProxySessionSummary,
   type TranscriptPatchOp,
@@ -33,10 +34,6 @@ type WindowResizeEdge =
   | 'top-right'
   | 'bottom-left'
   | 'bottom-right';
-
-function isProxyBusy(status?: string, isRunning?: boolean): boolean {
-  return Boolean(isRunning || status === 'running' || status === 'compacting');
-}
 
 function currentUrlSessionId(): string {
   return new URLSearchParams(window.location.search).get('session_id')?.trim() || '';
@@ -208,7 +205,10 @@ export default function WorkbenchWindow() {
   const [uiFont, setUiFont] = useState('Noto Serif SC');
   const [uiFontSize, setUiFontSize] = useState(15);
   const [proxySessionId, setProxySessionId] = useState('');
-  const [isProxyRunning, setIsProxyRunning] = useState(false);
+  const [isMainTurnRunning, setIsMainTurnRunning] = useState(false);
+  const [isContextRunning, setIsContextRunning] = useState(false);
+  const [nodeLocks, setNodeLocks] = useState<Record<string, boolean>>({});
+  const [nodeLockPendingIds, setNodeLockPendingIds] = useState<Set<string>>(new Set());
   const [messages, setMessages] = useState<MessageRecord[]>([]);
   const [contextWorkbenchChats, setContextWorkbenchChats] = useState<Record<string, ContextWorkbenchChatMessage[]>>({});
   const [reasoningOptions] = useState<ReasoningOption[]>(normalizeReasoningOptions());
@@ -220,6 +220,10 @@ export default function WorkbenchWindow() {
   const proxySessionIdRef = useRef('');
   const transcriptRef = useRef<TranscriptEntry[]>([]);
   const transcriptVersionRef = useRef(0);
+  const isContextRunningRef = useRef(false);
+  const nodeLocksRef = useRef<Record<string, boolean>>({});
+  const nodeLockRevisionRef = useRef(0);
+  const nodeLockPendingIdsRef = useRef<Set<string>>(new Set());
   const lastRealtimeEventIdRef = useRef(0);
   const realtimeClientIdRef = useRef(`frontend-window-${Math.random().toString(36).slice(2)}`);
 
@@ -230,18 +234,50 @@ export default function WorkbenchWindow() {
     setMessages(next);
   }, []);
 
+  const updateNodeLockPendingIds = useCallback((updater: (previous: Set<string>) => Set<string>) => {
+    setNodeLockPendingIds((previous) => {
+      const next = updater(previous);
+      nodeLockPendingIdsRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const applyProxySessionRuntime = useCallback((session: ProxySessionSummary | null | undefined) => {
+    if (!session) return;
+    const nextIsContextRunning = Boolean(session.is_context_running);
+    isContextRunningRef.current = nextIsContextRunning;
+    setIsContextRunning(nextIsContextRunning);
+    setIsMainTurnRunning(Boolean(session.is_main_turn_running));
+
+    const nextRevision = Number(session.node_lock_revision || 0);
+    const hasPendingLockMutation = nodeLockPendingIdsRef.current.size > 0;
+    const shouldApplyLocks = !hasPendingLockMutation || nextRevision > nodeLockRevisionRef.current;
+    if (shouldApplyLocks) {
+      const nextLocks = session.node_locks && typeof session.node_locks === 'object'
+        ? session.node_locks
+        : {};
+      nodeLocksRef.current = nextLocks;
+      setNodeLocks(nextLocks);
+      nodeLockRevisionRef.current = nextRevision;
+    }
+  }, []);
+
   const applyProxySession = useCallback((session: ProxySessionSummary | null | undefined) => {
     if (!session?.id) return;
     const sessionChanged = proxySessionIdRef.current !== session.id;
     proxySessionIdRef.current = session.id;
+    if (sessionChanged) {
+      nodeLockPendingIdsRef.current = new Set();
+      setNodeLockPendingIds(new Set());
+    }
     const version = Number(session.transcript_version || 0);
     transcriptVersionRef.current = sessionChanged ? version : Math.max(transcriptVersionRef.current, version);
     transcriptRef.current = session.transcript || [];
     setProxySessionId(session.id);
-    setIsProxyRunning(isProxyBusy(session.status, session.is_running));
+    applyProxySessionRuntime(session);
     setProxyUsageSummary(session.usage_summary || null);
     setMessagesIfChanged(normalizeConversation(transcriptRef.current));
-  }, [setMessagesIfChanged]);
+  }, [applyProxySessionRuntime, setMessagesIfChanged]);
 
   const loadInit = useCallback(async (opts: { silent?: boolean; targetSessionId?: string } = {}) => {
     const targetSid = opts.targetSessionId?.trim() || currentUrlSessionId();
@@ -270,8 +306,15 @@ export default function WorkbenchWindow() {
         proxySessionIdRef.current = '';
         transcriptVersionRef.current = 0;
         transcriptRef.current = [];
+        isContextRunningRef.current = false;
+        nodeLocksRef.current = {};
+        nodeLockRevisionRef.current = 0;
+        nodeLockPendingIdsRef.current = new Set();
         setProxySessionId('');
-        setIsProxyRunning(false);
+        setIsMainTurnRunning(false);
+        setIsContextRunning(false);
+        setNodeLocks({});
+        setNodeLockPendingIds(new Set());
         setProxyUsageSummary(null);
         setMessagesIfChanged([]);
         return;
@@ -367,7 +410,8 @@ export default function WorkbenchWindow() {
     }
 
     if (event.type === 'session_status') {
-      setIsProxyRunning(isProxyBusy(event.status || event.session?.status, event.is_running ?? event.session?.is_running));
+      setIsMainTurnRunning(Boolean(event.is_main_turn_running ?? event.session?.is_main_turn_running));
+      applyProxySessionRuntime(event.session);
       if (event.session?.usage_summary) setProxyUsageSummary(event.session.usage_summary);
       return;
     }
@@ -379,7 +423,7 @@ export default function WorkbenchWindow() {
       transcriptRef.current = event.transcript || event.session?.transcript || [];
       setMessagesIfChanged(normalizeConversation(transcriptRef.current));
       if (event.session) {
-        setIsProxyRunning(isProxyBusy(event.session.status, event.session.is_running));
+        applyProxySessionRuntime(event.session);
         setProxyUsageSummary(event.session.usage_summary || null);
       }
       return;
@@ -396,7 +440,7 @@ export default function WorkbenchWindow() {
       if (nextVersion) transcriptVersionRef.current = nextVersion;
       setMessagesIfChanged(normalizeConversation(transcriptRef.current));
       if (event.session) {
-        setIsProxyRunning(isProxyBusy(event.session.status, event.session.is_running));
+        applyProxySessionRuntime(event.session);
         setProxyUsageSummary(event.session.usage_summary || null);
       }
       return;
@@ -405,7 +449,7 @@ export default function WorkbenchWindow() {
     if (event.type === 'usage_update') {
       setProxyUsageSummary(event.usage_summary || null);
     }
-  }, [applyProxySession, setMessagesIfChanged, uiLocale]);
+  }, [applyProxySession, applyProxySessionRuntime, setMessagesIfChanged, uiLocale]);
 
   useEffect(() => {
     if (!proxySessionId) return undefined;
@@ -472,6 +516,57 @@ export default function WorkbenchWindow() {
     [proxySessionId, setMessagesIfChanged],
   );
 
+  const handleNodeLockChange = useCallback(async (nodeId: string, locked: boolean) => {
+    const safeNodeId = nodeId.trim();
+    const sessionId = proxySessionIdRef.current;
+    if (!sessionId || !safeNodeId || isContextRunningRef.current) {
+      return;
+    }
+
+    const previousLocks = nodeLocksRef.current;
+    const previousRevision = nodeLockRevisionRef.current;
+    const optimisticLocks = {
+      ...previousLocks,
+      [safeNodeId]: locked,
+    };
+
+    setRealtimeError('');
+    nodeLocksRef.current = optimisticLocks;
+    setNodeLocks(optimisticLocks);
+    updateNodeLockPendingIds((previous) => {
+      const next = new Set(previous);
+      next.add(safeNodeId);
+      return next;
+    });
+
+    try {
+      const response = await updateProxySessionNodeLockRequest({
+        session_id: sessionId,
+        node_id: safeNodeId,
+        locked,
+        expected_revision: previousRevision,
+      });
+      const nextLocks = response.node_locks || {};
+      const nextRevision = Number(response.node_lock_revision || 0);
+      nodeLocksRef.current = nextLocks;
+      nodeLockRevisionRef.current = nextRevision;
+      setNodeLocks(nextLocks);
+    } catch (caught) {
+      nodeLocksRef.current = previousLocks;
+      nodeLockRevisionRef.current = previousRevision;
+      setNodeLocks(previousLocks);
+      const message = caught instanceof Error ? caught.message : String(caught);
+      setRealtimeError(windowText(uiLocale, `Failed to update node lock: ${message}`, `节点锁定更新失败：${message}`));
+      void loadInit({ silent: true, targetSessionId: sessionId });
+    } finally {
+      updateNodeLockPendingIds((previous) => {
+        const next = new Set(previous);
+        next.delete(safeNodeId);
+        return next;
+      });
+    }
+  }, [loadInit, uiLocale, updateNodeLockPendingIds]);
+
   if (loading) {
     return (
       <main className="workbench-window-shell loading">
@@ -515,7 +610,10 @@ export default function WorkbenchWindow() {
           onToggle={() => undefined}
           onJumpToMessage={() => undefined}
           sessionId={proxySessionId}
-          isMainChatBusy={isProxyRunning}
+          isMainChatBusy={isMainTurnRunning}
+          isContextModelBusy={isContextRunning}
+          nodeLocks={nodeLocks}
+          nodeLockPendingIds={nodeLockPendingIds}
           contextWorkbenchChat={currentContextWorkbenchChat}
           reasoningOptions={reasoningOptions}
           proxyUsageSummary={proxyUsageSummary}
@@ -526,6 +624,7 @@ export default function WorkbenchWindow() {
           }}
           onContextWorkbenchConversationChange={handleConversationChange}
           onProxyUsageSummaryChange={setProxyUsageSummary}
+          onNodeLockChange={handleNodeLockChange}
           onEnsureSession={async () => proxySessionId}
           onUiLocaleChange={(locale) => setUiLocale(normalizeSupportedLocale(locale))}
           onUiFontChange={(font, size) => { setUiFont(font); setUiFontSize(size); }}

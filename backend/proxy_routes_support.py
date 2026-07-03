@@ -41,6 +41,9 @@ CHATGPT_UPSTREAM_BASE_URL = os.environ.get(
 FORCE_UPSTREAM_BASE_URL = os.environ.get("HASH_CONTEXT_FORCE_UPSTREAM_BASE_URL", "").strip()
 FORCE_UPSTREAM_API_KEY = os.environ.get("HASH_CONTEXT_FORCE_UPSTREAM_API_KEY", "").strip()
 LOG_PATH = DATA_DIR / "proxy.log"
+REQUEST_CAPTURE_DIR = DATA_DIR / "request_captures"
+REQUEST_CAPTURE_MARKER = DATA_DIR / "capture_requests.enabled"
+REQUEST_CAPTURE_MAX_FILES = int(os.environ.get("HASH_CONTEXT_REQUEST_CAPTURE_MAX_FILES", "20") or "20")
 INTERNAL_CONTEXT_HEADER = "x-hash-context-internal"
 INTERNAL_CONTEXT_VALUE = "context-workbench"
 CONTEXT_CONTROL_NOTICE_TEXT = "Hash Context: opened workbench."
@@ -87,12 +90,6 @@ CODEX_UI_TITLE_GENERATION_MARKERS = (
     "fill the structured title field with plain text",
     "user prompt:",
 )
-HASH_CONTEXT_TITLE_PROMPT_MARKER = "请根据下面这条新对话的第一条用户消息，生成一个对话标题。"
-HASH_CONTEXT_TITLE_INSTRUCTION_MARKERS = (
-    "你只负责给一段新对话起标题。",
-    "标题要短、具体、自然，优先使用用户的语言。",
-    "最大 18 个中文字符或 8 个英文单词。",
-)
 
 
 def normalize_detection_text(value: str) -> str:
@@ -116,12 +113,6 @@ def is_title_generation_request(body: dict[str, Any]) -> bool:
         normalized = normalize_detection_text(text)
         if all(marker in normalized for marker in CODEX_UI_TITLE_GENERATION_MARKERS):
             return True
-
-    instructions = compact_text(body.get("instructions") if isinstance(body, dict) else "")
-    if any(HASH_CONTEXT_TITLE_PROMPT_MARKER in text for text in user_texts) and all(
-        marker in instructions for marker in HASH_CONTEXT_TITLE_INSTRUCTION_MARKERS
-    ):
-        return True
 
     return False
 
@@ -518,12 +509,152 @@ def json_headers_for_upstream(headers: dict[str, str]) -> dict[str, str]:
 
 
 def safe_headers_for_log(headers: dict[str, str]) -> dict[str, str]:
-    redacted = {"authorization", "cookie", "set-cookie"}
+    redacted = {"authorization", "cookie", "set-cookie", "chatgpt-account-id", "openai-api-key", "api-key", "x-api-key"}
     return {
         key: ("<redacted>" if key.lower() in redacted else value)
         for key, value in headers.items()
         if key.lower() not in {"host", "content-length"}
     }
+
+
+def request_capture_enabled() -> bool:
+    env_value = os.environ.get("HASH_CONTEXT_CAPTURE_REQUEST_BODIES", "").strip().lower()
+    return env_value in {"1", "true", "yes", "on"} or REQUEST_CAPTURE_MARKER.exists()
+
+
+def input_id_summary(body: Any) -> dict[str, Any]:
+    input_items = body.get("input") if isinstance(body, dict) else None
+    if not isinstance(input_items, list):
+        return {
+            "input_count": 0,
+            "top_level_id_count": 0,
+            "nested_id_item_count": 0,
+            "items_by_type_role_id": {},
+            "last_user_text": "",
+            "id_samples": [],
+        }
+
+    def iter_dicts(value: Any):
+        if isinstance(value, dict):
+            yield value
+            for child in value.values():
+                yield from iter_dicts(child)
+        elif isinstance(value, list):
+            for child in value:
+                yield from iter_dicts(child)
+
+    by_type_role_id: dict[str, int] = {}
+    id_samples: list[dict[str, Any]] = []
+    user_texts: list[str] = []
+    top_level_id_count = 0
+    nested_id_item_count = 0
+
+    for index, item in enumerate(input_items):
+        if not isinstance(item, dict):
+            key = f"<{type(item).__name__}>|<none>|top_id=False"
+            by_type_role_id[key] = by_type_role_id.get(key, 0) + 1
+            continue
+
+        top_id = item.get("id") not in (None, "")
+        has_any_id = any(
+            isinstance(child, dict) and child.get("id") not in (None, "")
+            for child in iter_dicts(item)
+        )
+        if top_id:
+            top_level_id_count += 1
+        if has_any_id:
+            nested_id_item_count += 1
+
+        item_type = str(item.get("type") or "")
+        role = str(item.get("role") or "")
+        key = f"{item_type}|{role}|top_id={top_id}"
+        by_type_role_id[key] = by_type_role_id.get(key, 0) + 1
+
+        if item_type == "message" and role == "user":
+            text = read_message_text(item).strip()
+            if text:
+                user_texts.append(compact_text(text)[:240])
+
+        if top_id and len(id_samples) < 25:
+            id_samples.append(
+                {
+                    "index": index,
+                    "type": item.get("type"),
+                    "role": item.get("role"),
+                    "id": item.get("id"),
+                    "call_id": item.get("call_id"),
+                    "name": item.get("name"),
+                    "status": item.get("status"),
+                }
+            )
+
+    return {
+        "input_count": len(input_items),
+        "top_level_id_count": top_level_id_count,
+        "nested_id_item_count": nested_id_item_count,
+        "items_by_type_role_id": dict(sorted(by_type_role_id.items())),
+        "last_user_text": user_texts[-1] if user_texts else "",
+        "id_samples": id_samples,
+    }
+
+
+def write_request_capture(
+    *,
+    session_id: str,
+    original_body: dict[str, Any],
+    forwarded_body: dict[str, Any],
+    incoming_headers: dict[str, str],
+    upstream_headers: dict[str, str],
+    upstream_url: str,
+    capture_proxy_session: bool,
+    is_internal_context: bool,
+    is_title_generation: bool,
+    passthrough_reason: str,
+) -> str:
+    if not request_capture_enabled():
+        return ""
+
+    try:
+        REQUEST_CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+        timestamp = utc_timestamp()
+        safe_timestamp = re.sub(r"[^0-9A-Za-z._-]+", "-", timestamp).strip("-")
+        safe_session = re.sub(r"[^0-9A-Za-z._-]+", "-", session_id or "unknown").strip("-")
+        capture_path = REQUEST_CAPTURE_DIR / f"{safe_timestamp}-{safe_session[:36]}-{uuid.uuid4().hex[:8]}.json"
+        original_summary = input_id_summary(original_body)
+        forwarded_summary = input_id_summary(forwarded_body)
+        payload = {
+            "captured_at": timestamp,
+            "session_id": session_id,
+            "upstream_url": upstream_url,
+            "flags": {
+                "capture_proxy_session": capture_proxy_session,
+                "is_internal_context": is_internal_context,
+                "is_title_generation": is_title_generation,
+                "passthrough_reason": passthrough_reason,
+            },
+            "incoming_headers": safe_headers_for_log(incoming_headers),
+            "upstream_headers": safe_headers_for_log(upstream_headers),
+            "original_summary": original_summary,
+            "forwarded_summary": forwarded_summary,
+            "input_changed": (
+                original_body.get("input") if isinstance(original_body, dict) else None
+            )
+            != (forwarded_body.get("input") if isinstance(forwarded_body, dict) else None),
+            "original_body": original_body,
+            "forwarded_body": forwarded_body,
+        }
+        capture_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        captures = sorted(REQUEST_CAPTURE_DIR.glob("*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+        for stale_path in captures[max(0, REQUEST_CAPTURE_MAX_FILES) :]:
+            try:
+                stale_path.unlink()
+            except OSError:
+                pass
+        return str(capture_path)
+    except Exception as exc:
+        proxy_log(f"request capture failed session={session_id} error={type(exc).__name__}: {exc}")
+        return ""
 
 
 def decode_request_body(raw_body: bytes, content_encoding: str | None) -> bytes:

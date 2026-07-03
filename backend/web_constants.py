@@ -4,11 +4,10 @@ import os
 import re
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from simple_agent.agent import SimpleAgent
 from backend.codex_item_registry import CODEX_ITEM_REGISTRY
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -23,8 +22,6 @@ CONTEXT_REQUEST_DEBUG_FILE = STATE_DIR / "context_request_debug.ndjson"
 CONTEXT_EDIT_MARKERS_FILE = STATE_DIR / "context_edit_markers.json"
 ATTACHMENTS_DIR = STATE_DIR / "uploads"
 ATTACHMENTS_ROUTE = "uploads"
-DEFAULT_PROJECT_ID = "project_root"
-NEW_PROJECT_PREFIX = "新项目"
 NEW_SESSION_TITLE = "新对话"
 HIDDEN_WORKSPACE_ENTRIES = {
     ".git",
@@ -73,14 +70,6 @@ DEFAULT_REASONING_OPTIONS = [
 MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
 MAX_TOTAL_ATTACHMENT_BYTES = 50 * 1024 * 1024
 DATA_URL_PATTERN = re.compile(r"^data:(?P<mime>[^;,]+);base64,(?P<data>.+)$")
-TITLE_GENERATION_INSTRUCTIONS = "\n".join(
-    [
-        "你只负责给一段新对话起标题。",
-        "标题要短、具体、自然，优先使用用户的语言。",
-        "不要解释，不要加引号，不要使用 Markdown。",
-        "最多 18 个中文字符或 8 个英文单词。",
-    ]
-)
 
 
 class ClientDisconnectedError(BrokenPipeError):
@@ -95,25 +84,16 @@ class RequestCancelledError(RuntimeError):
 class SessionState:
     session_id: str
     title: str
-    scope: str
-    project_id: str | None
-    agent: SimpleAgent | None
     transcript: list[dict[str, object]]
     context_workbench_history: list[dict[str, str]]
+    node_locks: dict[str, bool] = field(default_factory=dict)
+    node_lock_revision: int = 0
+    main_turn_id: str = ""
+    main_turn_started_at: str = ""
+    main_turn_updated_at: str = ""
     active_request_mode: str | None = None
     active_request_id: str | None = None
     active_cancel_event: threading.Event | None = None
-    agent_hydrated: bool = True
-
-
-@dataclass(slots=True)
-class ProjectState:
-    project_id: str
-    title: str
-    session_ids: list[str]
-    root_path: str | None = None
-    archived_session_ids: list[str] | None = None
-
 
 @dataclass(slots=True)
 class ContextWorkbenchToolDefinition:

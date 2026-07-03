@@ -482,10 +482,27 @@ html[data-workbench-window-moving] {
   background: rgba(184, 105, 78, 0.08);
 }
 
+.workbench-window-shell .context-node-gutter.locked {
+  color: rgba(116, 108, 101, 0.66);
+}
+
+.workbench-window-shell .context-node-gutter.pending i {
+  animation: context-node-lock-pulse 700ms ease-in-out infinite alternate;
+}
+
 .workbench-window-shell .context-node-row.selected .context-node-gutter span {
   color: #ffffff;
   background: var(--an-theme);
   box-shadow: none;
+}
+
+@keyframes context-node-lock-pulse {
+  from {
+    opacity: 0.48;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 .workbench-window-shell .context-map-item-button {
@@ -526,10 +543,14 @@ html[data-workbench-window-moving] {
 .workbench-window-shell .context-node-row.hovered .context-map-item.expanded,
 .workbench-window-shell .context-node-row.selected .context-map-item-button,
 .workbench-window-shell .context-node-row.selected .context-map-item.expanded {
-  background: var(--paper-raised);
+  background: rgba(184, 105, 78, 0.07);
   border-radius: var(--card-radius);
-  box-shadow: 0 8px 20px rgba(96, 61, 45, 0.08);
+  box-shadow: none;
   overflow: hidden;
+}
+
+.workbench-window-shell .context-map-item.expanded {
+  gap: 0;
 }
 
 .workbench-window-shell .context-map-item.expanded .context-map-item-button,
@@ -541,9 +562,20 @@ html[data-workbench-window-moving] {
   background: var(--paper-raised);
 }
 
+.workbench-window-shell .context-map-item.expanded .context-map-item-button {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
 .workbench-window-shell .context-map-expanded-shell {
   border-bottom-left-radius: inherit;
   border-bottom-right-radius: inherit;
+}
+
+.workbench-window-shell .context-node-row.selected .context-map-item-button,
+.workbench-window-shell .context-node-row.selected .context-map-item.expanded .context-map-item-button {
+  background: rgba(184, 105, 78, 0.07);
+  box-shadow: none;
 }
 
 .workbench-window-shell .context-map-item.assistant .map-bubble {
@@ -559,6 +591,13 @@ html[data-workbench-window-moving] {
   box-shadow: 0 8px 20px rgba(96, 61, 45, 0.08);
 }
 
+.workbench-window-shell .context-map-item.developer .map-bubble,
+.workbench-window-shell .context-map-item.system .map-bubble {
+  color: var(--text-primary);
+  background: var(--paper-raised);
+  box-shadow: 0 8px 20px rgba(96, 61, 45, 0.08);
+}
+
 .workbench-window-shell .manual-workbench-message.user .manual-workbench-bubble,
 .workbench-window-shell .message.user .content {
   color: #ffffff;
@@ -568,6 +607,23 @@ html[data-workbench-window-moving] {
 
 .workbench-window-shell .context-map-item.user .map-preview-text {
   color: var(--text-primary);
+}
+
+.workbench-window-shell .context-node-row.locked .context-map-item-button,
+.workbench-window-shell .context-node-row.locked .context-map-item-button:hover,
+.workbench-window-shell .context-node-row.locked.hovered .context-map-item-button,
+.workbench-window-shell .context-node-row.locked.selected .context-map-item-button {
+  background: transparent;
+  box-shadow: none;
+}
+
+.workbench-window-shell .context-node-row.locked .map-bubble {
+  background: transparent;
+  box-shadow: none;
+}
+
+.workbench-window-shell .context-node-row.locked .map-preview-text {
+  color: var(--text-secondary);
 }
 
 .workbench-window-shell .context-map-expanded-content,
@@ -621,7 +677,8 @@ html[data-workbench-window-moving] {
 }
 
 .workbench-window-shell .context-minimap-bar.developer,
-.workbench-window-shell .context-minimap-bar.system {
+.workbench-window-shell .context-minimap-bar.system,
+.workbench-window-shell .context-minimap-bar.locked {
   background: rgba(116, 108, 101, 0.34);
   opacity: 0.58;
 }
@@ -674,13 +731,19 @@ html[data-workbench-window-moving] {
 }
 
 .workbench-window-shell .extended-page[data-page="settings"] .extended-page-scroll {
+  position: relative;
   max-width: 660px;
   padding: 28px 32px;
 }
 
-.workbench-window-shell .extended-page[data-page="settings"] .extended-page-scroll {
-  max-width: 660px;
-  padding: 28px 32px;
+.workbench-window-shell .extended-page[data-page="settings"] .extended-page-scroll.has-expanded-prompt {
+  max-width: none;
+  padding: 0;
+  overflow: hidden;
+}
+
+.workbench-window-shell .workbench-settings-title {
+  margin-top: 20px;
 }
 
 .workbench-window-shell .workbench-settings-panel {
@@ -875,6 +938,136 @@ html[data-workbench-window-moving] {
 .workbench-window-shell .settings-input-font {
   width: 100%;
   max-width: 200px;
+}
+
+.workbench-window-shell .workbench-prompts-panel {
+  margin-top: 20px;
+  padding: 0;
+  border-radius: var(--card-radius);
+  background: var(--paper-raised);
+  box-shadow: 0 2px 12px rgba(96, 61, 45, 0.08);
+}
+
+.workbench-window-shell .workbench-prompt-list {
+  display: grid;
+}
+
+.workbench-window-shell .workbench-prompt-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px 20px 18px;
+  border-top: 1px solid rgba(127, 95, 80, 0.1);
+}
+
+.workbench-window-shell .workbench-prompt-editor:first-child {
+  border-top: 0;
+}
+
+.workbench-window-shell .workbench-prompt-editor.is-expanded {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  min-height: 0;
+  padding: 28px 32px;
+  border: 0;
+  border-radius: 0;
+  background: var(--paper-raised);
+  box-shadow: none;
+}
+
+.workbench-window-shell .workbench-prompt-editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 32px;
+}
+
+.workbench-window-shell .workbench-prompt-editor-title {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0;
+  min-width: 0;
+  color: var(--text-primary);
+  font-size: var(--ui-font-size-sm);
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.workbench-window-shell .workbench-prompt-token-count {
+  flex: 0 0 auto;
+  color: var(--text-secondary);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.workbench-window-shell .workbench-prompt-editor-actions {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.workbench-window-shell .workbench-prompt-icon-btn,
+.workbench-window-shell .workbench-prompt-reset-btn {
+  border: 0;
+  border-radius: var(--control-radius);
+  background: rgba(255, 253, 249, 0.64);
+  color: var(--text-primary);
+  cursor: pointer;
+  font: inherit;
+}
+
+.workbench-window-shell .workbench-prompt-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  font-size: var(--ui-font-size-md);
+}
+
+.workbench-window-shell .workbench-prompt-reset-btn {
+  min-width: 58px;
+  min-height: 30px;
+  padding: 0 12px;
+  font-size: var(--ui-font-size-sm);
+  font-weight: 650;
+}
+
+.workbench-window-shell .workbench-prompt-icon-btn:hover:not(:disabled),
+.workbench-window-shell .workbench-prompt-reset-btn:hover:not(:disabled) {
+  background: rgba(184, 105, 78, 0.1);
+  color: var(--accent-strong);
+}
+
+.workbench-window-shell .workbench-prompt-icon-btn:disabled,
+.workbench-window-shell .workbench-prompt-reset-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
+}
+
+.workbench-window-shell .workbench-prompt-textarea {
+  box-sizing: border-box;
+  width: 100%;
+  height: 126px;
+  min-height: 126px;
+  max-height: 126px;
+  padding: 12px 13px;
+  resize: none;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.workbench-window-shell .workbench-prompt-editor.is-expanded .workbench-prompt-textarea {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
+  max-height: none;
 }
 
 .workbench-window-shell .dropdown-item {
@@ -1121,6 +1314,10 @@ html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.expanded 
   background: var(--item-hover);
 }
 
+html[data-theme-mode="dark"] .workbench-window-shell .context-node-gutter.locked {
+  color: rgba(222, 199, 181, 0.54);
+}
+
 html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.selected .context-node-gutter span,
 html[data-theme-mode="dark"] .workbench-window-shell .extended-tab.active,
 html[data-theme-mode="dark"] .workbench-window-shell .workbench-language-btn.is-active,
@@ -1153,10 +1350,25 @@ html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.selected 
 html[data-theme-mode="dark"] .workbench-window-shell .context-map-expanded-shell.open,
 html[data-theme-mode="dark"] .workbench-window-shell .context-map-expanded-content,
 html[data-theme-mode="dark"] .workbench-window-shell .context-map-item.assistant .map-bubble,
-html[data-theme-mode="dark"] .workbench-window-shell .context-map-item.user .map-bubble {
+html[data-theme-mode="dark"] .workbench-window-shell .context-map-item.user .map-bubble,
+html[data-theme-mode="dark"] .workbench-window-shell .context-map-item.developer .map-bubble,
+html[data-theme-mode="dark"] .workbench-window-shell .context-map-item.system .map-bubble {
   background: var(--paper-raised);
   color: var(--text-primary);
   box-shadow: 0 8px 20px rgba(11, 8, 6, 0.2);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .context-map-item.assistant .map-bubble,
+html[data-theme-mode="dark"] .workbench-window-shell .context-map-item.user .map-bubble,
+html[data-theme-mode="dark"] .workbench-window-shell .context-map-item.developer .map-bubble,
+html[data-theme-mode="dark"] .workbench-window-shell .context-map-item.system .map-bubble {
+  box-shadow: none;
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.selected .context-map-item-button,
+html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.selected .context-map-item.expanded {
+  background: var(--item-hover);
+  box-shadow: none;
 }
 
 html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-message.user .manual-workbench-bubble,
@@ -1166,6 +1378,24 @@ html[data-theme-mode="dark"] .workbench-window-shell .message.an .content {
   color: var(--text-primary);
   background: var(--paper-raised);
   box-shadow: 0 8px 20px rgba(11, 8, 6, 0.2);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-message.assistant .manual-workbench-bubble {
+  background: transparent;
+  box-shadow: none;
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.locked .context-map-item-button,
+html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.locked .context-map-item-button:hover,
+html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.locked.hovered .context-map-item-button,
+html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.locked.selected .context-map-item-button,
+html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.locked .map-bubble {
+  background: transparent;
+  box-shadow: none;
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.locked .map-preview-text {
+  color: var(--text-secondary);
 }
 
 html[data-theme-mode="dark"] .workbench-window-shell .context-map-expanded-content,
@@ -1183,7 +1413,8 @@ html[data-theme-mode="dark"] .workbench-window-shell .usage-summary-item,
 html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-composer-shell,
 html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-reference-chip,
 html[data-theme-mode="dark"] .workbench-window-shell .message-attachment-card,
-html[data-theme-mode="dark"] .workbench-window-shell .workbench-settings-panel {
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-settings-panel,
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-prompts-panel {
   border: 0;
   background: var(--paper-raised);
   color: var(--text-primary);
@@ -1200,6 +1431,10 @@ html[data-theme-mode="dark"] .workbench-window-shell .workbench-settings-row + .
   border-top-color: rgba(239, 222, 208, 0.07);
 }
 
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-prompt-editor {
+  border-top-color: rgba(239, 222, 208, 0.07);
+}
+
 html[data-theme-mode="dark"] .workbench-window-shell .settings-input,
 html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-input,
 html[data-theme-mode="dark"] .workbench-window-shell .workbench-language-toggle {
@@ -1207,6 +1442,10 @@ html[data-theme-mode="dark"] .workbench-window-shell .workbench-language-toggle 
   border-color: transparent;
   background: var(--bg-input);
   color-scheme: dark;
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-input {
+  background: transparent;
 }
 
 html[data-theme-mode="dark"] .workbench-window-shell .settings-input:focus {
@@ -1221,7 +1460,9 @@ html[data-theme-mode="dark"] .workbench-window-shell .settings-input::placeholde
 
 html[data-theme-mode="dark"] .workbench-window-shell .tool-btn-capsule,
 html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-clear,
-html[data-theme-mode="dark"] .workbench-window-shell .workbench-window-button {
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-window-button,
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-prompt-icon-btn,
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-prompt-reset-btn {
   border: 0;
   color: var(--text-secondary);
   background: rgba(58, 50, 43, 0.58);
@@ -1369,7 +1610,8 @@ html[data-theme-mode="dark"] .workbench-window-shell .context-minimap-bar.weight
 }
 
 html[data-theme-mode="dark"] .workbench-window-shell .context-minimap-bar.developer,
-html[data-theme-mode="dark"] .workbench-window-shell .context-minimap-bar.system {
+html[data-theme-mode="dark"] .workbench-window-shell .context-minimap-bar.system,
+html[data-theme-mode="dark"] .workbench-window-shell .context-minimap-bar.locked {
   background: rgba(222, 199, 181, 0.24);
   opacity: 0.62;
 }

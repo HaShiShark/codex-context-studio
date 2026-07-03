@@ -503,6 +503,8 @@ function Get-HashContextCodexArgs {
 
   $hookCommand = (Join-Path $projectRoot.Path "scripts\codex-context-hook.cmd").Replace("\", "/")
   $hookConfig = "hooks.UserPromptSubmit=[{matcher='*',hooks=[{type='command',command='$hookCommand',timeout=10,statusMessage='HashContext'}]}]"
+  $notifyCommand = (Join-Path $projectRoot.Path "scripts\codex-turn-ended-notify.cmd").Replace("\", "/")
+  $notifyConfig = "notify=['$notifyCommand']"
 
   $configArgs = @(
     "-c", "model_providers.hash-context.name=Hash Context",
@@ -510,7 +512,8 @@ function Get-HashContextCodexArgs {
     "-c", "model_providers.hash-context.requires_openai_auth=$requiresAuth",
     "-c", "model_providers.hash-context.wire_api=responses",
     "-c", "model_providers.hash-context.supports_websockets=false",
-    "-c", "model_provider=hash-context"
+    "-c", "model_provider=hash-context",
+    "-c", $notifyConfig
   )
 
   if ($UpstreamInfo -and $UpstreamInfo.kind -eq "third_party") {

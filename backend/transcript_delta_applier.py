@@ -74,17 +74,9 @@ class TranscriptDeltaApplier:
     ) -> AppendResult:
         """Append provider items using TranscriptCodec grouping rules.
 
-        Expected codec interface, in priority order:
-
-        1. ``append_input_items(transcript, input_items)`` mutates ``transcript``
-           in place, or returns the replacement transcript.
-        2. ``to_input_items(transcript)`` plus ``to_transcript(input_items)``.
-        3. ``transcript_to_input_items(transcript)`` plus
-           ``input_items_to_transcript(input_items)``.
-
-        The first form is preferred because it preserves existing node identity
-        while applying only the suffix.  The second form is a compatibility
-        fallback if the codec only exposes round-trip methods.
+        The codec must expose ``append_input_items(transcript, input_items)``.
+        It may mutate ``transcript`` in place, or return the replacement
+        transcript.
         """
 
         if not append_items:
@@ -94,28 +86,15 @@ class TranscriptDeltaApplier:
         items = list(append_items)
 
         append_fn = getattr(resolved_codec, "append_input_items", None)
-        if callable(append_fn):
-            result = append_fn(transcript, items)
-            _replace_transcript_if_returned(transcript, result)
-            return AppendResult(appended=len(items))
+        if not callable(append_fn):
+            raise TypeError(
+                "TranscriptDeltaApplier.append requires a codec with "
+                "append_input_items(transcript, input_items)."
+            )
 
-        to_input_items = getattr(resolved_codec, "to_input_items", None)
-        to_transcript = getattr(resolved_codec, "to_transcript", None)
-        if not callable(to_input_items):
-            to_input_items = getattr(resolved_codec, "transcript_to_input_items", None)
-        if not callable(to_transcript):
-            to_transcript = getattr(resolved_codec, "input_items_to_transcript", None)
-        if callable(to_input_items) and callable(to_transcript):
-            rebuilt = to_transcript(list(to_input_items(transcript)) + items)
-            _replace_transcript_if_returned(transcript, rebuilt)
-            return AppendResult(appended=len(items))
-
-        raise TypeError(
-            "TranscriptDeltaApplier.append requires a codec with "
-            "append_input_items(transcript, input_items), to_input_items/"
-            "to_transcript, or transcript_to_input_items/"
-            "input_items_to_transcript."
-        )
+        result = append_fn(transcript, items)
+        _replace_transcript_if_returned(transcript, result)
+        return AppendResult(appended=len(items))
 
 
 def _resolve_codec(codec: Any | None) -> Any:
@@ -127,9 +106,7 @@ def _resolve_codec(codec: Any | None) -> Any:
     except ImportError as exc:
         raise ImportError(
             "backend.transcript_codec is required for append. "
-            "Expected interface: append_input_items(transcript, input_items), "
-            "to_input_items/to_transcript, or transcript_to_input_items/"
-            "input_items_to_transcript."
+            "Expected interface: append_input_items(transcript, input_items)."
         ) from exc
 
     return getattr(transcript_codec, "TranscriptCodec", transcript_codec)

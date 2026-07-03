@@ -199,6 +199,7 @@ export function buildMessageStats(
       toolTokens,
       weightClass: getContextTokenWeightClass(tokens, tokenThresholds),
       editable: Boolean(meta?.editable),
+      locked: Boolean(meta?.locked),
       internalKind: meta?.internalKind,
     };
   });

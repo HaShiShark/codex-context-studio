@@ -28,6 +28,7 @@
 .context-node-gutter {
   all: unset;
   box-sizing: border-box;
+  position: relative;
   align-self: center;
   justify-self: center;
   width: 24px;
@@ -66,13 +67,13 @@
 }
 
 .context-node-gutter.locked {
-  cursor: default;
   opacity: 0.45;
-  pointer-events: none;
 }
 
-.context-node-row.locked .context-map-item {
-  opacity: 0.72;
+.context-node-gutter.pending,
+.context-node-gutter:disabled {
+  cursor: progress;
+  opacity: 0.36;
 }
 
 .context-map-item {

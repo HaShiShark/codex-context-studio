@@ -56,7 +56,11 @@ def main() -> None:
         from backend.web_state import AppState
 
         app_state = AppState(_settings(tmp_dir))
-        session = app_state.create_session()
+        session = app_state.upsert_proxy_session(
+            session_id="restore-disabled-session",
+            title="restore disabled",
+            transcript=[],
+        )
 
         bootstrap = app_state.bootstrap_payload(session.session_id)
         _assert_bootstrap_has_no_restore_fields(bootstrap)

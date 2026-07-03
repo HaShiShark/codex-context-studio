@@ -3,9 +3,7 @@ import type {
   ContextWorkbenchChatMessage,
   ContextWorkbenchSettingsResponse,
   InitPayload,
-  OpenAISettings,
   ProxyUsageSummary,
-  SettingsResponse,
   TranscriptEntry,
 } from './types';
 
@@ -91,35 +89,6 @@ export function fetchInit(options: { sessionId?: string; includeConversation?: b
   return apiFetch<InitPayload>(query ? `/api/init?${query}` : '/api/init');
 }
 
-export type ProxySettingsPayload = Partial<
-  Omit<
-    OpenAISettings,
-    | 'has_api_key'
-    | 'api_key_preview'
-    | 'response_providers'
-    | 'context_workbench_model'
-    | 'context_workbench_provider_id'
-    | 'context_token_warning_threshold'
-    | 'context_token_critical_threshold'
-  >
-> & {
-  openai_api_key?: string;
-  clear_api_key?: boolean;
-  deleted_provider_ids?: string[];
-  response_providers?: OpenAISettings['response_providers'];
-};
-
-export function fetchSettings(): Promise<SettingsResponse> {
-  return apiFetch<SettingsResponse>('/api/settings');
-}
-
-export function saveSettingsRequest(payload: ProxySettingsPayload): Promise<SettingsResponse> {
-  return apiFetch<SettingsResponse>('/api/settings', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-}
-
 export type ContextWorkbenchSettingsPayload = Partial<ContextWorkbenchSettingsResponse['settings']>;
 
 export function fetchContextWorkbenchSettings(options: { refreshModels?: boolean } = {}): Promise<ContextWorkbenchSettingsResponse> {
@@ -144,10 +113,17 @@ export interface ProxySessionSummary {
   status: 'mirror' | 'running' | 'compacting' | 'error' | string;
   transcript?: TranscriptEntry[];
   is_running?: boolean;
+  is_context_running?: boolean;
+  is_main_turn_running?: boolean;
+  main_turn_id?: string;
+  main_turn_started_at?: string;
+  main_turn_updated_at?: string;
   last_error?: string;
   created_at?: string;
   updated_at?: string;
   transcript_version?: number;
+  node_locks?: Record<string, boolean>;
+  node_lock_revision?: number;
   usage_summary?: ProxyUsageSummary;
 }
 
@@ -185,6 +161,7 @@ export type ProxyRealtimeEvent = {
   session_list?: ProxySessionsResponse;
   status?: string;
   is_running?: boolean;
+  is_main_turn_running?: boolean;
   last_error?: string;
   reason?: string;
   phase?: string;
@@ -214,6 +191,18 @@ export function fetchProxySessionRequest(sessionId: string): Promise<ProxySessio
 
 export function fetchProxySessionUsageRequest(sessionId: string): Promise<{ summary: ProxyUsageSummary }> {
   return apiFetch<{ summary: ProxyUsageSummary }>(`/api/proxy/sessions/${encodeURIComponent(sessionId)}/usage`);
+}
+
+export function updateProxySessionNodeLockRequest(payload: {
+  session_id: string;
+  node_id: string;
+  locked: boolean;
+  expected_revision?: number;
+}): Promise<{ ok: boolean; session_id: string; node_locks: Record<string, boolean>; node_lock_revision: number }> {
+  return apiFetch('/api/proxy-session-node-lock', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
 }
 
 export function resetProxyUsageRequest(

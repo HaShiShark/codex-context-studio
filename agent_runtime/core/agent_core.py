@@ -45,8 +45,6 @@ class AgentCore(Generic[ToolEventT]):
         sanitize_text: Callable[[Any], str],
         sanitize_value: Callable[[Any], Any],
         preview_text: Callable[[str], str],
-        should_fallback_to_developer: Callable[[Exception], bool],
-        fallback_to_developer: Callable[[], None],
         check_cancelled: Callable[[], None] | None = None,
     ) -> None:
         self.max_tool_rounds = max_tool_rounds
@@ -61,8 +59,6 @@ class AgentCore(Generic[ToolEventT]):
         self.sanitize_text = sanitize_text
         self.sanitize_value = sanitize_value
         self.preview_text = preview_text
-        self.should_fallback_to_developer = should_fallback_to_developer
-        self.fallback_to_developer = fallback_to_developer
         self.check_cancelled = check_cancelled
 
     def run_turn(
@@ -151,34 +147,17 @@ class AgentCore(Generic[ToolEventT]):
         on_reasoning_delta: Callable[[str], None] | None,
         on_reasoning_done: Callable[[], None] | None,
     ) -> StreamResultLike:
-        try:
-            return self.stream_response(
-                **self.build_request(
-                    turn_items,
-                    request_model,
-                    request_reasoning_effort,
-                ),
-                on_text_delta=on_text_delta,
-                on_reasoning_start=on_reasoning_start,
-                on_reasoning_delta=on_reasoning_delta,
-                on_reasoning_done=on_reasoning_done,
-            )
-        except Exception as exc:
-            if not self.should_fallback_to_developer(exc):
-                raise
-
-            self.fallback_to_developer()
-            return self.stream_response(
-                **self.build_request(
-                    turn_items,
-                    request_model,
-                    request_reasoning_effort,
-                ),
-                on_text_delta=on_text_delta,
-                on_reasoning_start=on_reasoning_start,
-                on_reasoning_delta=on_reasoning_delta,
-                on_reasoning_done=on_reasoning_done,
-            )
+        return self.stream_response(
+            **self.build_request(
+                turn_items,
+                request_model,
+                request_reasoning_effort,
+            ),
+            on_text_delta=on_text_delta,
+            on_reasoning_start=on_reasoning_start,
+            on_reasoning_delta=on_reasoning_delta,
+            on_reasoning_done=on_reasoning_done,
+        )
 
     def _execute_tool_call(
         self,

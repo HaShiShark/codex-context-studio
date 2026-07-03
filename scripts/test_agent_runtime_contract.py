@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,7 +19,9 @@ from agent_runtime.core.canonical_types import (  # noqa: E402
     assert_transcript_role,
     is_transcript_role,
 )
+from agent_runtime.core.agent_core import AgentCore  # noqa: E402
 from agent_runtime.core.transcript_contract import TranscriptRecord  # noqa: E402
+from simple_agent.agent import SimpleAgent  # noqa: E402
 
 
 PROXY_ONLY_ROLES = ("system", "developer", "context", "subagent", "compaction")
@@ -129,12 +132,98 @@ def test_chat_completions_keeps_prompt_roles_out_of_transcript_path() -> None:
     assert messages[-1] == {"role": "tool", "tool_call_id": "call_2", "content": "done"}
 
 
+def test_agent_core_does_not_retry_system_role_errors_as_developer() -> None:
+    history: list[dict[str, object]] = []
+    build_calls: list[list[dict[str, object]]] = []
+
+    def build_request(
+        turn_items: list[dict[str, object]],
+        request_model: str,
+        request_reasoning_effort: str | None,
+    ) -> dict[str, object]:
+        build_calls.append(list(turn_items))
+        return {"model": request_model, "reasoning_effort": request_reasoning_effort}
+
+    def stream_response(**_: object) -> object:
+        raise RuntimeError("system messages are not allowed")
+
+    core: AgentCore[object] = AgentCore(
+        max_tool_rounds=1,
+        default_model="test-model",
+        history=history,
+        build_request=build_request,
+        stream_response=stream_response,
+        execute_tool=lambda _name, _arguments: SimpleNamespace(
+            output_text="",
+            display_title="",
+            display_detail="",
+            display_result="",
+            status="completed",
+        ),
+        make_user_message=lambda text, _attachments: {
+            "type": "message",
+            "role": "user",
+            "content": text,
+        },
+        make_assistant_message=lambda text: {
+            "type": "message",
+            "role": "assistant",
+            "content": text,
+        },
+        tool_event_factory=lambda **kwargs: kwargs,
+        sanitize_text=str,
+        sanitize_value=lambda value: value,
+        preview_text=lambda text: text,
+    )
+
+    try:
+        core.run_turn("hello")
+    except RuntimeError as exc:
+        assert "system messages are not allowed" in str(exc)
+    else:
+        raise AssertionError("AgentCore swallowed a provider role error")
+
+    assert len(build_calls) == 1
+    assert history == []
+
+
+def test_simple_agent_legacy_prompt_messages_are_developer_blocks() -> None:
+    agent = object.__new__(SimpleAgent)
+    agent.provider_type = "chat_completion"
+    agent.provider_id = "test-provider"
+    agent.settings = SimpleNamespace(model="test-model", temperature=None, top_p=None)
+    agent.tools = SimpleNamespace(schemas=[])
+
+    context = agent._context_from_legacy_input_request(
+        {
+            "model": "test-model",
+            "instructions": "top-level instructions",
+            "input": [
+                {"type": "message", "role": "system", "content": "old system prompt"},
+                {"type": "message", "role": "developer", "content": "developer prompt"},
+                {"type": "message", "role": "user", "content": "visible user"},
+            ],
+        }
+    )
+
+    assert [(block.kind, block.text) for block in context.prompt_blocks] == [
+        ("developer", "top-level instructions"),
+        ("developer", "old system prompt"),
+        ("developer", "developer prompt"),
+    ]
+    assert context.transcript == (
+        {"type": "message", "role": "user", "content": "visible user"},
+    )
+
+
 def main() -> None:
     tests = [
         test_agent_runtime_transcript_role_scope_is_explicit,
         test_transcript_record_does_not_claim_proxy_node_roles,
         test_canonical_items_keep_tools_and_opaque_provider_payloads,
         test_chat_completions_keeps_prompt_roles_out_of_transcript_path,
+        test_agent_core_does_not_retry_system_role_errors_as_developer,
+        test_simple_agent_legacy_prompt_messages_are_developer_blocks,
     ]
     for test in tests:
         test()

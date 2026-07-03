@@ -10,9 +10,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from backend.codex_input_cursor import (  # noqa: E402
-    canonical_provider_item_for_request,
     compute_diff,
     fingerprint_provider_item,
+    response_item_to_request_item,
 )
 from backend.transcript_delta_applier import TranscriptDeltaApplier  # noqa: E402
 
@@ -117,7 +117,17 @@ class TestTranscriptCodec:
         return None
 
 
-def test_fingerprint_excludes_id_but_keeps_semantics() -> None:
+class RoundTripOnlyCodec:
+    @staticmethod
+    def to_transcript(input_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return TestTranscriptCodec.to_transcript(input_items)
+
+    @staticmethod
+    def to_input_items(transcript: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return TestTranscriptCodec.to_input_items(transcript)
+
+
+def test_fingerprint_includes_protocol_ids() -> None:
     first = {
         "id": "dynamic-a",
         "type": "function_call",
@@ -144,7 +154,7 @@ def test_fingerprint_excludes_id_but_keeps_semantics() -> None:
         "encrypted_content": "stable-blob-b",
     }
 
-    assert fingerprint_provider_item(first) == fingerprint_provider_item(second)
+    assert fingerprint_provider_item(first) != fingerprint_provider_item(second)
     assert fingerprint_provider_item(second) != fingerprint_provider_item(changed_call_id)
     assert fingerprint_provider_item(changed_reasoning) != fingerprint_provider_item(changed_reasoning_blob)
 
@@ -182,12 +192,39 @@ def test_tool_search_output_preserves_schema_property_named_id() -> None:
         ],
     }
 
-    canonical = canonical_provider_item_for_request(tool_search_output)
+    projected = response_item_to_request_item(tool_search_output)
 
-    assert "id" not in canonical
-    assert canonical["tools"][0]["tools"][0]["parameters"]["properties"]["id"] == {
+    assert "id" not in projected
+    assert projected["tools"][0]["tools"][0]["parameters"]["properties"]["id"] == {
         "type": "string",
         "description": "Agent id to resume.",
+    }
+
+
+def test_response_item_projection_can_preserve_protocol_id() -> None:
+    response_message = {
+        "id": "msg-stable",
+        "type": "message",
+        "status": "completed",
+        "role": "assistant",
+        "content": [
+            {
+                "id": "part-stable",
+                "type": "output_text",
+                "annotations": [],
+                "logprobs": [],
+                "text": "hello",
+            }
+        ],
+    }
+
+    projected = response_item_to_request_item(response_message, include_id=True)
+
+    assert projected == {
+        "id": "msg-stable",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"id": "part-stable", "type": "output_text", "text": "hello"}],
     }
 
 
@@ -242,12 +279,12 @@ def test_fingerprint_distinguishes_missing_schema_property_named_id() -> None:
 
     assert diff.prefix_len == 0
     assert diff.pop == [broken_tool_search_output]
-    assert diff.append == [canonical_provider_item_for_request(valid_tool_search_output)]
+    assert diff.append == [valid_tool_search_output]
 
 
 def test_full_prefix_match_is_idempotent() -> None:
     cursor = [{"id": "a", "role": "user", "content": "hello"}]
-    new_input = [{"id": "b", "role": "user", "content": "hello"}]
+    new_input = [{"id": "a", "role": "user", "content": "hello"}]
 
     diff = compute_diff(cursor, new_input)
 
@@ -256,7 +293,7 @@ def test_full_prefix_match_is_idempotent() -> None:
     assert diff.append == []
 
 
-def test_response_item_fingerprint_matches_next_request_shape() -> None:
+def test_response_item_projection_matches_next_request_shape() -> None:
     raw_response_message = {
         "id": "msg-dynamic",
         "type": "message",
@@ -279,14 +316,14 @@ def test_response_item_fingerprint_matches_next_request_shape() -> None:
         "phase": "final_answer",
     }
 
-    diff = compute_diff([raw_response_message], [next_request_message])
+    diff = compute_diff([response_item_to_request_item(raw_response_message)], [next_request_message])
 
     assert diff.prefix_len == 1
     assert diff.pop == []
     assert diff.append == []
 
 
-def test_message_phase_is_not_part_of_cursor_identity() -> None:
+def test_message_phase_difference_is_not_suppressed() -> None:
     cursor_message = {
         "type": "message",
         "role": "assistant",
@@ -301,9 +338,9 @@ def test_message_phase_is_not_part_of_cursor_identity() -> None:
 
     diff = compute_diff([cursor_message], [next_request_message])
 
-    assert diff.prefix_len == 1
-    assert diff.pop == []
-    assert diff.append == []
+    assert diff.prefix_len == 0
+    assert diff.pop == [cursor_message]
+    assert diff.append == [next_request_message]
 
 
 def test_reasoning_empty_content_matches_next_request_shape() -> None:
@@ -320,11 +357,30 @@ def test_reasoning_empty_content_matches_next_request_shape() -> None:
         "encrypted_content": "stable-reasoning",
     }
 
-    diff = compute_diff([raw_response_reasoning], [next_request_reasoning])
+    diff = compute_diff([response_item_to_request_item(raw_response_reasoning)], [next_request_reasoning])
 
     assert diff.prefix_len == 1
     assert diff.pop == []
     assert diff.append == []
+
+
+def test_reasoning_null_content_is_preserved_for_request_shape() -> None:
+    raw_request_reasoning = {
+        "id": "rs-dynamic",
+        "type": "reasoning",
+        "summary": [],
+        "content": None,
+        "encrypted_content": "stable-reasoning",
+    }
+
+    projected = response_item_to_request_item(raw_request_reasoning)
+
+    assert projected == {
+        "type": "reasoning",
+        "summary": [],
+        "content": None,
+        "encrypted_content": "stable-reasoning",
+    }
 
 
 def test_reasoning_plain_text_content_matches_next_request_shape() -> None:
@@ -340,7 +396,7 @@ def test_reasoning_plain_text_content_matches_next_request_shape() -> None:
         "encrypted_content": "stable-reasoning",
     }
 
-    diff = compute_diff([raw_response_reasoning], [next_request_reasoning])
+    diff = compute_diff([response_item_to_request_item(raw_response_reasoning)], [next_request_reasoning])
 
     assert diff.prefix_len == 1
     assert diff.pop == []
@@ -415,6 +471,25 @@ def test_append_uses_codec_grouping() -> None:
     assert TestTranscriptCodec.to_input_items(transcript) == [user, assistant, call, output]
 
 
+def test_append_rejects_round_trip_only_codec() -> None:
+    user = {"type": "message", "role": "user", "content": "hello"}
+    assistant = {"type": "message", "role": "assistant", "content": "hi"}
+    transcript = TestTranscriptCodec.to_transcript([user])
+
+    try:
+        TranscriptDeltaApplier.append(
+            transcript,
+            [assistant],
+            codec=RoundTripOnlyCodec,
+        )
+    except TypeError as exc:
+        assert "append_input_items" in str(exc)
+    else:
+        raise AssertionError("round-trip-only codec should not be accepted")
+
+    assert TestTranscriptCodec.to_input_items(transcript) == [user]
+
+
 def test_tool_continuation_tail_replacement() -> None:
     user = {"type": "message", "role": "user", "content": "run lookup"}
     old_call = {
@@ -453,16 +528,9 @@ def test_tool_continuation_tail_replacement() -> None:
 
 
 def test_append_supports_repository_codec_when_present() -> None:
-    try:
-        from backend import transcript_codec
-    except ImportError:
-        return
+    from backend import transcript_codec
 
-    if not (
-        hasattr(transcript_codec, "input_items_to_transcript")
-        and hasattr(transcript_codec, "transcript_to_input_items")
-    ):
-        return
+    assert callable(getattr(transcript_codec, "append_input_items", None))
 
     user = {"type": "message", "role": "user", "content": "hello"}
     assistant = {"type": "message", "role": "assistant", "content": "hi"}
@@ -476,16 +544,19 @@ def test_append_supports_repository_codec_when_present() -> None:
 
 def main() -> None:
     tests = [
-        test_fingerprint_excludes_id_but_keeps_semantics,
+        test_fingerprint_includes_protocol_ids,
         test_full_prefix_match_is_idempotent,
-        test_response_item_fingerprint_matches_next_request_shape,
-        test_message_phase_is_not_part_of_cursor_identity,
+        test_response_item_projection_can_preserve_protocol_id,
+        test_response_item_projection_matches_next_request_shape,
+        test_message_phase_difference_is_not_suppressed,
         test_reasoning_empty_content_matches_next_request_shape,
+        test_reasoning_null_content_is_preserved_for_request_shape,
         test_reasoning_plain_text_content_matches_next_request_shape,
         test_reasoning_text_content_is_kept,
         test_pop_removes_matching_tail_item,
         test_pop_conflict_does_not_delete_tail,
         test_append_uses_codec_grouping,
+        test_append_rejects_round_trip_only_codec,
         test_tool_continuation_tail_replacement,
         test_append_supports_repository_codec_when_present,
     ]

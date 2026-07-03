@@ -48,15 +48,6 @@ def function_call(arguments: str, *, item_id: str) -> dict[str, Any]:
     }
 
 
-def request_function_call(arguments: str) -> dict[str, Any]:
-    return {
-        "type": "function_call",
-        "call_id": "call-1",
-        "name": "lookup",
-        "arguments": arguments,
-    }
-
-
 def function_output(text: str) -> dict[str, Any]:
     return {
         "type": "function_call_output",
@@ -143,20 +134,52 @@ def test_response_completed_stores_next_request_shape_in_cursor() -> None:
     assert state.codex_input_cursor == [user, next_request_message]
 
 
+def test_response_completed_preserves_ids_after_id_bearing_request() -> None:
+    state = ProxyState()
+    user = message("user", "hello", item_id="user-stable")
+    raw_response_message = {
+        "id": "msg-stable",
+        "type": "message",
+        "status": "completed",
+        "role": "assistant",
+        "content": [
+            {
+                "id": "part-stable",
+                "type": "output_text",
+                "annotations": [],
+                "logprobs": [],
+                "text": "hi",
+            }
+        ],
+    }
+    next_request_message = {
+        "id": "msg-stable",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"id": "part-stable", "type": "output_text", "text": "hi"}],
+    }
+    handle_request(state, {"input": [user]})
+
+    handle_response_completed(state, [raw_response_message])
+
+    assert state.request_item_ids is True
+    assert transcript_items(state) == [user, next_request_message]
+    assert state.codex_input_cursor == [user, next_request_message]
+
+
 def test_tool_continuation_pops_old_tail_and_appends_new_tail() -> None:
     state = ProxyState()
     user = message("user", "run lookup")
     old_call = function_call('{"q":"old"}', item_id="old-dynamic")
     new_call = function_call('{"q":"new"}', item_id="new-dynamic")
-    request_new_call = request_function_call('{"q":"new"}')
     output = function_output("done")
 
     handle_request(state, {"input": [user, old_call]})
     forwarded = handle_request(state, {"input": [user, new_call, output]})
 
-    assert forwarded["input"] == [user, request_new_call, output]
-    assert transcript_items(state) == [user, request_new_call, output]
-    assert state.codex_input_cursor == [user, request_new_call, output]
+    assert forwarded["input"] == [user, new_call, output]
+    assert transcript_items(state) == [user, new_call, output]
+    assert state.codex_input_cursor == [user, new_call, output]
     assert state.tail_conflict is False
 
 
@@ -233,7 +256,7 @@ def test_workbench_compressed_transcript_does_not_restore_old_assistant_on_next_
     assert state.codex_input_cursor == [user, next_request_message, followup]
 
 
-def test_workbench_compressed_transcript_ignores_phase_only_message_delta() -> None:
+def test_workbench_compressed_transcript_surfaces_phase_delta_as_conflict() -> None:
     state = ProxyState()
     user = message("user", "ask")
     raw_response_message = {
@@ -268,9 +291,9 @@ def test_workbench_compressed_transcript_ignores_phase_only_message_delta() -> N
         {"input": [copy.deepcopy(user), copy.deepcopy(next_request_message), copy.deepcopy(followup)]},
     )
 
-    assert state.tail_conflict is False
-    assert forwarded["input"] == [summary, followup]
-    assert transcript_items(state) == [summary, followup]
+    assert state.tail_conflict is True
+    assert forwarded["input"] == [summary, next_request_message, followup]
+    assert transcript_items(state) == [summary, next_request_message, followup]
     assert state.codex_input_cursor == [user, next_request_message, followup]
 
 
@@ -332,6 +355,33 @@ def test_workbench_compressed_transcript_does_not_restore_reasoning_turn() -> No
     assert state.tail_conflict is False
     assert forwarded["input"] == [summary, followup]
     assert transcript_items(state) == [summary, followup]
+
+
+def test_reasoning_null_content_survives_request_rebuild() -> None:
+    state = ProxyState()
+    user = message("user", "question")
+    reasoning = {
+        "type": "reasoning",
+        "summary": [],
+        "content": None,
+        "encrypted_content": "stable-reasoning",
+    }
+    followup = message("user", "follow up")
+
+    handle_request(state, {"input": [copy.deepcopy(user), copy.deepcopy(reasoning)]})
+    forwarded = handle_request(
+        state,
+        {
+            "input": [
+                copy.deepcopy(user),
+                copy.deepcopy(reasoning),
+                copy.deepcopy(followup),
+            ],
+        },
+    )
+
+    assert forwarded["input"][1] == reasoning
+    assert transcript_items(state)[1] == reasoning
 
 
 def test_user_edited_transcript_survives_next_raw_codex_request() -> None:
@@ -511,11 +561,13 @@ def main() -> None:
         test_new_thread_empty_cursor_appends_full_input,
         test_same_request_retry_is_idempotent,
         test_response_completed_appends_assistant_to_cursor_and_transcript,
+        test_response_completed_preserves_ids_after_id_bearing_request,
         test_tool_continuation_pops_old_tail_and_appends_new_tail,
         test_pop_conflict_keeps_existing_tail_and_still_appends,
         test_workbench_compressed_transcript_does_not_restore_old_assistant_on_next_request,
-        test_workbench_compressed_transcript_ignores_phase_only_message_delta,
+        test_workbench_compressed_transcript_surfaces_phase_delta_as_conflict,
         test_workbench_compressed_transcript_does_not_restore_reasoning_turn,
+        test_reasoning_null_content_survives_request_rebuild,
         test_user_edited_transcript_survives_next_raw_codex_request,
         test_compact_metadata_sets_pending_and_uses_prompt_replacement_hook,
         test_compact_metadata_without_controller_does_not_remote_compact,

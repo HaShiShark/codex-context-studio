@@ -6,6 +6,7 @@ import copy
 import json
 import os
 import sys
+import threading
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -53,6 +54,8 @@ except ImportError:
 
 
 HUB = RealtimeHub()
+_FIRST_CODEX_INSTRUCTIONS_SCAN_LOCK = threading.Lock()
+_FIRST_CODEX_INSTRUCTIONS_SCAN_DONE = False
 
 
 def _headers_dict(request: Request) -> dict[str, str]:
@@ -187,6 +190,57 @@ def _sse_event_bytes(event: dict[str, Any]) -> bytes:
     event_type = str(event.get("type") or "message")
     payload = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
     return f"event: {event_type}\ndata: {payload}\n\n".encode("utf-8")
+
+
+def _capture_first_codex_instructions(body: dict[str, Any]) -> None:
+    global _FIRST_CODEX_INSTRUCTIONS_SCAN_DONE
+    with _FIRST_CODEX_INSTRUCTIONS_SCAN_LOCK:
+        if _FIRST_CODEX_INSTRUCTIONS_SCAN_DONE:
+            return
+        _FIRST_CODEX_INSTRUCTIONS_SCAN_DONE = True
+
+    instructions = route_support.compact_text(body.get("instructions") if isinstance(body, dict) else "").strip()
+    if not instructions:
+        route_support.proxy_log("first Codex instructions scan found no top-level instructions")
+        return
+
+    try:
+        from simple_agent.config import load_settings, save_settings
+
+        settings = load_settings()
+        old_default = str(getattr(settings, "codex_system_prompt_default", "") or "").strip()
+        old_current = str(getattr(settings, "codex_system_prompt", "") or "").strip()
+        if instructions == old_default:
+            route_support.proxy_log(f"first Codex instructions match existing default chars={len(instructions)}")
+            return
+
+        kwargs: dict[str, str] = {"codex_system_prompt_default": instructions}
+        if not old_current or old_current == old_default:
+            kwargs["codex_system_prompt"] = instructions
+        save_settings(**kwargs)
+        route_support.proxy_log(
+            f"updated first Codex instructions default chars={len(instructions)} "
+            f"sync_current={'codex_system_prompt' in kwargs}"
+        )
+    except Exception as exc:  # noqa: BLE001
+        route_support.proxy_log(f"failed to capture first Codex instructions error={type(exc).__name__}: {exc}")
+
+
+def _apply_codex_system_prompt_override(body: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from simple_agent.config import load_settings
+
+        system_prompt = str(getattr(load_settings(), "codex_system_prompt", "") or "").strip()
+    except Exception as exc:  # noqa: BLE001
+        route_support.proxy_log(f"failed to load Codex system prompt override error={type(exc).__name__}: {exc}")
+        return body
+
+    if not system_prompt:
+        return body
+
+    next_body = copy.deepcopy(body)
+    next_body["instructions"] = system_prompt
+    return next_body
 
 
 async def _context_control_stream(body: dict[str, Any], opened: bool, error: str = "") -> AsyncIterator[bytes]:
@@ -436,6 +490,89 @@ async def replace_transcript(session_id: str, request: Request) -> Response:
     return JSONResponse(session)
 
 
+@app.post("/api/proxy/sessions/{session_id:path}/node-locks")
+async def update_node_lock(session_id: str, request: Request) -> Response:
+    try:
+        payload = await _read_json_body(request)
+    except json.JSONDecodeError:
+        return _json_error("request body must be JSON", HTTPStatus.BAD_REQUEST)
+    except ValueError as exc:
+        return _json_error(str(exc), HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
+
+    node_id = str(payload.get("node_id") or "").strip()
+    expected_revision_raw = payload.get("expected_revision")
+    expected_revision: int | None = None
+    if expected_revision_raw is not None:
+        try:
+            expected_revision = int(expected_revision_raw)
+        except (TypeError, ValueError):
+            return _json_error("expected_revision must be an integer", HTTPStatus.BAD_REQUEST)
+
+    try:
+        session = STORE.set_node_lock(
+            session_id,
+            node_id,
+            bool(payload.get("locked")),
+            expected_revision=expected_revision,
+        )
+    except KeyError:
+        return _json_error("session not found", HTTPStatus.NOT_FOUND)
+    except RuntimeError as exc:
+        return _json_error(str(exc), HTTPStatus.CONFLICT)
+    except ValueError as exc:
+        return _json_error(str(exc), HTTPStatus.BAD_REQUEST)
+
+    await HUB.publish(session_status(session, reason="node_lock_update"))
+    await HUB.publish(session_list_update(STORE.list_sessions()))
+    return JSONResponse(session)
+
+
+@app.post("/api/proxy/sessions/{session_id:path}/context-run")
+async def update_context_run_state(session_id: str, request: Request) -> Response:
+    try:
+        payload = await _read_json_body(request)
+    except json.JSONDecodeError:
+        return _json_error("request body must be JSON", HTTPStatus.BAD_REQUEST)
+    except ValueError as exc:
+        return _json_error(str(exc), HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
+
+    request_id = str(payload.get("request_id") or "").strip()
+    running = bool(payload.get("running"))
+    try:
+        session = STORE.set_context_run_state(session_id, request_id, running)
+    except RuntimeError as exc:
+        return _json_error(str(exc), HTTPStatus.CONFLICT)
+    except ValueError as exc:
+        return _json_error(str(exc), HTTPStatus.BAD_REQUEST)
+
+    await HUB.publish(session_status(session, reason="context_run_started" if running else "context_run_finished"))
+    await HUB.publish(session_list_update(STORE.list_sessions()))
+    return JSONResponse(session)
+
+
+@app.post("/api/proxy/sessions/{session_id:path}/main-turn")
+async def update_main_turn_state(session_id: str, request: Request) -> Response:
+    try:
+        payload = await _read_json_body(request)
+    except json.JSONDecodeError:
+        return _json_error("request body must be JSON", HTTPStatus.BAD_REQUEST)
+    except ValueError as exc:
+        return _json_error(str(exc), HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
+
+    turn_id = str(payload.get("turn_id") or payload.get("request_id") or "").strip()
+    running = bool(payload.get("running"))
+    try:
+        session = STORE.set_main_turn_state(session_id, turn_id, running)
+    except KeyError:
+        return _json_error("session not found", HTTPStatus.NOT_FOUND)
+    except ValueError as exc:
+        return _json_error(str(exc), HTTPStatus.BAD_REQUEST)
+
+    await HUB.publish(session_status(session, reason="main_turn_started" if running else "main_turn_finished"))
+    await HUB.publish(session_list_update(STORE.list_sessions()))
+    return JSONResponse(session)
+
+
 @app.post("/api/proxy/sessions/{session_id:path}/usage/reset")
 async def reset_usage(session_id: str) -> Response:
     try:
@@ -498,11 +635,19 @@ async def responses(request: Request) -> Response:
     is_title_generation = route_support.is_title_generation_request(body)
     passthrough_reason = route_support.codex_passthrough_reason(headers, body)
     capture_proxy_session = not is_internal_context and not is_title_generation and not passthrough_reason
+    session_id = route_support.session_id_for_request(body, headers)
 
     if capture_proxy_session:
+        context_idle = await asyncio.to_thread(STORE.wait_context_idle, session_id)
+        if not context_idle:
+            route_support.proxy_log(f"context wait timed out session={session_id}")
+            return _json_error(
+                "context model is still running; try again after it finishes",
+                HTTPStatus.CONFLICT,
+            )
+        await asyncio.to_thread(_capture_first_codex_instructions, body)
         control_command = route_support.context_control_command_from_input(body.get("input"))
         if control_command:
-            session_id = route_support.session_id_for_request(body, headers)
             before_version = _session_version(session_id)
             before_transcript = _session_transcript(session_id)
             STORE.record_control_intercept(session_id, body, headers, control_command)
@@ -541,7 +686,6 @@ async def responses(request: Request) -> Response:
         )
 
     if is_internal_context:
-        session_id = route_support.session_id_for_request(body, headers)
         headers_for_upstream = route_support.merge_codex_session_headers(
             headers,
             STORE.codex_session_headers(session_id),
@@ -549,11 +693,11 @@ async def responses(request: Request) -> Response:
         )
         forwarded_body = copy.deepcopy(body)
     elif capture_proxy_session:
-        session_id = route_support.session_id_for_request(body, headers)
         headers_for_upstream = headers
         before_version = _session_version(session_id)
         before_transcript = _session_transcript(session_id)
         session, forwarded_body = STORE.begin_request(session_id, body, headers)
+        forwarded_body = await asyncio.to_thread(_apply_codex_system_prompt_override, forwarded_body)
         await _publish_session_change(
             session_id,
             reason="begin_request",
@@ -563,7 +707,6 @@ async def responses(request: Request) -> Response:
             transcript_mode="none" if session.status == "compacting" else "patch",
         )
     else:
-        session_id = route_support.session_id_for_request(body, headers)
         headers_for_upstream = headers
         forwarded_body = copy.deepcopy(body)
 
@@ -580,6 +723,28 @@ async def responses(request: Request) -> Response:
 
     payload = json.dumps(forwarded_body, ensure_ascii=False).encode("utf-8")
     upstream_headers = route_support.upstream_headers_for_request(headers_for_upstream, accept="text/event-stream")
+    capture_path = await asyncio.to_thread(
+        route_support.write_request_capture,
+        session_id=session_id,
+        original_body=body,
+        forwarded_body=forwarded_body,
+        incoming_headers=headers,
+        upstream_headers=upstream_headers,
+        upstream_url=upstream_url,
+        capture_proxy_session=capture_proxy_session,
+        is_internal_context=is_internal_context,
+        is_title_generation=is_title_generation,
+        passthrough_reason=passthrough_reason or "",
+    )
+    if capture_path:
+        original_summary = route_support.input_id_summary(body)
+        forwarded_summary = route_support.input_id_summary(forwarded_body)
+        route_support.proxy_log(
+            f"request capture session={session_id} path={capture_path} "
+            f"original_ids={original_summary.get('top_level_id_count')} "
+            f"forwarded_ids={forwarded_summary.get('top_level_id_count')} "
+            f"last_user={original_summary.get('last_user_text')!r}"
+        )
     route_support.proxy_log(
         f"upstream headers session={session_id} "
         f"{json.dumps(route_support.safe_headers_for_log(upstream_headers), ensure_ascii=False, sort_keys=True)}"

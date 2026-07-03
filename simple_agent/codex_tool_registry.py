@@ -133,7 +133,6 @@ class ToolRegistry:
         ]
         self._all_tools = {tool.name: tool for tool in all_tools}
         self._tools = {name: tool for name, tool in self._all_tools.items() if name in self._enabled_names}
-        self._legacy_aliases = {"list_project_files": "list_dir", "read_project_file": "read_file"}
 
     @property
     def schemas(self) -> list[dict[str, Any]]:
@@ -143,7 +142,7 @@ class ToolRegistry:
         return "\n".join(f"- {tool.name}: {tool.description}" for tool in self._tools.values())
 
     def execute(self, name: str, arguments: dict[str, Any]) -> ToolExecution:
-        canonical_name = self._legacy_aliases.get(name, name)
+        canonical_name = name
         tool = self._all_tools.get(canonical_name)
         if tool is None:
             return ToolExecution(json.dumps({"error": f"unknown tool: {name}"}, ensure_ascii=False), name, "未知工具", "这个工具不存在。", "error")
@@ -171,7 +170,7 @@ class ToolRegistry:
                 tool_name = str(raw_call.get("name") or raw_call.get("tool") or "").strip()
                 if not tool_name:
                     raise ValueError(f"tool_uses[{index}].name is required")
-                if self._legacy_aliases.get(tool_name, tool_name) == "parallel_tools":
+                if tool_name == "parallel_tools":
                     raise ValueError("parallel_tools cannot call itself")
                 raw_arguments = raw_call.get("arguments", raw_call.get("parameters", {}))
                 if raw_arguments is None:

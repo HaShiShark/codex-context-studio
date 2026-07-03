@@ -208,6 +208,8 @@ $requiresAuth = if ($upstreamInfo.kind -eq "third_party") { "false" } else { "tr
 
 $hookCommand = (Join-Path $root "scripts\codex-context-hook.cmd").Replace("\", "/")
 $hookConfig = "hooks.UserPromptSubmit=[{matcher='*',hooks=[{type='command',command='$hookCommand',timeout=10,statusMessage='HashContext'}]}]"
+$notifyCommand = (Join-Path $root "scripts\codex-turn-ended-notify.cmd").Replace("\", "/")
+$notifyConfig = "notify=['$notifyCommand']"
 
 $configArgs = @(
   "-c", "model_providers.hash-context.name=Hash Context",
@@ -217,7 +219,8 @@ $configArgs = @(
   "-c", "model_providers.hash-context.supports_websockets=false",
   "-c", "model_provider=hash-context",
   "-c", "features.hooks=true",
-  "-c", $hookConfig
+  "-c", $hookConfig,
+  "-c", $notifyConfig
 )
 
 if ($upstreamInfo.kind -eq "third_party") {

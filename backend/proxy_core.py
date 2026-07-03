@@ -8,7 +8,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from .codex_input_cursor import canonical_provider_items_for_request, compute_diff
+from .codex_input_cursor import compute_diff, response_items_to_request_items
 from .transcript_codec import transcript_to_input_items
 from .transcript_delta_applier import TranscriptDeltaApplier
 
@@ -26,6 +26,7 @@ class ProxyState:
     compact_pending: bool = False
     compact_kind: str = ""
     compact_error: str | None = None
+    request_item_ids: bool = False
 
 
 @dataclass(frozen=True)
@@ -49,7 +50,8 @@ def handle_request(
     raw_new_input = forwarded_body["input"]
     if not isinstance(raw_new_input, list):
         raise TypeError("handle_request expected body['input'] to be a list")
-    new_input = canonical_provider_items_for_request(raw_new_input)
+    new_input = copy.deepcopy(raw_new_input)
+    state.request_item_ids = _input_has_top_level_ids(new_input)
     cursor_after_request = copy.deepcopy(new_input)
 
     compact_meta = _compact_metadata(forwarded_body)
@@ -88,7 +90,7 @@ def handle_response_completed(
 ) -> ResponseCompletedResult:
     """Absorb completed upstream response items into cursor/transcript."""
 
-    items = canonical_provider_items_for_request(list(response_items))
+    items = response_items_to_request_items(list(response_items), include_ids=state.request_item_ids)
 
     if state.compact_pending:
         controller = _resolve_compact_controller(compact_controller)
@@ -149,6 +151,10 @@ def _compact_kind(turn_metadata: Mapping[str, Any]) -> str:
     if trigger in {"auto", "manual"}:
         return str(trigger)
     return ""
+
+
+def _input_has_top_level_ids(input_items: Sequence[Any]) -> bool:
+    return any(isinstance(item, Mapping) and "id" in item for item in input_items)
 
 
 def _resolve_compact_controller(compact_controller: Any) -> Any | None:

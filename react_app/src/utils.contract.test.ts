@@ -1,6 +1,7 @@
 import { normalizeConversation } from './utils';
 import codexItemRegistry from '../../shared/codex-item-registry.json';
 import {
+  buildContextMapNodeMeta,
   CONTEXT_IMAGE_TOKEN_ESTIMATE,
   getContextTokenCount,
   getContextWeightSource,
@@ -234,12 +235,57 @@ function testImageDataUrlsDoNotEnterContextWeightText(): void {
   );
 }
 
+function testContextMapNodeLocksDriveDisplayNumbers(): void {
+  const conversation = normalizeConversation([
+    node('node-dev', 'developer', [
+      {
+        type: 'message',
+        role: 'developer',
+        content: 'developer instructions',
+      },
+    ]),
+    node('node-user', 'user', [
+      {
+        type: 'message',
+        role: 'user',
+        content: 'hello',
+      },
+    ]),
+    node('node-assistant', 'assistant', [
+      {
+        type: 'message',
+        role: 'assistant',
+        content: 'hi',
+      },
+    ]),
+  ]);
+
+  assertEqual(conversation[0].nodeId, 'node-dev', 'normalization preserves transcript node id');
+
+  const defaultMeta = buildContextMapNodeMeta(conversation);
+  assert(defaultMeta[0].locked, 'developer defaults locked');
+  assertEqual(defaultMeta[0].displayNodeNumber, null, 'locked developer has no display number');
+  assertEqual(defaultMeta[1].displayNodeNumber, 1, 'first unlocked node becomes Node #1');
+  assertEqual(defaultMeta[2].displayNodeNumber, 2, 'second unlocked node becomes Node #2');
+
+  const unlockedDeveloperMeta = buildContextMapNodeMeta(conversation, { 'node-dev': false });
+  assert(!unlockedDeveloperMeta[0].locked, 'explicit false unlocks developer');
+  assertEqual(unlockedDeveloperMeta[0].displayNodeNumber, 1, 'unlocked developer gets Node #1');
+  assertEqual(unlockedDeveloperMeta[1].displayNodeNumber, 2, 'following nodes are renumbered after unlocked developer');
+
+  const lockedUserMeta = buildContextMapNodeMeta(conversation, { 'node-user': true });
+  assert(lockedUserMeta[1].locked, 'explicit true locks normal nodes');
+  assertEqual(lockedUserMeta[1].displayNodeNumber, null, 'locked normal node has no display number');
+  assertEqual(lockedUserMeta[2].displayNodeNumber, 1, 'unlocked nodes are renumbered after a locked normal node');
+}
+
 function main(): void {
   testNormalizeConversationKeepsProviderItemContract();
   testProviderItemRegistryDrivesToolPairingAndDisplayHints();
   testProviderItemTypesAreCaseAndSeparatorSensitive();
   testNormalizeConversationSupportsSubagentNodes();
   testImageDataUrlsDoNotEnterContextWeightText();
+  testContextMapNodeLocksDriveDisplayNumbers();
   console.log('ok - normalizeConversation contract tests passed');
 }
 

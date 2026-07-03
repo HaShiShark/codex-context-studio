@@ -18,32 +18,28 @@ import {
 } from '../contextTokenWeight';
 import type {
   ContextWorkbenchChatMessage,
+  ContextWorkbenchSettingsResponse,
   MessageRecord,
   ProxyUsageSummary,
   ReasoningOption,
 } from '../types';
 import { normalizeSupportedLocale, type UiLocale } from '../i18n';
-import { copyText, getReasoningLabel, normalizeConversation } from '../utils';
+import { copyText, countTokens, getReasoningLabel, normalizeConversation } from '../utils';
 import {
   buildManualMessagesFromChat,
   buildWorkbenchModelOptions,
   createManualMessage,
   DEFAULT_WORKBENCH_MODELS,
-  DEFAULT_WORKBENCH_PROVIDER_ID,
   formatNodeReferenceSegments,
   formatSuggestionRoleLabel,
   formatTokenCount,
   getThrownMessage,
-  inferWorkbenchProviderId,
   isAbortError,
   parseTokenThresholdDraft,
   reasoningDisplayLabel,
-  resolveWorkbenchSelection,
-  toWorkbenchProviderDraft,
   UI_LANGUAGE_OPTIONS,
   uiLanguageLabel,
   uiText,
-  workbenchProviderName,
   WORKBENCH_TABS,
   workbenchTabLabel,
   type ManualWorkbenchMessage,
@@ -163,6 +159,41 @@ function SettingsRow({
   );
 }
 
+type PromptSettingKey =
+  | 'codex_system_prompt'
+  | 'manual_local_compact_prompt'
+  | 'auto_local_compact_prompt';
+
+type PromptDrafts = Record<PromptSettingKey, string>;
+
+type PromptSettingItem = {
+  key: PromptSettingKey;
+  title: string;
+  placeholder: string;
+};
+
+const EMPTY_PROMPT_DRAFTS: PromptDrafts = {
+  codex_system_prompt: '',
+  manual_local_compact_prompt: '',
+  auto_local_compact_prompt: '',
+};
+
+function promptDraftsFromSettings(settings: ContextWorkbenchSettingsResponse['settings']): PromptDrafts {
+  return {
+    codex_system_prompt: settings.codex_system_prompt || '',
+    manual_local_compact_prompt: settings.manual_local_compact_prompt || '',
+    auto_local_compact_prompt: settings.auto_local_compact_prompt || '',
+  };
+}
+
+function promptDefaultsFromSettings(settings: ContextWorkbenchSettingsResponse['settings']): PromptDrafts {
+  return {
+    codex_system_prompt: settings.codex_system_prompt_default || '',
+    manual_local_compact_prompt: settings.manual_local_compact_prompt_default || '',
+    auto_local_compact_prompt: settings.auto_local_compact_prompt_default || '',
+  };
+}
+
 export default function ContextWorkbench({
   messageTokenStats,
   selectedNodeIndexes,
@@ -198,7 +229,6 @@ export default function ContextWorkbench({
   const [manualFeedback, setManualFeedback] = useState('');
   const [manualFeedbackError, setManualFeedbackError] = useState(false);
   const [workbenchModelDraft, setWorkbenchModelDraft] = useState(DEFAULT_WORKBENCH_MODELS[0]);
-  const [workbenchProviderDraft, setWorkbenchProviderDraft] = useState(DEFAULT_WORKBENCH_PROVIDER_ID);
   const [uiLocaleDraft, setUiLocaleDraft] = useState<UiLocale>(uiLocale);
   const [themeModeDraft, setThemeModeDraft] = useState<'light' | 'dark'>(themeMode);
   const [isWorkbenchModelOpen, setIsWorkbenchModelOpen] = useState(false);
@@ -213,6 +243,10 @@ export default function ContextWorkbench({
   const [settingsError, setSettingsError] = useState('');
   const [uiFontDraft, setUiFontDraft] = useState('Noto Serif SC');
   const [uiFontSizeDraft, setUiFontSizeDraft] = useState('15');
+  const [promptDrafts, setPromptDrafts] = useState<PromptDrafts>(EMPTY_PROMPT_DRAFTS);
+  const [promptSavedDrafts, setPromptSavedDrafts] = useState<PromptDrafts>(EMPTY_PROMPT_DRAFTS);
+  const [promptDefaults, setPromptDefaults] = useState<PromptDrafts>(EMPTY_PROMPT_DRAFTS);
+  const [expandedPromptKey, setExpandedPromptKey] = useState<PromptSettingKey | null>(null);
   const manualListRef = useRef<HTMLDivElement>(null);
   const manualTextareaRef = useRef<HTMLTextAreaElement>(null);
   const manualAbortControllerRef = useRef<AbortController | null>(null);
@@ -231,9 +265,8 @@ export default function ContextWorkbench({
     () => formatNodeReferenceSegments(selectedNodeNumbers),
     [selectedNodeNumbers],
   );
-  const selectedWorkbenchProvider = undefined;
   const workbenchModelOptions = useMemo(
-    () => buildWorkbenchModelOptions(selectedWorkbenchProvider, workbenchModelDraft, availableWorkbenchModels),
+    () => buildWorkbenchModelOptions(workbenchModelDraft, availableWorkbenchModels),
     [availableWorkbenchModels, workbenchModelDraft],
   );
   const currentWorkbenchModelLabel =
@@ -301,6 +334,44 @@ export default function ContextWorkbench({
     nextTokenThresholds.warningThreshold >= nextTokenThresholds.criticalThreshold
       ? uiText(uiLocaleDraft, 'The red threshold must be greater than the yellow threshold.', '红色阈值必须大于黄色阈值。')
       : '';
+  const promptSettingItems = useMemo<PromptSettingItem[]>(
+    () => [
+      {
+        key: 'codex_system_prompt',
+        title: uiText(uiLocaleDraft, 'Codex System Prompt', 'Codex 系统提示词'),
+        placeholder: uiText(uiLocaleDraft, 'Waiting for the first Codex request instructions...', '等待读取第一条 Codex 请求的 instructions...'),
+      },
+      {
+        key: 'manual_local_compact_prompt',
+        title: uiText(uiLocaleDraft, 'Manual Compact Prompt', '手动压缩词'),
+        placeholder: uiText(uiLocaleDraft, 'Manual compact prompt', '手动压缩词'),
+      },
+      {
+        key: 'auto_local_compact_prompt',
+        title: uiText(uiLocaleDraft, 'Auto Compact Prompt', '自动压缩词'),
+        placeholder: uiText(uiLocaleDraft, 'Auto compact prompt', '自动压缩词'),
+      },
+    ],
+    [uiLocaleDraft],
+  );
+  const expandedPromptItem = expandedPromptKey
+    ? promptSettingItems.find((item) => item.key === expandedPromptKey) || null
+    : null;
+  const promptTokenLabels = useMemo<PromptDrafts>(
+    () => ({
+      codex_system_prompt: `${(countTokens(promptDrafts.codex_system_prompt) / 1000).toFixed(1)}k`,
+      manual_local_compact_prompt: `${(countTokens(promptDrafts.manual_local_compact_prompt) / 1000).toFixed(1)}k`,
+      auto_local_compact_prompt: `${(countTokens(promptDrafts.auto_local_compact_prompt) / 1000).toFixed(1)}k`,
+    }),
+    [promptDrafts],
+  );
+
+  function applyPromptSettings(settings: ContextWorkbenchSettingsResponse['settings']) {
+    const nextPromptDrafts = promptDraftsFromSettings(settings);
+    setPromptDrafts(nextPromptDrafts);
+    setPromptSavedDrafts(nextPromptDrafts);
+    setPromptDefaults(promptDefaultsFromSettings(settings));
+  }
 
   useEffect(() => {
     setUiLocaleDraft(uiLocale);
@@ -322,7 +393,6 @@ export default function ContextWorkbench({
         const settings = response.settings;
         const nextModel = settings.context_workbench_model || DEFAULT_WORKBENCH_MODELS[0];
         setWorkbenchModelDraft(nextModel);
-        setWorkbenchProviderDraft(settings.context_workbench_provider_id || DEFAULT_WORKBENCH_PROVIDER_ID);
         setAvailableWorkbenchModels(response.models || []);
         const loadedThresholds = normalizeContextTokenThresholds({
           warningThreshold: settings.context_token_warning_threshold,
@@ -342,10 +412,10 @@ export default function ContextWorkbench({
         setUiFontDraft(loadedFont);
         setUiFontSizeDraft(String(loadedFontSize));
         onUiFontChange?.(loadedFont, loadedFontSize);
+        applyPromptSettings(settings);
       } catch (error) {
         if (cancelled) return;
         setSettingsError(getThrownMessage(error));
-        setWorkbenchProviderDraft(DEFAULT_WORKBENCH_PROVIDER_ID);
       } finally {
         if (!cancelled) setIsSettingsLoading(false);
       }
@@ -429,14 +499,12 @@ export default function ContextWorkbench({
     event.stopPropagation();
     const nextModel = (model.id || model.label || '').trim();
     if (!nextModel) return;
-    const nextProviderId = DEFAULT_WORKBENCH_PROVIDER_ID;
     flushSync(() => {
-      setWorkbenchProviderDraft(nextProviderId);
       setWorkbenchModelDraft(nextModel);
       setIsWorkbenchModelOpen(false);
       setSettingsError('');
     });
-    void handleSaveWorkbenchSettings({ model: nextModel, providerId: nextProviderId });
+    void handleSaveWorkbenchSettings({ model: nextModel });
   }
 
   async function refreshProxyUsageSummary(targetSessionId = sessionId) {
@@ -454,7 +522,6 @@ export default function ContextWorkbench({
 
   async function handleSaveWorkbenchSettings(updates?: {
     model?: string;
-    providerId?: string;
     thresholds?: { warningThreshold: number; criticalThreshold: number };
     locale?: UiLocale;
   }) {
@@ -537,6 +604,120 @@ export default function ContextWorkbench({
     } catch (error) {
       setSettingsError(getThrownMessage(error));
     }
+  }
+
+  async function handleSavePromptSetting(key: PromptSettingKey) {
+    const nextValue = promptDrafts[key];
+    if (nextValue === promptSavedDrafts[key]) return;
+    setSettingsError('');
+    try {
+      const response = await saveContextWorkbenchSettingsRequest({ [key]: nextValue });
+      const savedValue = response.settings[key] || '';
+      setPromptSavedDrafts((previous) => ({
+        ...previous,
+        [key]: savedValue,
+      }));
+      setPromptDrafts((previous) => (previous[key] === nextValue ? { ...previous, [key]: savedValue } : previous));
+      setPromptDefaults(promptDefaultsFromSettings(response.settings));
+      setAvailableWorkbenchModels(response.models || []);
+    } catch (error) {
+      setSettingsError(getThrownMessage(error));
+    }
+  }
+
+  async function handleResetPromptSetting(key: PromptSettingKey) {
+    const nextValue = promptDefaults[key] || '';
+    if (nextValue === promptDrafts[key] && nextValue === promptSavedDrafts[key]) return;
+    setPromptDrafts((previous) => ({ ...previous, [key]: nextValue }));
+    setSettingsError('');
+    try {
+      const response = await saveContextWorkbenchSettingsRequest({ [key]: nextValue });
+      const savedValue = response.settings[key] || '';
+      setPromptSavedDrafts((previous) => ({
+        ...previous,
+        [key]: savedValue,
+      }));
+      setPromptDrafts((previous) => (previous[key] === nextValue ? { ...previous, [key]: savedValue } : previous));
+      setPromptDefaults(promptDefaultsFromSettings(response.settings));
+      setAvailableWorkbenchModels(response.models || []);
+    } catch (error) {
+      setSettingsError(getThrownMessage(error));
+    }
+  }
+
+  function renderPromptEditor(item: PromptSettingItem, expanded = false) {
+    const expandLabel = expanded
+      ? uiText(uiLocaleDraft, 'Close editor', '关闭输入框')
+      : uiText(uiLocaleDraft, 'Expand editor', '展开输入框');
+    const resetLabel = uiText(uiLocaleDraft, 'Reset', '重置');
+    const closeButton = (
+      <button
+        aria-label={expandLabel}
+        className="workbench-prompt-icon-btn"
+        disabled={isSettingsLoading}
+        title={expandLabel}
+        type="button"
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={() => {
+          if (expanded) {
+            setExpandedPromptKey(null);
+            void handleSavePromptSetting(item.key);
+            return;
+          }
+          setExpandedPromptKey(item.key);
+          setSettingsError('');
+        }}
+      >
+        <i className={`ph-light ${expanded ? 'ph-arrows-in-simple' : 'ph-arrows-out-simple'}`} />
+      </button>
+    );
+    const resetButton = (
+      <button
+        className="workbench-prompt-reset-btn"
+        disabled={isSettingsLoading || promptDrafts[item.key] === promptDefaults[item.key]}
+        type="button"
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={() => void handleResetPromptSetting(item.key)}
+      >
+        {resetLabel}
+      </button>
+    );
+
+    return (
+      <div
+        className={`workbench-prompt-editor${expanded ? ' is-expanded' : ''}`}
+        key={item.key}
+      >
+        <div className="workbench-prompt-editor-header">
+          <div className="workbench-prompt-editor-title">
+            <span>{item.title}</span>
+            <span className="workbench-prompt-token-count">
+              {uiLocaleDraft.startsWith('zh') ? '：' : ': '}
+              {promptTokenLabels[item.key]}
+            </span>
+          </div>
+          <div className="workbench-prompt-editor-actions">
+            {expanded ? resetButton : closeButton}
+            {expanded ? closeButton : resetButton}
+          </div>
+        </div>
+        <textarea
+          className="settings-input workbench-prompt-textarea"
+          disabled={isSettingsLoading}
+          placeholder={item.placeholder}
+          spellCheck={false}
+          value={promptDrafts[item.key]}
+          onBlur={() => void handleSavePromptSetting(item.key)}
+          onChange={(event) => {
+            setPromptDrafts((previous) => ({ ...previous, [item.key]: event.target.value }));
+            setSettingsError('');
+          }}
+        />
+        {expanded && settingsError ? (
+          <div className="workbench-setting-feedback error">{settingsError}</div>
+        ) : null}
+      </div>
+    );
   }
 
   function finalizeStoppedManualMessage(messageId: string) {
@@ -1006,10 +1187,24 @@ export default function ContextWorkbench({
           </section>
 
           <section className="extended-page" data-page="settings">
-            <div className="extended-page-scroll">
-              <div className="workbench-panel-title">{uiText(uiLocaleDraft, 'Workspace Settings', '工作区设置')}</div>
+            <div className={`extended-page-scroll${expandedPromptItem ? ' has-expanded-prompt' : ''}`}>
+              {expandedPromptItem ? (
+                renderPromptEditor(expandedPromptItem, true)
+              ) : (
+                <>
+                  <div className="workbench-panel-title">{uiText(uiLocaleDraft, 'Prompts', '提示词')}</div>
 
-              <div className="workbench-settings-panel">
+                  <div className="workbench-prompts-panel">
+                    <div className="workbench-prompt-list">
+                      {promptSettingItems.map((item) => renderPromptEditor(item))}
+                    </div>
+                  </div>
+
+                  <div className="workbench-panel-title workbench-settings-title">
+                    {uiText(uiLocaleDraft, 'Workspace Settings', '工作区设置')}
+                  </div>
+
+                  <div className="workbench-settings-panel">
                 <SettingsRow title={uiText(uiLocaleDraft, 'Language', '语言')}>
                   <div className="workbench-language-toggle" role="group" aria-label={uiText(uiLocaleDraft, 'Language', '语言')}>
                     {UI_LANGUAGE_OPTIONS.map((option) => (
@@ -1178,6 +1373,8 @@ export default function ContextWorkbench({
 
               {settingsError ? <div className="workbench-setting-feedback error">{settingsError}</div> : null}
               {tokenThresholdError ? <div className="workbench-setting-feedback error">{tokenThresholdError}</div> : null}
+                </>
+              )}
             </div>
           </section>
         </div>

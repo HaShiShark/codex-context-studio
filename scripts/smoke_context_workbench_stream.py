@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 import threading
 import time
 import urllib.error
@@ -70,13 +69,6 @@ def create_test_session(base_url: str) -> str:
         },
     )
     return session_id
-
-
-def delete_test_session(base_url: str, session_id: str) -> None:
-    try:
-        post_json(base_url, "/api/delete-session", {"session_id": session_id})
-    except Exception as exc:  # noqa: BLE001
-        print(f"warning: failed to clean up {session_id}: {exc}", file=sys.stderr)
 
 
 def stream_context_turn(
@@ -288,39 +280,36 @@ def main() -> int:
     args = parser.parse_args()
 
     session_id = create_test_session(args.base_url)
-    try:
-        result = stream_context_turn(
-            args.base_url,
-            session_id,
-            args.timeout,
-            sync_during_stream=not args.skip_concurrent_sync,
+    result = stream_context_turn(
+        args.base_url,
+        session_id,
+        args.timeout,
+        sync_during_stream=not args.skip_concurrent_sync,
+    )
+    required_tools = {"get_nodes", "write_nodes"}
+    missing_tools = sorted(required_tools.difference(result["tools"]))
+    if missing_tools:
+        raise RuntimeError(f"stream completed but missing tools: {missing_tools}; saw={result['tools']}")
+    if len(result["conversation"]) < 2:
+        raise RuntimeError("stream completed but returned an incomplete conversation")
+    sync_state = verify_external_sync_preserves_workbench_history(args.base_url, session_id)
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "session_id": session_id,
+                "elapsed_seconds": result["elapsed_seconds"],
+                "event_count": result["event_count"],
+                "tools": result["tools"],
+                "sync_during_stream": result["sync_during_stream"],
+                "external_sync_state": sync_state,
+                "answer_preview": result["answer"][:200],
+            },
+            ensure_ascii=False,
+            indent=2,
         )
-        required_tools = {"get_nodes", "write_nodes"}
-        missing_tools = sorted(required_tools.difference(result["tools"]))
-        if missing_tools:
-            raise RuntimeError(f"stream completed but missing tools: {missing_tools}; saw={result['tools']}")
-        if len(result["conversation"]) < 2:
-            raise RuntimeError("stream completed but returned an incomplete conversation")
-        sync_state = verify_external_sync_preserves_workbench_history(args.base_url, session_id)
-        print(
-            json.dumps(
-                {
-                    "ok": True,
-                    "session_id": session_id,
-                    "elapsed_seconds": result["elapsed_seconds"],
-                    "event_count": result["event_count"],
-                    "tools": result["tools"],
-                    "sync_during_stream": result["sync_during_stream"],
-                    "external_sync_state": sync_state,
-                    "answer_preview": result["answer"][:200],
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-        )
-        return 0
-    finally:
-        delete_test_session(args.base_url, session_id)
+    )
+    return 0
 
 
 if __name__ == "__main__":

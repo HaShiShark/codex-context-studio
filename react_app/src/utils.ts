@@ -204,10 +204,6 @@ function isProviderItem(value: unknown): value is ProviderItem {
   return isRecord(value);
 }
 
-function isTranscriptNode(record: TranscriptEntry): record is TranscriptNode {
-  return Array.isArray((record as TranscriptNode).items);
-}
-
 function mapTranscriptRole(rawRole: unknown): MessageRecord['role'] {
   const role = String(rawRole || '').trim().toLowerCase();
   if (role === 'assistant' || role === 'an') {
@@ -817,6 +813,7 @@ export function normalizeConversation(records: TranscriptEntry[] = []): MessageR
       role,
     );
     const normalized: MessageRecord = {
+      nodeId: String(record.id || ''),
       role,
       text,
       attachments: [],

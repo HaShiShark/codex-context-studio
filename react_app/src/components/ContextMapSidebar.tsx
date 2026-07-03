@@ -48,6 +48,29 @@ import {
   type ScrollMetrics,
 } from './ContextMapSidebar.helpers';
 
+const GUTTER_LOCK_DOUBLE_CLICK_MS = 520;
+
+interface GutterClickState {
+  index: number;
+  time: number;
+}
+
+function resolveGutterClick(
+  previousClick: GutterClickState | null,
+  index: number,
+  time: number,
+): { isDoubleClick: boolean; nextClick: GutterClickState | null } {
+  const isDoubleClick = Boolean(
+    previousClick
+    && previousClick.index === index
+    && time - previousClick.time <= GUTTER_LOCK_DOUBLE_CLICK_MS,
+  );
+  return {
+    isDoubleClick,
+    nextClick: isDoubleClick ? null : { index, time },
+  };
+}
+
 interface ContextMapSidebarProps {
   stage: 0 | 1 | 2;
   messages: MessageRecord[];
@@ -55,6 +78,9 @@ interface ContextMapSidebarProps {
   onJumpToMessage: (messageIndex: number) => void;
   sessionId: string;
   isMainChatBusy: boolean;
+  isContextModelBusy: boolean;
+  nodeLocks: Record<string, boolean>;
+  nodeLockPendingIds: Set<string>;
   contextWorkbenchChat: ContextWorkbenchChatMessage[];
   reasoningOptions: ReasoningOption[];
   proxyUsageSummary: ProxyUsageSummary | null;
@@ -66,6 +92,7 @@ interface ContextMapSidebarProps {
     conversation: MessageRecord[],
   ) => void | Promise<void>;
   onProxyUsageSummaryChange: (summary: ProxyUsageSummary | null) => void;
+  onNodeLockChange: (nodeId: string, locked: boolean) => void | Promise<void>;
   onEnsureSession: () => Promise<string>;
   onUiLocaleChange?: (locale: 'zh-CN' | 'en-US') => void;
   onUiFontChange?: (font: string, fontSize: number) => void;
@@ -79,6 +106,9 @@ export default function ContextMapSidebar({
   onJumpToMessage,
   sessionId,
   isMainChatBusy,
+  isContextModelBusy,
+  nodeLocks,
+  nodeLockPendingIds,
   contextWorkbenchChat,
   reasoningOptions,
   proxyUsageSummary,
@@ -87,6 +117,7 @@ export default function ContextMapSidebar({
   onContextWorkbenchChatChange,
   onContextWorkbenchConversationChange,
   onProxyUsageSummaryChange,
+  onNodeLockChange,
   onEnsureSession,
   onUiLocaleChange,
   onUiFontChange,
@@ -109,6 +140,7 @@ export default function ContextMapSidebar({
     mode: 'replace' | 'add';
     hasMoved: boolean;
   } | null>(null);
+  const gutterClickRef = useRef<GutterClickState | null>(null);
   const selectionAutoScrollFrameRef = useRef<number | null>(null);
   const minimapScrollFrameRef = useRef<number | null>(null);
   const lastContentSignatureRef = useRef('');
@@ -120,7 +152,7 @@ export default function ContextMapSidebar({
   const [tokenThresholds, setTokenThresholds] = useState<ContextTokenThresholds>(DEFAULT_CONTEXT_TOKEN_THRESHOLDS);
   const showMinimap = stage === 2;
   const contentSignature = useMemo(() => contextMapContentSignature(messages), [messages]);
-  const nodeMeta = useMemo(() => buildContextMapNodeMeta(messages), [messages]);
+  const nodeMeta = useMemo(() => buildContextMapNodeMeta(messages, nodeLocks), [messages, nodeLocks]);
   const selectableIndexes = useMemo(
     () => new Set(nodeMeta.map((meta, index) => (meta.selectable ? index : -1)).filter((index) => index >= 0)),
     [nodeMeta],
@@ -593,10 +625,45 @@ export default function ContextMapSidebar({
     stopSelectionAutoScroll();
   }
 
+  const toggleNodeLock = useCallback((index: number) => {
+    if (stage === 1 || isContextModelBusy) {
+      return false;
+    }
+
+    const message = messages[index];
+    const nodeId = String(message?.nodeId || '').trim();
+    if (!nodeId || nodeLockPendingIds.has(nodeId)) {
+      return false;
+    }
+
+    void onNodeLockChange(nodeId, !Boolean(nodeMeta[index]?.locked));
+    return true;
+  }, [
+    isContextModelBusy,
+    messages,
+    nodeLockPendingIds,
+    nodeMeta,
+    onNodeLockChange,
+    stage,
+  ]);
+
   const handleGutterMouseDown = useCallback((index: number, event: ReactMouseEvent<HTMLButtonElement>) => {
     if (event.button !== 0) {
       return;
     }
+
+    const now = event.timeStamp || performance.now();
+    const clickResult = resolveGutterClick(gutterClickRef.current, index, now);
+    gutterClickRef.current = clickResult.nextClick;
+
+    if (clickResult.isDoubleClick) {
+      event.preventDefault();
+      event.stopPropagation();
+      selectionDragRef.current = null;
+      toggleNodeLock(index);
+      return;
+    }
+
     if (!selectableIndexes.has(index)) {
       return;
     }
@@ -614,7 +681,7 @@ export default function ContextMapSidebar({
       mode: additive ? 'add' : 'replace',
       hasMoved: false,
     };
-  }, [selectableIndexes, selectedIndexes]);
+  }, [selectableIndexes, selectedIndexes, toggleNodeLock]);
 
   const handleGutterKeyDown = useCallback((index: number, event: ReactKeyboardEvent<HTMLButtonElement>) => {
     if (event.key !== 'Enter' && event.key !== ' ') {
@@ -763,6 +830,8 @@ export default function ContextMapSidebar({
             onJumpToMessage={onJumpToMessage}
             onGutterMouseDown={handleGutterMouseDown}
             onGutterKeyDown={handleGutterKeyDown}
+            isNodeLockDisabled={isContextModelBusy}
+            nodeLockPendingIds={nodeLockPendingIds}
           />
 
           {showMinimap ? (

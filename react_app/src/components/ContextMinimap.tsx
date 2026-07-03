@@ -55,7 +55,7 @@ export default function ContextMinimap({
 
                 return (
                   <button
-                    className={`context-minimap-bar ${contextNodeClassName(message.role)} weight-${stats.weightClass} ${selectedIndexes.has(index) ? 'selected' : ''} ${stats.internalKind ? 'locked' : ''}`}
+                    className={`context-minimap-bar ${contextNodeClassName(message.role)} weight-${stats.weightClass} ${selectedIndexes.has(index) ? 'selected' : ''} ${stats.locked ? 'locked' : ''}`}
                     key={`minimap-${message.role}-${index}`}
                     type="button"
                     style={{

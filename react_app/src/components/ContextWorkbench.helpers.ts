@@ -3,9 +3,7 @@ import type {
   ContextWorkbenchToolCatalogItem,
   ProxyUsageBucket,
   ProxyUsageSummary,
-  ResponseProviderDraft,
   ResponseProviderModel,
-  ResponseProviderSettings,
 } from '../types';
 import type { UiLocale } from '../i18n';
 
@@ -22,7 +20,6 @@ export interface ManualWorkbenchMessage {
 export type UsageSummaryLike = ProxyUsageBucket | ProxyUsageSummary | null;
 
 export const DEFAULT_WORKBENCH_MODELS = ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2'];
-export const DEFAULT_WORKBENCH_PROVIDER_ID = 'codex-proxy';
 
 export const WORKBENCH_TABS: Array<{
   id: WorkbenchTab;
@@ -164,70 +161,6 @@ export function statusLabel(status: ContextWorkbenchToolCatalogItem['status'], l
     : uiText(locale, 'Preview', '预览');
 }
 
-export function toWorkbenchProviderDraft(provider: ResponseProviderSettings): ResponseProviderDraft {
-  return {
-    id: provider.id,
-    name: provider.name,
-    provider_type: provider.provider_type,
-    enabled: provider.enabled,
-    supports_model_fetch: provider.supports_model_fetch,
-    supports_responses: provider.supports_responses,
-    api_base_url: provider.api_base_url || '',
-    api_key_input: '',
-    clear_api_key: false,
-    default_model: provider.default_model || '',
-    models: Array.isArray(provider.models) ? provider.models : [],
-    last_sync_at: provider.last_sync_at || '',
-    last_sync_error: provider.last_sync_error || '',
-  };
-}
-
-export function inferWorkbenchProviderId(modelId: string, providers: ResponseProviderDraft[]) {
-  const cleanedModelId = modelId.trim();
-  if (cleanedModelId) {
-    const matchedProvider = providers.find((provider) =>
-      provider.models.some((model) => (model.id || '').trim() === cleanedModelId),
-    );
-    if (matchedProvider) {
-      return matchedProvider.id;
-    }
-  }
-
-  return providers.find((provider) => provider.enabled && provider.models.length > 0)?.id || 'openai';
-}
-
-export function resolveWorkbenchSelection(modelId: string, providerId: string, providers: ResponseProviderDraft[]) {
-  const cleanedModelId = modelId.trim();
-  const cleanedProviderId = providerId.trim();
-  const matchedProvider = providers.find((provider) => provider.id === cleanedProviderId);
-  const matchedModel =
-    matchedProvider?.models.find((model) => (model.id || '').trim() === cleanedModelId) ||
-    providers.find((provider) => provider.models.some((model) => (model.id || '').trim() === cleanedModelId))
-      ?.models.find((model) => (model.id || '').trim() === cleanedModelId);
-
-  if (matchedModel) {
-    return {
-      providerId: matchedProvider?.models.some((model) => (model.id || '').trim() === cleanedModelId)
-        ? matchedProvider.id
-        : inferWorkbenchProviderId(cleanedModelId, providers),
-      modelId: matchedModel.id || matchedModel.label || DEFAULT_WORKBENCH_MODELS[0],
-    };
-  }
-
-  const fallbackProvider = providers.find((provider) => provider.enabled && provider.models.length > 0);
-  return {
-    providerId: fallbackProvider?.id || cleanedProviderId || DEFAULT_WORKBENCH_PROVIDER_ID,
-    modelId: cleanedModelId || fallbackProvider?.default_model || fallbackProvider?.models[0]?.id || DEFAULT_WORKBENCH_MODELS[0],
-  };
-}
-
-export function workbenchProviderName(provider: ResponseProviderDraft | undefined) {
-  if (!provider) {
-    return 'No provider selected';
-  }
-  return provider.name.trim() || provider.id;
-}
-
 export function formatTokenCount(value: number) {
   return value.toLocaleString('zh-CN');
 }
@@ -301,7 +234,6 @@ export function localizeToolCatalogItem(tool: ContextWorkbenchToolCatalogItem, l
 }
 
 export function buildWorkbenchModelOptions(
-  selectedProvider: ResponseProviderDraft | undefined,
   modelDraft: string,
   models: string[] = [],
 ): ResponseProviderModel[] {
@@ -329,12 +261,11 @@ export function buildWorkbenchModelOptions(
     options.push({
       id: cleanedId,
       label: (model.label || cleanedId).trim(),
-      group: (model.group || selectedProvider?.name || 'Codex').trim(),
-      provider: (model.provider || selectedProvider?.name || 'Codex').trim(),
+      group: (model.group || 'Codex').trim(),
+      provider: (model.provider || 'Codex').trim(),
     });
   }
 
-  (selectedProvider?.models || []).forEach(pushModel);
   models.forEach(pushModel);
   pushModel(modelDraft);
   DEFAULT_WORKBENCH_MODELS.forEach(pushModel);

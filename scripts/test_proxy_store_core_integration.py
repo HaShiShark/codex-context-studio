@@ -492,6 +492,171 @@ def test_prune_sessions_missing_from_codex_deletes_only_missing_proxy_sessions()
         assert delete_id not in indexed_ids
 
 
+def test_node_locks_persist_and_cleanup_with_transcript() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        store = new_store(temp_dir)
+        initial_input = [
+            message("developer", "developer instructions"),
+            message("user", "lock me"),
+        ]
+        store.begin_request(
+            SESSION_ID,
+            {"input": copy.deepcopy(initial_input)},
+            {"x-codex-session-id": SESSION_ID},
+        )
+        store.complete_response(SESSION_ID, [message("assistant", "done")], "done")
+
+        session = store.sessions[SESSION_ID]
+        user_node_id = str(session.proxy_state.transcript[1]["id"])
+        payload = store.set_node_lock(
+            SESSION_ID,
+            user_node_id,
+            True,
+            expected_revision=0,
+        )
+
+        assert payload["node_locks"] == {user_node_id: True}
+        assert payload["node_lock_revision"] == 1
+
+        reloaded = new_store(temp_dir)
+        reloaded_session = reloaded.sessions[SESSION_ID]
+        assert reloaded_session.node_locks == {user_node_id: True}
+        assert reloaded_session.node_lock_revision == 1
+
+        replacement = input_items_to_transcript([message("developer", "developer instructions")])
+        cleanup_payload = reloaded.replace_transcript(SESSION_ID, replacement)
+        assert cleanup_payload["node_locks"] == {}
+        assert reloaded.sessions[SESSION_ID].node_locks == {}
+
+
+def test_node_locks_store_only_default_overrides() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        store = new_store(temp_dir)
+        initial_input = [
+            message("developer", "developer instructions"),
+            message("user", "normal user text"),
+        ]
+        store.begin_request(
+            SESSION_ID,
+            {"input": copy.deepcopy(initial_input)},
+            {"x-codex-session-id": SESSION_ID},
+        )
+
+        session = store.sessions[SESSION_ID]
+        developer_node_id = str(session.proxy_state.transcript[0]["id"])
+        user_node_id = str(session.proxy_state.transcript[1]["id"])
+
+        payload = store.set_node_lock(SESSION_ID, developer_node_id, True, expected_revision=0)
+        assert payload["node_locks"] == {}
+        assert payload["node_lock_revision"] == 0
+
+        payload = store.set_node_lock(SESSION_ID, developer_node_id, False, expected_revision=0)
+        assert payload["node_locks"] == {developer_node_id: False}
+        assert payload["node_lock_revision"] == 1
+
+        payload = store.set_node_lock(SESSION_ID, developer_node_id, True, expected_revision=1)
+        assert payload["node_locks"] == {}
+        assert payload["node_lock_revision"] == 2
+
+        payload = store.set_node_lock(SESSION_ID, user_node_id, False, expected_revision=2)
+        assert payload["node_locks"] == {}
+        assert payload["node_lock_revision"] == 2
+
+        payload = store.set_node_lock(SESSION_ID, user_node_id, True, expected_revision=2)
+        assert payload["node_locks"] == {user_node_id: True}
+        assert payload["node_lock_revision"] == 3
+
+
+def test_node_lock_allows_main_running_but_rejects_context_runs() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        store = new_store(temp_dir)
+        store.begin_request(
+            SESSION_ID,
+            {"input": [message("user", "hello")]},
+            {"x-codex-session-id": SESSION_ID},
+        )
+        user_node_id = str(store.sessions[SESSION_ID].proxy_state.transcript[0]["id"])
+
+        payload = store.set_node_lock(SESSION_ID, user_node_id, True, expected_revision=0)
+        assert payload["node_locks"] == {user_node_id: True}
+        assert payload["node_lock_revision"] == 1
+
+        store.complete_response(SESSION_ID, [message("assistant", "done")], "done")
+        store.set_context_run_state(SESSION_ID, "ctx-1", True)
+        assert store.wait_context_idle(SESSION_ID, timeout_seconds=0.01) is False
+
+        try:
+            store.set_node_lock(SESSION_ID, user_node_id, True)
+        except RuntimeError as exc:
+            assert str(exc) == "context_model_running"
+        else:
+            raise AssertionError("node lock changed while context model was running")
+
+        store.set_context_run_state(SESSION_ID, "ctx-1", False)
+        assert store.wait_context_idle(SESSION_ID, timeout_seconds=0.01) is True
+        payload = store.set_node_lock(SESSION_ID, user_node_id, False, expected_revision=1)
+        assert payload["node_locks"] == {}
+        assert payload["node_lock_revision"] == 2
+
+
+def test_persisted_running_status_is_not_treated_as_live_request() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        store = new_store(temp_dir)
+        store.begin_request(
+            SESSION_ID,
+            {"input": [message("user", "hello")]},
+            {"x-codex-session-id": SESSION_ID},
+        )
+        live_payload = store.get_session(SESSION_ID) or {}
+        assert live_payload["status"] == "running"
+        assert live_payload["is_running"] is True
+
+        reloaded = new_store(temp_dir)
+        stale_payload = reloaded.get_session(SESSION_ID) or {}
+        assert stale_payload["status"] == "mirror"
+        assert stale_payload["is_running"] is False
+
+
+def test_main_turn_state_survives_request_boundaries_but_not_restart() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        store = new_store(temp_dir)
+        start_payload = store.set_main_turn_state(SESSION_ID, "turn-1", True)
+        assert start_payload["is_main_turn_running"] is True
+        assert start_payload["main_turn_id"] == "turn-1"
+
+        store.begin_request(
+            SESSION_ID,
+            {"input": [message("user", "hello")]},
+            {"x-codex-session-id": SESSION_ID},
+        )
+        store.complete_response(SESSION_ID, [message("assistant", "done")], "done")
+        after_request_payload = store.get_session(SESSION_ID) or {}
+        assert after_request_payload["status"] == "mirror"
+        assert after_request_payload["is_running"] is False
+        assert after_request_payload["is_main_turn_running"] is True
+
+        reloaded = new_store(temp_dir)
+        reloaded_payload = reloaded.get_session(SESSION_ID) or {}
+        assert reloaded_payload["is_main_turn_running"] is False
+
+        finish_payload = store.set_main_turn_state(SESSION_ID, "turn-1", False)
+        assert finish_payload["is_main_turn_running"] is False
+
+
+def test_main_turn_finish_does_not_create_empty_session() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        store = new_store(temp_dir)
+        try:
+            store.set_main_turn_state(SESSION_ID, "turn-1", False)
+        except KeyError:
+            pass
+        else:
+            raise AssertionError("finishing a missing main turn should not create a session")
+
+        payload = store.get_session(SESSION_ID)
+        assert payload is None
+
+
 def main() -> None:
     tests = [
         test_begin_request_and_complete_response_use_proxy_state,
@@ -507,6 +672,12 @@ def main() -> None:
         test_compact_request_is_handled_by_proxy_core_state,
         test_compact_failure_rolls_back_transcript_and_cursor,
         test_prune_sessions_missing_from_codex_deletes_only_missing_proxy_sessions,
+        test_node_locks_persist_and_cleanup_with_transcript,
+        test_node_locks_store_only_default_overrides,
+        test_node_lock_allows_main_running_but_rejects_context_runs,
+        test_persisted_running_status_is_not_treated_as_live_request,
+        test_main_turn_state_survives_request_boundaries_but_not_restart,
+        test_main_turn_finish_does_not_create_empty_session,
     ]
     for test in tests:
         test()

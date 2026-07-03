@@ -10,6 +10,7 @@ try {
 
 $loopbackHost = if ($env:HASH_CONTEXT_HOST) { $env:HASH_CONTEXT_HOST } else { "localhost" }
 $serviceProbeHost = if ($loopbackHost -eq "localhost") { "127.0.0.1" } else { $loopbackHost }
+$proxyPort = if ($env:HASH_CONTEXT_PROXY_PORT) { $env:HASH_CONTEXT_PROXY_PORT } else { "8787" }
 
 function Write-HookJson {
   param(
@@ -29,6 +30,162 @@ function Write-HookLog {
     Add-Content -Path (Join-Path $logDir "codex-context-hook.log") -Value "$((Get-Date).ToUniversalTime().ToString("o")) $Message" -Encoding UTF8
   } catch {
   }
+}
+
+function Get-MainTurnStatePath {
+  try {
+    $root = Resolve-Path (Join-Path $PSScriptRoot "..")
+    $logDir = Join-Path $root "logs"
+    New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+    return (Join-Path $logDir "codex-main-turn.json")
+  } catch {
+    return ""
+  }
+}
+
+function Save-ActiveMainTurn {
+  param(
+    [string] $SessionId,
+    [string] $TurnId
+  )
+
+  if (-not $SessionId) {
+    return
+  }
+
+  $path = Get-MainTurnStatePath
+  if (-not $path) {
+    return
+  }
+
+  try {
+    $existingTurns = @()
+    if (Test-Path $path) {
+      try {
+        $existing = Get-Content -Raw -Path $path -Encoding UTF8 | ConvertFrom-Json
+        if ($existing.active_turns) {
+          $existingTurns = @($existing.active_turns)
+        } elseif ($existing.session_id) {
+          $existingTurns = @($existing)
+        }
+      } catch {
+        $existingTurns = @()
+      }
+    }
+    $turns = @(
+      foreach ($turn in $existingTurns) {
+        $turnSessionId = ([string] $turn.session_id).Trim()
+        if ($turnSessionId -and $turnSessionId -ne $SessionId) {
+          $turn
+        }
+      }
+      [pscustomobject] @{
+        session_id = $SessionId
+        turn_id = $TurnId
+        started_at = (Get-Date).ToUniversalTime().ToString("o")
+      }
+    )
+    $payload = @{
+      active_turns = $turns
+      session_id = $SessionId
+      turn_id = $TurnId
+      updated_at = (Get-Date).ToUniversalTime().ToString("o")
+    } | ConvertTo-Json -Compress
+    Set-Content -Path $path -Value $payload -Encoding UTF8
+  } catch {
+    Write-HookLog "main-turn state save failed session_id=$SessionId error=$($_.Exception.Message)"
+  }
+}
+
+function Clear-ActiveMainTurn {
+  param(
+    [string] $SessionId
+  )
+
+  if (-not $SessionId) {
+    return
+  }
+
+  $path = Get-MainTurnStatePath
+  if (-not $path -or -not (Test-Path $path)) {
+    return
+  }
+
+  try {
+    $state = Get-Content -Raw -Path $path -Encoding UTF8 | ConvertFrom-Json
+    $existingTurns = @()
+    if ($state.active_turns) {
+      $existingTurns = @($state.active_turns)
+    } elseif ($state.session_id) {
+      $existingTurns = @($state)
+    }
+
+    $remaining = @(
+      foreach ($turn in $existingTurns) {
+        $turnSessionId = ([string] $turn.session_id).Trim()
+        if ($turnSessionId -and $turnSessionId -ne $SessionId) {
+          $turn
+        }
+      }
+    )
+
+    if ($remaining.Count -le 0) {
+      Remove-Item -Path $path -Force -ErrorAction SilentlyContinue
+      return
+    }
+
+    $lastTurn = $remaining[($remaining.Count - 1)]
+    $payload = @{
+      active_turns = $remaining
+      session_id = ([string] $lastTurn.session_id).Trim()
+      turn_id = ([string] $lastTurn.turn_id).Trim()
+      updated_at = (Get-Date).ToUniversalTime().ToString("o")
+    } | ConvertTo-Json -Compress -Depth 6
+    Set-Content -Path $path -Value $payload -Encoding UTF8
+  } catch {
+    Write-HookLog "main-turn state clear failed session_id=$SessionId error=$($_.Exception.Message)"
+  }
+}
+
+function Set-MainTurnState {
+  param(
+    [string] $SessionId,
+    [string] $TurnId,
+    [bool] $Running
+  )
+
+  if (-not $SessionId) {
+    return
+  }
+
+  try {
+    $encodedSessionId = [uri]::EscapeDataString($SessionId)
+    $payload = @{
+      turn_id = $TurnId
+      running = $Running
+    } | ConvertTo-Json -Compress
+    Invoke-WebRequest -Uri "http://${serviceProbeHost}:$proxyPort/api/proxy/sessions/$encodedSessionId/main-turn" -Method Post -Body $payload -ContentType "application/json" -UseBasicParsing -TimeoutSec 2 | Out-Null
+    Write-HookLog "main-turn state ok session_id=$SessionId turn_id=$TurnId running=$Running"
+  } catch {
+    Write-HookLog "main-turn state failed session_id=$SessionId turn_id=$TurnId running=$Running error=$($_.Exception.Message)"
+  }
+}
+
+function Start-MainCodexTurn {
+  param(
+    [string] $SessionId,
+    [string] $TurnId
+  )
+
+  if (-not $SessionId) {
+    return
+  }
+  if (-not $TurnId) {
+    $TurnId = [guid]::NewGuid().ToString("N")
+  }
+
+  Save-ActiveMainTurn -SessionId $SessionId -TurnId $TurnId
+  Set-MainTurnState -SessionId $SessionId -TurnId $TurnId -Running $true
 }
 
 function Find-CodexSessionId {
@@ -159,7 +316,7 @@ function Sync-LocalCodexSession {
   }
 
   try {
-    $payload = @{ session_id = $SessionId; title = "Codex $($SessionId.Substring(0, 8))" } | ConvertTo-Json -Compress
+    $payload = @{ session_id = $SessionId } | ConvertTo-Json -Compress
     Invoke-WebRequest -Uri "http://${serviceProbeHost}:8765/api/codex-local-session-sync" -Method Post -Body $payload -ContentType "application/json" -UseBasicParsing -TimeoutSec 8 | Out-Null
     Write-HookLog "local-session-sync ok session_id=$SessionId"
   } catch {
@@ -199,7 +356,7 @@ function Write-BackgroundLog {
 }
 `$sessionId = '$escapedSessionId'
 try {
-  `$payload = @{ session_id = `$sessionId; title = "Codex `$(`$sessionId.Substring(0, 8))" } | ConvertTo-Json -Compress
+  `$payload = @{ session_id = `$sessionId } | ConvertTo-Json -Compress
   Invoke-WebRequest -Uri "http://${serviceProbeHost}:8765/api/codex-local-session-sync" -Method Post -Body `$payload -ContentType "application/json" -UseBasicParsing -TimeoutSec 20 | Out-Null
   Write-BackgroundLog "local-session-sync ok session_id=`$sessionId"
 } catch {
@@ -269,6 +426,9 @@ try {
 }
 
 if ($commands -notcontains $prompt) {
+  $turnIdForLog = ([string] $inputPayload.turn_id).Trim()
+  Start-MainCodexTurn -SessionId $sessionIdForLog -TurnId $turnIdForLog
+
   $contextEditMarker = Consume-ContextEditMarker -SessionId $sessionIdForLog
   if ($contextEditMarker) {
     Write-HookJson @{
@@ -292,6 +452,10 @@ try {
   $sessionId = Find-CodexSessionId -Value $inputPayload
   if (-not $sessionId) {
     $sessionId = Find-LatestHistorySessionId -Prompt $prompt
+  }
+  if ($sessionId) {
+    Set-MainTurnState -SessionId $sessionId -TurnId "" -Running $false
+    Clear-ActiveMainTurn -SessionId $sessionId
   }
   $showUrl = "http://${loopbackHost}:$controlPort/show"
   if ($sessionId) {
