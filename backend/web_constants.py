@@ -42,21 +42,10 @@ CODEX_TOOL_OUTPUT_TYPES_BY_CALL_TYPE = {
     call_type: set(output_types)
     for call_type, output_types in CODEX_ITEM_REGISTRY.tool_output_types_by_call_type.items()
 }
-CODEX_TOOL_CALL_TYPES_BY_OUTPUT_TYPE = {
-    output_type: set(call_types)
-    for output_type, call_types in CODEX_ITEM_REGISTRY.tool_call_types_by_output_type.items()
-}
 CODEX_COMPACTION_ITEM_TYPES = set(CODEX_ITEM_REGISTRY.compaction_item_types)
 CODEX_ITEM_DISPLAY_HINTS_BY_ITEM_TYPE = {
     item_type: dict(hint)
     for item_type, hint in CODEX_ITEM_REGISTRY.display_hints_by_item_type.items()
-}
-CONTEXT_EDITABLE_PROVIDER_ITEM_TYPES = {
-    "message",
-    "reasoning",
-    *CODEX_COMPACTION_ITEM_TYPES,
-    *CODEX_TOOL_CALL_ITEM_TYPES,
-    *CODEX_TOOL_OUTPUT_ITEM_TYPES,
 }
 PROVIDER_MODEL_TYPES = {"chat_completion", "responses", "gemini", "claude"}
 
@@ -85,7 +74,7 @@ class SessionState:
     session_id: str
     title: str
     transcript: list[dict[str, object]]
-    context_workbench_history: list[dict[str, str]]
+    context_workbench_history: list[dict[str, object]]
     node_locks: dict[str, bool] = field(default_factory=dict)
     node_lock_revision: int = 0
     main_turn_id: str = ""
@@ -101,7 +90,6 @@ class ContextWorkbenchToolDefinition:
     label: str
     description: str
     parameters: dict[str, Any]
-    status: str
     handler: Callable[[dict[str, Any]], Any]
 
     def to_schema(self) -> dict[str, Any]:
@@ -110,12 +98,4 @@ class ContextWorkbenchToolDefinition:
             "name": self.name,
             "description": self.description,
             "parameters": self.parameters,
-        }
-
-    def to_catalog_item(self) -> dict[str, str]:
-        return {
-            "id": self.name,
-            "label": self.label,
-            "description": self.description,
-            "status": self.status,
         }

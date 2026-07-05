@@ -74,7 +74,7 @@ Codex Context Proxy runs a local Responses API compatible proxy.
 
 When Codex sends a request, the proxy captures the request body and response stream, then builds a canonical transcript for the context workbench. If you do not edit anything, requests are forwarded transparently and Codex behaves like normal.
 
-When you edit the context, the proxy marks that session as overridden. On the next Codex turn, it rebuilds the Responses `input` from the edited transcript and removes server-side chained context references that would bypass the local edit.
+When you edit the context, the proxy replaces that session's canonical transcript. On the next Codex turn, it diffs Codex's new raw `input` against the cursor, appends the new tail, and rebuilds the upstream Responses `input` from the edited transcript.
 
 High-level flow:
 

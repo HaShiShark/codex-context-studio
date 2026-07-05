@@ -157,8 +157,7 @@ export function areScrollMetricsEqual(left: ScrollMetrics, right: ScrollMetrics)
   );
 }
 
-export function canExpandMessage(record: MessageRecord, previewText: string, isPreviewTruncated: boolean) {
-  void previewText;
+export function canExpandMessage(record: MessageRecord, isPreviewTruncated: boolean) {
   const textValue = record.text || '';
   const trimmedTextValue = textValue.trim();
   const hasAttachmentsOrTools = Boolean(record.attachments.length || record.toolEvents.length);

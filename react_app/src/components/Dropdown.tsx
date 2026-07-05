@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import type { MouseEvent, ReactNode } from 'react';
 
 interface DropdownProps {
@@ -7,6 +8,7 @@ interface DropdownProps {
   children: ReactNode;
   disabled?: boolean;
   isOpen: boolean;
+  onClose?: () => void;
   onToggle: (event: MouseEvent<HTMLButtonElement>) => void;
 }
 
@@ -17,8 +19,30 @@ export default function Dropdown({
   children,
   disabled = false,
   isOpen,
+  onClose,
   onToggle,
 }: DropdownProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isOpen || !onClose) {
+      return;
+    }
+
+    const closeDropdown = onClose;
+
+    function handleDocumentMouseDown(event: globalThis.MouseEvent) {
+      const target = event.target;
+      if (target instanceof Node && containerRef.current?.contains(target)) {
+        return;
+      }
+      closeDropdown();
+    }
+
+    document.addEventListener('mousedown', handleDocumentMouseDown);
+    return () => document.removeEventListener('mousedown', handleDocumentMouseDown);
+  }, [isOpen, onClose]);
+
   function handleMouseDown(event: MouseEvent<HTMLButtonElement>) {
     if (event.button !== 0) {
       return;
@@ -36,7 +60,7 @@ export default function Dropdown({
   }
 
   return (
-    <div className="dropdown-container">
+    <div className="dropdown-container" ref={containerRef}>
       <button
         className={buttonClassName}
         disabled={disabled}

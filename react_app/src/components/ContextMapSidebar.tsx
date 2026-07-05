@@ -17,6 +17,7 @@ import type {
   MessageRecord,
   ProxyUsageSummary,
   ReasoningOption,
+  TranscriptEntry,
 } from '../types';
 import {
   buildContextMapNodeMeta,
@@ -72,10 +73,7 @@ function resolveGutterClick(
 }
 
 interface ContextMapSidebarProps {
-  stage: 0 | 1 | 2;
   messages: MessageRecord[];
-  onToggle: () => void;
-  onJumpToMessage: (messageIndex: number) => void;
   sessionId: string;
   isMainChatBusy: boolean;
   isContextModelBusy: boolean;
@@ -90,6 +88,7 @@ interface ContextMapSidebarProps {
   onContextWorkbenchConversationChange: (
     sessionId: string,
     conversation: MessageRecord[],
+    rawTranscript?: TranscriptEntry[],
   ) => void | Promise<void>;
   onProxyUsageSummaryChange: (summary: ProxyUsageSummary | null) => void;
   onNodeLockChange: (nodeId: string, locked: boolean) => void | Promise<void>;
@@ -100,10 +99,7 @@ interface ContextMapSidebarProps {
 }
 
 export default function ContextMapSidebar({
-  stage,
   messages,
-  onToggle,
-  onJumpToMessage,
   sessionId,
   isMainChatBusy,
   isContextModelBusy,
@@ -150,7 +146,6 @@ export default function ContextMapSidebar({
   const [previewTruncatedIndexes, setPreviewTruncatedIndexes] = useState<Set<number>>(new Set());
   const [scrollMetrics, setScrollMetrics] = useState<ScrollMetrics>(DEFAULT_SCROLL_METRICS);
   const [tokenThresholds, setTokenThresholds] = useState<ContextTokenThresholds>(DEFAULT_CONTEXT_TOKEN_THRESHOLDS);
-  const showMinimap = stage === 2;
   const contentSignature = useMemo(() => contextMapContentSignature(messages), [messages]);
   const nodeMeta = useMemo(() => buildContextMapNodeMeta(messages, nodeLocks), [messages, nodeLocks]);
   const selectableIndexes = useMemo(
@@ -301,12 +296,6 @@ export default function ContextMapSidebar({
   }, [messages.length, selectableIndexes]);
 
   useEffect(() => {
-    if (stage === 1) {
-      setExpandedIndexes(new Set());
-    }
-  }, [stage]);
-
-  useEffect(() => {
     function measureNodes() {
       const container = scrollRef.current;
       if (!container) {
@@ -387,7 +376,7 @@ export default function ContextMapSidebar({
       window.removeEventListener('resize', scheduleMeasureNodes);
       resizeObserver?.disconnect();
     };
-  }, [messages.length, expandedIndexes, stage]);
+  }, [messages.length, expandedIndexes]);
 
   useEffect(() => {
     const container = scrollRef.current;
@@ -414,11 +403,11 @@ export default function ContextMapSidebar({
     return () => {
       activeContainer.removeEventListener('scroll', scheduleMinimapViewportSync);
     };
-  }, [applyMinimapViewport, messages.length, scheduleMinimapViewportSync, stage]);
+  }, [applyMinimapViewport, messages.length, scheduleMinimapViewportSync]);
 
   useEffect(() => {
     applyMinimapViewport();
-  }, [applyMinimapViewport, minimapContentHeightPx, minimapViewportHeightPx, stage, messages.length]);
+  }, [applyMinimapViewport, minimapContentHeightPx, minimapViewportHeightPx, messages.length]);
 
   useEffect(() => {
     function handleWindowMouseMove(event: MouseEvent) {
@@ -626,7 +615,7 @@ export default function ContextMapSidebar({
   }
 
   const toggleNodeLock = useCallback((index: number) => {
-    if (stage === 1 || isContextModelBusy) {
+    if (isContextModelBusy) {
       return false;
     }
 
@@ -644,7 +633,6 @@ export default function ContextMapSidebar({
     nodeLockPendingIds,
     nodeMeta,
     onNodeLockChange,
-    stage,
   ]);
 
   const handleGutterMouseDown = useCallback((index: number, event: ReactMouseEvent<HTMLButtonElement>) => {
@@ -795,29 +783,17 @@ export default function ContextMapSidebar({
   );
 
   return (
-    <aside className={`right-panel stage-${stage}`}>
+    <aside className="right-panel stage-2">
       <div className="context-map-pane">
         <div className="context-map-header">
           <div className="context-map-header-row">
             <div className="context-map-title">{sidebarText(uiLocale, 'Context Map', '上下文地图')}</div>
-            {(stage === 1 || stage === 2) && (
-              <button
-                aria-label={sidebarText(uiLocale, 'Toggle right sidebar', '切换右侧侧边栏')}
-                className="context-map-toggle"
-                onClick={onToggle}
-                title={sidebarText(uiLocale, 'Toggle right sidebar', '切换右侧侧边栏')}
-                type="button"
-              >
-                <i className="ph-light ph-layout" />
-              </button>
-            )}
           </div>
         </div>
 
         <div className="context-map-list">
           <ContextMapNodeList
             messages={messages}
-            stage={stage}
             nodeMeta={nodeMeta}
             messageStats={messageStats}
             expandedIndexes={expandedIndexes}
@@ -827,30 +803,27 @@ export default function ContextMapSidebar({
             scrollRef={scrollRef}
             setNodeRef={setNodeRef}
             onToggleMessage={toggleMessage}
-            onJumpToMessage={onJumpToMessage}
             onGutterMouseDown={handleGutterMouseDown}
             onGutterKeyDown={handleGutterKeyDown}
             isNodeLockDisabled={isContextModelBusy}
             nodeLockPendingIds={nodeLockPendingIds}
           />
 
-          {showMinimap ? (
-            <ContextMinimap
-              messages={messages}
-              messageStats={messageStats}
-              minimapBars={minimapBars}
-              selectedIndexes={selectedIndexes}
-              uiLocale={uiLocale}
-              minimapContentHeightPx={minimapContentHeightPx}
-              minimapViewportTopPx={minimapViewportTopPx}
-              minimapViewportHeightPx={minimapViewportHeightPx}
-              minimapRef={minimapRef}
-              minimapScrollRef={minimapScrollRef}
-              minimapViewportRef={minimapViewportRef}
-              onScrollToNode={scrollToNode}
-              onMinimapMouseDown={handleMinimapMouseDown}
-            />
-          ) : null}
+          <ContextMinimap
+            messages={messages}
+            messageStats={messageStats}
+            minimapBars={minimapBars}
+            selectedIndexes={selectedIndexes}
+            uiLocale={uiLocale}
+            minimapContentHeightPx={minimapContentHeightPx}
+            minimapViewportTopPx={minimapViewportTopPx}
+            minimapViewportHeightPx={minimapViewportHeightPx}
+            minimapRef={minimapRef}
+            minimapScrollRef={minimapScrollRef}
+            minimapViewportRef={minimapViewportRef}
+            onScrollToNode={scrollToNode}
+            onMinimapMouseDown={handleMinimapMouseDown}
+          />
         </div>
       </div>
 

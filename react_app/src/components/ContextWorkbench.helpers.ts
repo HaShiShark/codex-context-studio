@@ -1,9 +1,10 @@
 import type {
   ContextWorkbenchChatMessage,
-  ContextWorkbenchToolCatalogItem,
+  MessageBlock,
   ProxyUsageBucket,
   ProxyUsageSummary,
   ResponseProviderModel,
+  ToolEvent,
 } from '../types';
 import type { UiLocale } from '../i18n';
 
@@ -13,6 +14,8 @@ export interface ManualWorkbenchMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  toolEvents?: ToolEvent[];
+  blocks?: MessageBlock[];
   pending?: boolean;
   statusText?: string;
 }
@@ -106,6 +109,8 @@ export function buildManualMessagesFromChat(chat: ContextWorkbenchChatMessage[])
   return chat.map((entry, index) =>
     createManualMessage(entry.role, entry.content, {
       id: `context-chat-${index}-${entry.role}`,
+      toolEvents: Array.isArray(entry.toolEvents) ? entry.toolEvents : undefined,
+      blocks: Array.isArray(entry.blocks) ? entry.blocks : undefined,
     }),
   );
 }
@@ -155,12 +160,6 @@ export function formatNodeReferenceSegments(nodeNumbers: number[]) {
   return segments;
 }
 
-export function statusLabel(status: ContextWorkbenchToolCatalogItem['status'], locale: UiLocale) {
-  return status === 'available'
-    ? uiText(locale, 'Available', '可用')
-    : uiText(locale, 'Preview', '预览');
-}
-
 export function formatTokenCount(value: number) {
   return value.toLocaleString('zh-CN');
 }
@@ -176,61 +175,6 @@ export function formatSuggestionRoleLabel(role: string, locale: UiLocale) {
 
 export function isAbortError(error: unknown) {
   return error instanceof Error && error.name === 'AbortError';
-}
-
-export function localizeToolCatalogItem(tool: ContextWorkbenchToolCatalogItem, locale: UiLocale) {
-  switch (tool.id) {
-    case 'get_context_node_details':
-      return {
-        label: uiText(locale, 'Expand node details', '展开节点详情'),
-        description: uiText(locale, 'Expand nodes into full content and editable items before deciding whether to edit.', '将节点展开为完整内容和可编辑条目，再决定是否编辑。'),
-      };
-    case 'find_context_items':
-      return {
-        label: uiText(locale, 'Find items', '查找条目'),
-        description: uiText(locale, 'Search provider items by metadata and previews without loading full node content.', '通过元数据和预览搜索条目，不加载完整节点内容。'),
-      };
-    case 'edit_context_items':
-      return {
-        label: uiText(locale, 'Edit items', '编辑条目'),
-        description: uiText(locale, 'Batch delete, replace, or compress items selected by node, item, or type filters.', '按节点、条目或类型筛选后，批量删除、替换或压缩条目。'),
-      };
-    case 'delete_context_item':
-      return {
-        label: uiText(locale, 'Delete one item', '删除单个条目'),
-        description: uiText(locale, 'Delete one item inside a node.', '删除某个节点里的一个条目。'),
-      };
-    case 'replace_context_item':
-      return {
-        label: uiText(locale, 'Replace one item', '替换单个条目'),
-        description: uiText(locale, 'Replace one item inside a node with new content.', '把某个节点里的一个条目替换成新的内容。'),
-      };
-    case 'compress_context_item':
-      return {
-        label: uiText(locale, 'Compress one item', '压缩单个条目'),
-        description: uiText(locale, 'Compress one item while keeping its item type.', '把某个条目压缩成更短的版本，同时保留原来的条目类型。'),
-      };
-    case 'compress_context_nodes':
-      return {
-        label: uiText(locale, 'Compress nodes', '压缩节点'),
-        description: uiText(locale, 'Compress one or more nodes into summary nodes in the working snapshot.', '把一个或多个节点压缩成新的摘要节点。'),
-      };
-    case 'delete_context_nodes':
-      return {
-        label: uiText(locale, 'Delete nodes', '删除节点'),
-        description: uiText(locale, 'Delete one or more nodes from the working snapshot.', '从当前工作快照里删除一个或多个节点。'),
-      };
-    case 'confirm_working_snapshot':
-      return {
-        label: uiText(locale, 'Confirm snapshot', '确认快照'),
-        description: uiText(locale, 'Review the final active nodes after the planned edits are complete.', '在计划内编辑完成后，确认最终生效的节点概览。'),
-      };
-    default:
-      return {
-        label: tool.label,
-        description: tool.description,
-      };
-  }
 }
 
 export function buildWorkbenchModelOptions(

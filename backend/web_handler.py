@@ -25,7 +25,6 @@ from backend.web_constants import (
     RequestCancelledError,
 )
 from backend.web_context import (
-    ContextWorkbenchToolRegistry,
     codex_local_session_transcript,
     consume_context_edit_marker,
     context_workbench_suggestions_payload,
@@ -157,7 +156,6 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
             {
                 "settings": context_workbench_settings_payload(latest_settings),
                 "models": context_workbench_models_payload(latest_settings, provider_payloads),
-                "tool_catalog": ContextWorkbenchToolRegistry.tool_catalog(),
             }
         )
 
@@ -201,9 +199,7 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_proxy_sync_session_post(self, payload: dict[str, object]) -> None:
         transcript = payload.get("transcript")
-        if transcript is None:
-            transcript = []
-        if not isinstance(transcript, list):
+        if transcript is not None and not isinstance(transcript, list):
             raise ValueError("transcript must be a list")
         session = self.app_state.upsert_proxy_session(
             session_id=sanitize_text(payload.get("session_id") or "").strip(),
@@ -298,7 +294,6 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
             {
                 "settings": context_workbench_settings_payload(updated_settings),
                 "models": context_workbench_models_payload(updated_settings, provider_payloads),
-                "tool_catalog": ContextWorkbenchToolRegistry.tool_catalog(),
             }
         )
 
@@ -492,8 +487,6 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
                 check_cancelled=raise_if_cancelled,
             )
             raise_if_cancelled()
-            if draft.has_changes:
-                self._write_stream_event({"type": "finalizing", "stage": "commit", "has_changes": True})
             payload_data = build_context_chat_response_payload(
                 self.app_state,
                 session,
@@ -504,6 +497,8 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
                 tool_events=tool_events,
             )
             payload_data["type"] = "done"
+            if draft.has_changes:
+                self._write_stream_event({"type": "finalizing", "stage": "commit", "has_changes": True})
             self._write_stream_event(sanitize_value(payload_data))
         except (ClientDisconnectedError, RequestCancelledError):
             pass

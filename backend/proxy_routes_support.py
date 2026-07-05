@@ -222,19 +222,6 @@ def merge_codex_session_headers(
     return merged
 
 
-def session_id_for_compact_request(body: dict[str, Any], headers: dict[str, str], active_session_id: str) -> str:
-    for key in ("x-hash-context-session-id", "x-codex-conversation-id", "x-codex-session-id"):
-        value = headers.get(key)
-        if value:
-            return sanitize_id(value)
-    metadata_session_id = session_id_from_codex_metadata(headers, body)
-    if metadata_session_id:
-        return sanitize_id(metadata_session_id)
-    if active_session_id:
-        return active_session_id
-    return session_id_for_request(body, headers)
-
-
 def parse_metadata_value(raw_value: Any) -> dict[str, Any] | None:
     if isinstance(raw_value, dict):
         return copy.deepcopy(raw_value)

@@ -17,7 +17,6 @@ import type { MessageRecord } from '../types';
 
 interface ContextMapNodeListProps {
   messages: MessageRecord[];
-  stage: 0 | 1 | 2;
   nodeMeta: ContextMapNodeMeta[];
   messageStats: MessageStat[];
   expandedIndexes: Set<number>;
@@ -27,7 +26,6 @@ interface ContextMapNodeListProps {
   scrollRef: Ref<HTMLDivElement>;
   setNodeRef: (index: number, node: HTMLDivElement | null) => void;
   onToggleMessage: (index: number) => void;
-  onJumpToMessage: (index: number) => void;
   onGutterMouseDown: (index: number, event: ReactMouseEvent<HTMLButtonElement>) => void;
   onGutterKeyDown: (index: number, event: ReactKeyboardEvent<HTMLButtonElement>) => void;
   isNodeLockDisabled: boolean;
@@ -45,12 +43,10 @@ interface ContextMapNodeRowProps {
   isLockPending: boolean;
   isSelected: boolean;
   message: MessageRecord;
-  stage: 0 | 1 | 2;
   stats: MessageStat;
   uiLocale: 'zh-CN' | 'en-US';
   setNodeRef: (index: number, node: HTMLDivElement | null) => void;
   onToggleMessage: (index: number) => void;
-  onJumpToMessage: (index: number) => void;
   onGutterMouseDown: (index: number, event: ReactMouseEvent<HTMLButtonElement>) => void;
   onGutterKeyDown: (index: number, event: ReactKeyboardEvent<HTMLButtonElement>) => void;
 }
@@ -68,69 +64,52 @@ const ContextMapNodeRow = memo(function ContextMapNodeRow({
   isLockPending,
   isSelected,
   message,
-  stage,
   stats,
   uiLocale,
   setNodeRef,
   onToggleMessage,
-  onJumpToMessage,
   onGutterMouseDown,
   onGutterKeyDown,
 }: ContextMapNodeRowProps) {
   const roleClass = contextNodeClassName(message.role);
   const selectedClass = isSelected ? 'selected' : '';
   const lockedClass = isLocked ? 'locked' : '';
-  const canJumpToChat = stage === 1;
   const nodeNumberLabel = displayNodeNumber ?? index + 1;
   const lockTooltip = sidebarText(uiLocale, 'Double-click to lock/unlock', '双击锁定/解锁');
 
   return (
     <div
-      className={`context-node-row ${roleClass} ${isExpanded ? 'expanded' : ''} ${selectedClass} ${lockedClass} ${stage === 1 ? 'without-gutter' : ''}`}
+      className={`context-node-row ${roleClass} ${isExpanded ? 'expanded' : ''} ${selectedClass} ${lockedClass}`}
       ref={(node) => setNodeRef(index, node)}
     >
-      {stage !== 1 ? (
-        <button
-          className={`context-node-gutter ${isLocked ? 'locked' : ''} ${isLockPending ? 'pending' : ''}`}
-          type="button"
-          onMouseDown={(event) => onGutterMouseDown(index, event)}
-          onKeyDown={(event) => onGutterKeyDown(index, event)}
-          disabled={isLockPending}
-          aria-disabled={isLockDisabled || isLockPending}
-          aria-label={isLocked
+      <button
+        className={`context-node-gutter ${isLocked ? 'locked' : ''} ${isLockPending ? 'pending' : ''}`}
+        type="button"
+        onMouseDown={(event) => onGutterMouseDown(index, event)}
+        onKeyDown={(event) => onGutterKeyDown(index, event)}
+        disabled={isLockPending}
+        aria-disabled={isLockDisabled || isLockPending}
+        aria-label={
+          isLocked
             ? sidebarText(uiLocale, `Unlock node ${nodeNumberLabel}`, `解锁第 ${nodeNumberLabel} 个节点`)
-            : sidebarText(uiLocale, `Select node ${nodeNumberLabel}; double-click to lock`, `选择第 ${nodeNumberLabel} 个节点；双击锁定`)}
-          aria-pressed={isSelected}
-          title={lockTooltip}
-        >
-          {isLocked ? <i className="ph-light ph-lock-simple" /> : <span>{displayNodeNumber}</span>}
-        </button>
-      ) : null}
+            : sidebarText(
+              uiLocale,
+              `Select node ${nodeNumberLabel}; double-click to lock`,
+              `选择第 ${nodeNumberLabel} 个节点；双击锁定`,
+            )
+        }
+        aria-pressed={isSelected}
+        title={lockTooltip}
+      >
+        {isLocked ? <i className="ph-light ph-lock-simple" /> : <span>{nodeNumberLabel}</span>}
+      </button>
 
       <div className={`context-map-item ${roleClass} ${isExpanded ? 'expanded' : ''} ${selectedClass}`}>
         <button
           aria-expanded={canToggleExpand ? isExpanded : undefined}
-          aria-label={canJumpToChat
-            ? sidebarText(
-                uiLocale,
-                `Jump to main chat message ${index + 1}`,
-                `跳转到主聊天第 ${index + 1} 条消息`,
-              )
-            : undefined}
           className={`context-map-item-button ${isInteractive ? '' : 'non-expandable'}`}
           type="button"
-          onClick={
-            isInteractive
-              ? () => {
-                  if (canJumpToChat) {
-                    onJumpToMessage(index);
-                    return;
-                  }
-
-                  onToggleMessage(index);
-                }
-              : undefined
-          }
+          onClick={isInteractive ? () => onToggleMessage(index) : undefined}
         >
           <div className="map-metadata">
             <span>{stats.label}</span>
@@ -166,7 +145,6 @@ const ContextMapNodeRow = memo(function ContextMapNodeRow({
 
 function ContextMapNodeList({
   messages,
-  stage,
   nodeMeta,
   messageStats,
   expandedIndexes,
@@ -176,7 +154,6 @@ function ContextMapNodeList({
   scrollRef,
   setNodeRef,
   onToggleMessage,
-  onJumpToMessage,
   onGutterMouseDown,
   onGutterKeyDown,
   isNodeLockDisabled,
@@ -191,9 +168,7 @@ function ContextMapNodeList({
             const isSelected = selectedIndexes.has(index);
             const stats = messageStats[index];
             const meta = nodeMeta[index];
-            const canExpand = canExpandMessage(message, stats.previewText, previewTruncatedIndexes.has(index));
-            const canToggleExpand = stage !== 1 && canExpand;
-            const canJumpToChat = stage === 1;
+            const canToggleExpand = canExpandMessage(message, previewTruncatedIndexes.has(index));
 
             return (
               <ContextMapNodeRow
@@ -201,19 +176,17 @@ function ContextMapNodeList({
                 displayNodeNumber={meta?.displayNodeNumber}
                 index={index}
                 isExpanded={isExpanded}
-                isInteractive={canToggleExpand || canJumpToChat}
+                isInteractive={canToggleExpand}
                 isLocked={Boolean(meta?.locked)}
                 isLockDisabled={isNodeLockDisabled}
                 isLockPending={Boolean(message.nodeId && nodeLockPendingIds.has(message.nodeId))}
                 isSelected={isSelected}
                 key={`${message.role}-${index}`}
                 message={message}
-                stage={stage}
                 stats={stats}
                 uiLocale={uiLocale}
                 setNodeRef={setNodeRef}
                 onToggleMessage={onToggleMessage}
-                onJumpToMessage={onJumpToMessage}
                 onGutterMouseDown={onGutterMouseDown}
                 onGutterKeyDown={onGutterKeyDown}
               />

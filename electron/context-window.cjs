@@ -432,7 +432,7 @@ function iconPath(root) {
   if (fs.existsSync(localIcon)) return localIcon;
   const localPng = path.join(root, 'electron', 'assets', 'hash-icon.png');
   if (fs.existsSync(localPng)) return localPng;
-  return path.join(root, 'assets', 'hash-icon.png');
+  return localIcon;
 }
 
 function normalizeWindowBounds(bounds) {

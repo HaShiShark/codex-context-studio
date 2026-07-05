@@ -16,6 +16,13 @@ from fastapi.testclient import TestClient  # noqa: E402
 from backend import proxy_fastapi, proxy_routes_support  # noqa: E402
 
 
+PRELOAD_AUTH_FUNCTIONS = (
+    "preload_force_upstream_auth",
+    "preload_codex_subscription_auth",
+    "preload_openai_api_auth",
+)
+
+
 class FakeModelsResponse:
     def __init__(self, status_code: int, payload: dict[str, Any]) -> None:
         self.status_code = status_code
@@ -45,8 +52,21 @@ def reset_cached_upstream_auth() -> None:
         proxy_routes_support._UPSTREAM_AUTH_HEADERS.clear()  # type: ignore[attr-defined]
 
 
+def disable_startup_auth_preload() -> dict[str, Any]:
+    originals = {name: getattr(proxy_routes_support, name) for name in PRELOAD_AUTH_FUNCTIONS}
+    for name in PRELOAD_AUTH_FUNCTIONS:
+        setattr(proxy_routes_support, name, lambda: False)
+    return originals
+
+
+def restore_startup_auth_preload(originals: dict[str, Any]) -> None:
+    for name, value in originals.items():
+        setattr(proxy_routes_support, name, value)
+
+
 def test_models_preserves_upstream_error_without_chatgpt_auth() -> None:
     original_client = proxy_fastapi.httpx.AsyncClient
+    original_preloaders = disable_startup_auth_preload()
     try:
         reset_cached_upstream_auth()
         proxy_fastapi.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
@@ -54,6 +74,7 @@ def test_models_preserves_upstream_error_without_chatgpt_auth() -> None:
             response = client.get("/v1/models")
     finally:
         proxy_fastapi.httpx.AsyncClient = original_client
+        restore_startup_auth_preload(original_preloaders)
         reset_cached_upstream_auth()
 
     assert response.status_code == HTTPStatus.INTERNAL_SERVER_ERROR
@@ -62,6 +83,7 @@ def test_models_preserves_upstream_error_without_chatgpt_auth() -> None:
 
 def test_models_serves_local_fallback_when_chatgpt_auth_upstream_fails() -> None:
     original_client = proxy_fastapi.httpx.AsyncClient
+    original_preloaders = disable_startup_auth_preload()
     try:
         reset_cached_upstream_auth()
         proxy_fastapi.httpx.AsyncClient = FakeAsyncClient  # type: ignore[assignment]
@@ -75,6 +97,7 @@ def test_models_serves_local_fallback_when_chatgpt_auth_upstream_fails() -> None
             )
     finally:
         proxy_fastapi.httpx.AsyncClient = original_client
+        restore_startup_auth_preload(original_preloaders)
         reset_cached_upstream_auth()
 
     payload = response.json()

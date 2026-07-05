@@ -47,7 +47,7 @@ Write-Host "Long Context 15-Task Benchmark final check"
 Write-Host "Root: $root"
 
 Run-Check -Name "TypeScript typecheck" -Command "npm run typecheck"
-Run-Check -Name "Compact proxy tests" -Command "npm run test:compact-proxy"
+Run-Check -Name "Proxy core tests" -Command "npm run test:proxy-core"
 
 if (-not $SkipBuild) {
   Run-Check -Name "React build" -Command "npm run build:react"

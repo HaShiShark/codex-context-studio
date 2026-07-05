@@ -15,8 +15,44 @@ from backend.web_context import (  # noqa: E402
     ContextWorkbenchDraft,
     ContextWorkbenchToolRegistry,
     build_context_workspace_snapshot,
+    normalize_context_chat_history,
     normalize_context_records,
 )
+import backend.web_runtime as web_runtime  # noqa: E402
+from backend.web_runtime import prepare_context_chat_history_for_model  # noqa: E402
+
+
+class _FakeContextResponse:
+    def __init__(self, *, output_text: str = "", function_calls=None, finish_reason=None) -> None:
+        self.output_text = output_text
+        self.function_calls = function_calls or []
+        self.finish_reason = finish_reason
+
+
+def _context_settings():
+    from simple_agent.config import (  # noqa: WPS433
+        CODEX_PROXY_PROVIDER_ID,
+        DEFAULT_CODEX_PROXY_MODELS,
+        DEFAULT_RESPONSE_PROVIDERS,
+        Settings,
+    )
+
+    providers = [dict(provider) for provider in DEFAULT_RESPONSE_PROVIDERS]
+    for provider in providers:
+        if provider.get("id") == CODEX_PROXY_PROVIDER_ID:
+            provider["models"] = [dict(model) for model in DEFAULT_CODEX_PROXY_MODELS]
+
+    return Settings(
+        model="gpt-5.4-mini",
+        default_reasoning_effort="default",
+        context_workbench_model="gpt-5.5",
+        context_workbench_provider_id=CODEX_PROXY_PROVIDER_ID,
+        project_root=ROOT,
+        max_tool_rounds=4,
+        tool_settings=[],
+        response_providers=providers,
+        active_provider_id="openai",
+    )
 
 
 def test_workbench_commit_preserves_global_provider_item_order() -> None:
@@ -111,11 +147,192 @@ def test_unlocked_developer_is_visible_and_tool_accessible() -> None:
     assert "developer instructions" in json.dumps(payload, ensure_ascii=False)
 
 
+def test_context_workbench_draft_reports_changes_after_write() -> None:
+    core_transcript = input_items_to_transcript(
+        [
+            {"type": "message", "role": "user", "content": "old context"},
+        ]
+    )
+    draft = ContextWorkbenchDraft(core_transcript, [])
+
+    assert not draft.has_changes
+
+    draft.apply_write_nodes(
+        [1],
+        [{"after": 0, "role": "user", "content": "compressed context"}],
+    )
+
+    assert draft.has_changes
+
+
+def test_context_chat_turn_returns_fallback_after_changed_draft_empty_final_response() -> None:
+    core_transcript = input_items_to_transcript(
+        [
+            {"type": "message", "role": "user", "content": "old context"},
+        ]
+    )
+    session = SessionState(
+        session_id="session-empty-final-after-write",
+        title="Empty Final After Write",
+        transcript=core_transcript,
+        context_workbench_history=[],
+    )
+    responses = [
+        _FakeContextResponse(
+            function_calls=[
+                web_runtime.BridgedFunctionCall(
+                    name="write_nodes",
+                    call_id="call-write",
+                    arguments=json.dumps(
+                        {
+                            "delete": [1],
+                            "inserts": [
+                                {
+                                    "after": 0,
+                                    "role": "user",
+                                    "content": "compressed context",
+                                }
+                            ],
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            ],
+        ),
+        _FakeContextResponse(output_text=""),
+    ]
+    original_stream = web_runtime.stream_context_codex_proxy_response_with_retry
+
+    def fake_stream(*args, **kwargs):
+        if not responses:
+            raise AssertionError("unexpected extra context model call")
+        return responses.pop(0)
+
+    web_runtime.stream_context_codex_proxy_response_with_retry = fake_stream
+    try:
+        answer, used_model, draft, tool_events = web_runtime.run_context_chat_turn(
+            _context_settings(),
+            session,
+            message="compress",
+        )
+    finally:
+        web_runtime.stream_context_codex_proxy_response_with_retry = original_stream
+
+    assert used_model == "gpt-5.5"
+    assert answer == "Context edit applied: Delete #1, Insert 1 node(s)"
+    assert draft.has_changes
+    assert tool_events[0].name == "write_nodes"
+    assert transcript_to_input_items(draft.committed_transcript()) == [
+        {"type": "message", "role": "user", "content": "compressed context"},
+    ]
+
+
+def test_context_chat_response_payload_commits_changed_draft() -> None:
+    core_transcript = input_items_to_transcript(
+        [
+            {"type": "message", "role": "user", "content": "old context"},
+        ]
+    )
+    session = SessionState(
+        session_id="session-payload-commit",
+        title="Payload Commit",
+        transcript=core_transcript,
+        context_workbench_history=[],
+    )
+    draft = ContextWorkbenchDraft(core_transcript, [])
+    draft.apply_write_nodes(
+        [1],
+        [{"after": 0, "role": "user", "content": "compressed context"}],
+    )
+
+    class FakeAppState:
+        def apply_context_workbench_mutation(self, target_session, *, transcript):
+            target_session.transcript = transcript
+            return transcript
+
+        def append_context_workbench_turn(self, target_session, *, user_message, answer, tool_events=None):
+            return [
+                {"role": "user", "content": user_message},
+                {"role": "assistant", "content": answer, "toolEvents": tool_events or []},
+            ]
+
+    original_sync = web_runtime.safe_sync_proxy_session_transcript_if_known
+    web_runtime.safe_sync_proxy_session_transcript_if_known = lambda *args, **kwargs: {
+        "status": "skipped",
+        "reason": "test",
+    }
+    try:
+        payload = web_runtime.build_context_chat_response_payload(
+            FakeAppState(),
+            session,
+            user_message="compress",
+            answer="Context edit applied.",
+            used_model="gpt-5.5",
+            draft=draft,
+            tool_events=[],
+        )
+    finally:
+        web_runtime.safe_sync_proxy_session_transcript_if_known = original_sync
+
+    assert transcript_to_input_items(payload["conversation"]) == [
+        {"type": "message", "role": "user", "content": "compressed context"},
+    ]
+    assert payload["history"][-1]["content"] == "Context edit applied."
+
+
+def test_context_workbench_history_keeps_tool_blocks_but_model_history_stays_light() -> None:
+    raw_history = [
+        {"role": "user", "content": "整理上下文"},
+        {
+            "role": "assistant",
+            "content": "已经整理完成",
+            "toolEvents": [
+                {
+                    "name": "write_nodes",
+                    "arguments": {"node_numbers": [1]},
+                    "output_preview": "updated",
+                    "raw_output": "{\"ok\": true}",
+                    "display_title": "write_nodes",
+                    "display_detail": "node #1",
+                    "display_result": "Updated node #1",
+                    "status": "completed",
+                }
+            ],
+            "blocks": [
+                {
+                    "kind": "tool",
+                    "tool_event": {
+                        "name": "write_nodes",
+                        "arguments": {"node_numbers": [1]},
+                        "output_preview": "updated",
+                        "status": "completed",
+                    },
+                },
+                {"kind": "text", "text": "已经整理完成"},
+            ],
+        },
+    ]
+
+    history = normalize_context_chat_history(raw_history)
+    assert history[1]["toolEvents"][0]["name"] == "write_nodes"
+    assert history[1]["blocks"][0]["kind"] == "tool"
+
+    model_history = prepare_context_chat_history_for_model(history)
+    assert model_history == [
+        {"role": "user", "content": "整理上下文"},
+        {"role": "assistant", "content": "已经整理完成"},
+    ]
+
+
 def main() -> None:
     tests = [
         test_workbench_commit_preserves_global_provider_item_order,
         test_locked_nodes_are_hidden_from_snapshot_but_preserved_on_commit,
         test_unlocked_developer_is_visible_and_tool_accessible,
+        test_context_workbench_draft_reports_changes_after_write,
+        test_context_chat_turn_returns_fallback_after_changed_draft_empty_final_response,
+        test_context_chat_response_payload_commits_changed_draft,
+        test_context_workbench_history_keeps_tool_blocks_but_model_history_stays_light,
     ]
     for test in tests:
         test()

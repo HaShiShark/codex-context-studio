@@ -222,9 +222,6 @@ class SimpleAgent:
 
         return "\n".join(lines)
 
-    def describe_tools(self) -> str:
-        return self.tools.describe()
-
     def reset(self) -> None:
         self.history = []
 

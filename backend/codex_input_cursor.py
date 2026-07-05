@@ -198,12 +198,6 @@ def longest_common_prefix_len(cursor: Sequence[Any], new_input: Sequence[Any]) -
     return prefix_len
 
 
-def longest_common_prefix(cursor: Sequence[Any], new_input: Sequence[Any]) -> int:
-    """Alias kept close to the design doc naming."""
-
-    return longest_common_prefix_len(cursor, new_input)
-
-
 def compute_diff(cursor: Sequence[Any], new_input: Sequence[Any]) -> CursorDiff:
     """Compute the suffix pop/append delta from cursor to new input."""
 
@@ -213,7 +207,3 @@ def compute_diff(cursor: Sequence[Any], new_input: Sequence[Any]) -> CursorDiff:
         pop=list(cursor[prefix_len:]),
         append=list(new_input[prefix_len:]),
     )
-
-
-normalize_for_fingerprint = normalize_provider_item
-fingerprint_item = fingerprint_provider_item

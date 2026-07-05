@@ -74,7 +74,7 @@ Codex Context Proxy 会运行一个本地的、兼容 Responses API 的代理。
 
 当 Codex 发送请求时，代理会捕获请求体和响应流，并为上下文工作台构建一份规范化 transcript。如果你没有编辑任何内容，请求会被透明转发，Codex 的行为应当和原生使用一致。
 
-当你编辑上下文后，代理会把当前 session 标记为 overridden。下一轮 Codex 请求时，它会从编辑后的 transcript 重新构建 Responses `input`，并移除可能绕过本地编辑的服务端链式上下文引用。
+当你编辑上下文后，代理会直接替换当前 session 的 canonical transcript。下一轮 Codex 请求时，它会用 Codex 新的 raw `input` 和 cursor 做 diff，追加新尾巴，再从编辑后的 transcript 重新构建上游 Responses `input`。
 
 整体流程：
 

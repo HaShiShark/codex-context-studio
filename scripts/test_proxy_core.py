@@ -561,6 +561,7 @@ def main() -> None:
         test_new_thread_empty_cursor_appends_full_input,
         test_same_request_retry_is_idempotent,
         test_response_completed_appends_assistant_to_cursor_and_transcript,
+        test_response_completed_stores_next_request_shape_in_cursor,
         test_response_completed_preserves_ids_after_id_bearing_request,
         test_tool_continuation_pops_old_tail_and_appends_new_tail,
         test_pop_conflict_keeps_existing_tail_and_still_appends,

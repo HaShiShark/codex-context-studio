@@ -21,10 +21,6 @@
   align-items: center;
 }
 
-.context-node-row.without-gutter {
-  grid-template-columns: minmax(0, 1fr);
-}
-
 .context-node-gutter {
   all: unset;
   box-sizing: border-box;

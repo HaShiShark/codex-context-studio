@@ -63,7 +63,8 @@ ProxyState
 ├── tail_conflict: bool                   # 上次 pop 尾部 fingerprint 不匹配
 ├── compact_pending: bool                 # compact 请求进行中
 ├── compact_kind: "auto" | "manual" | ""
-└── compact_error: str | null
+├── compact_error: str | null
+└── request_item_ids: bool                # 本轮 Codex raw input 是否带顶层 item id
 
 TranscriptNode
 ├── id: str
@@ -116,11 +117,13 @@ fingerprint 用于判断两个 provider item 是否是同一个语义 item。
 
 规则：
 
-- 排除动态字段：`id`。
-- 保留语义字段：`type`、`role`、`content`、`call_id`、`name`、`arguments`、`output`、`encrypted_content` 等。
+- `fingerprint_provider_item` 不再全局排除 `id`。当前代码按规范化后的 provider item 精确 hash，保留协议字段和嵌套 `id`。
+- 只有在“响应 item 投影为下一轮 request item”的已知边界上，`response_item_to_request_item(..., include_id=False)` 才会默认去掉顶层动态 response item `id`。
+- 嵌套 `id` 必须保留。工具 schema 里可能有语义字段叫 `id`，例如 `parameters.properties.id`，全局删除会破坏请求体。
+- 保留语义字段：`type`、`role`、`content`、`call_id`、`name`、`arguments`、`output`、`encrypted_content`、`internal_chat_message_metadata_passthrough` 等。
 - 对 dict/list 做稳定 JSON 序列化后 hash。
 
-待验证点：reasoning 的 `encrypted_content` 在 Codex 跨轮重放时是否 byte-identical。没有真实日志前，不要擅自把它从 fingerprint 中移除。
+待验证点：reasoning 的 `encrypted_content` 在 Codex 跨轮重放时是否 byte-identical。没有真实日志前，不要擅自把它从 fingerprint 中移除，也不要重新引入“全局删 id”的旧规则。
 
 ## 5. 每轮请求处理
 
@@ -131,7 +134,7 @@ new_input = body["input"]
 cursor = state.codex_input_cursor
 transcript = state.transcript
 
-prefix_len = longest_common_prefix(cursor, new_input)
+prefix_len = longest_common_prefix_len(cursor, new_input)
 pop = cursor[prefix_len:]
 append = new_input[prefix_len:]
 
@@ -184,8 +187,9 @@ transcript = 用户编辑后的旧 transcript + Codex 新增 provider items
 
 ```text
 if normal response completed:
-  TranscriptDeltaApplier.append(transcript, response_items)
-  codex_input_cursor.extend(response_items)
+  projected_items = response_items_to_request_items(response_items)
+  TranscriptDeltaApplier.append(transcript, projected_items)
+  codex_input_cursor.extend(projected_items)
 
 if compact_pending and response completed:
   CompactController.on_compact_success(...)
@@ -197,6 +201,8 @@ assistant output items 必须同时进入 transcript 和 cursor。否则：
 - 下一轮 Codex raw input 带回 assistant 时 cursor 无法对齐。
 
 SSE 解析器必须处理跨 chunk 的 event，不能按 HTTP chunk 硬切。
+
+响应 item 写回 cursor/transcript 前会先投影成 Codex 下一轮会作为 input 带回来的 request item 形状。如果本轮 raw input 已经出现顶层 item `id`，`request_item_ids` 会让投影继续保留顶层 `id`，避免 cursor 和 Codex 后续 input 对不齐。
 
 ## 7. Local Compact
 
@@ -334,9 +340,9 @@ Workbench 必须存在，它是“副模型作为 agent 操作 transcript”。
 副模型的建议工作方式：
 
 - 每轮开始生成轻量 snapshot：node index、role、preview、必要统计。
-- 模型需要细节时调用 `get_node(nodes=[...])` 获取完整节点。
-- 主编辑工具是节点级 `write_node`，支持删除、替换、压缩、插入。
-- item/event 级工具可保留，但不是主旋律。
+- 模型需要细节时调用 `get_nodes(node_numbers=[...])` 获取完整节点。
+- 主编辑工具是节点级 `write_nodes`，支持删除、替换、压缩、插入。
+- 细粒度内容项编辑只在 assistant 节点内部需要时使用 `write_items`，不是主旋律。
 - 同一工具循环中，工具结果可以累计在 input 里帮助推理；循环结束后，下一轮只保留 user/assistant 文本对话，developer snapshot 重新生成。
 
 ### 8.3 编辑器防错是实现细节，不是当前完成度硬门槛

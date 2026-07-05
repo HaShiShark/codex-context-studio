@@ -6,7 +6,6 @@ import mimetypes
 import os
 import re
 import uuid
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,7 +19,6 @@ _TOKEN_ENCODING: Any | None = None
 _TOKEN_ENCODING_LOAD_FAILED = False
 
 from simple_agent.agent import SimpleAgent, ToolEvent, sanitize_text
-from simple_agent.config import Settings
 from simple_agent.codex_tool_registry import ToolExecution
 
 from backend.web_constants import (
@@ -32,10 +30,8 @@ from backend.web_constants import (
     CODEX_PAIRED_TOOL_CALL_ITEM_TYPES,
     CODEX_STANDALONE_TOOL_CALL_ITEM_TYPES,
     CODEX_TOOL_CALL_ITEM_TYPES,
-    CODEX_TOOL_CALL_TYPES_BY_OUTPUT_TYPE,
     CODEX_TOOL_OUTPUT_ITEM_TYPES,
     CODEX_TOOL_OUTPUT_TYPES_BY_CALL_TYPE,
-    CONTEXT_EDITABLE_PROVIDER_ITEM_TYPES,
     CONTEXT_INPUT_MESSAGE_ROLES,
     CONTEXT_INPUT_RECORD_ROLES,
     CONTEXT_REQUEST_DEBUG_FILE,
@@ -73,9 +69,6 @@ def sanitize_value(value: Any) -> Any:
 def is_relative_to_path(candidate: Path, root: Path) -> bool:
     return candidate == root or root in candidate.parents
 
-def attachment_url_path(stored_name: str) -> str:
-    return f"{ATTACHMENTS_ROUTE}/{stored_name}"
-
 def resolve_attachment_file_path(relative_path: str) -> Path | None:
     safe_relative_path = sanitize_text(relative_path or "").replace("\\", "/").lstrip("/")
     if not safe_relative_path:
@@ -94,180 +87,6 @@ def resolve_attachment_file_path(relative_path: str) -> Path | None:
     repo_root = REPO_ROOT.resolve()
     candidate = (REPO_ROOT / safe_relative_path).resolve()
     return candidate if is_relative_to_path(candidate, repo_root) else None
-
-def fallback_blocks_from_text_and_tools(
-    role: str,
-    text: str,
-    tool_events: list[dict[str, object]],
-) -> list[dict[str, object]]:
-    blocks: list[dict[str, object]] = []
-    safe_text = sanitize_text(text)
-
-    if safe_text:
-        blocks.append(
-            {
-                "kind": "text",
-                "text": safe_text,
-            }
-        )
-
-    if role == "assistant":
-        for tool_event in tool_events:
-            blocks.append(
-                {
-                    "kind": "tool",
-                    "tool_event": sanitize_value(tool_event),
-                }
-            )
-
-    return blocks
-
-def _find_tag(value: str, tag: str) -> int:
-    return value.lower().find(tag)
-
-def _safe_emit_split(value: str, tag: str) -> tuple[str, str]:
-    lower_value = value.lower()
-    max_suffix_length = min(len(value), len(tag) - 1)
-    for suffix_length in range(max_suffix_length, 0, -1):
-        if tag.startswith(lower_value[-suffix_length:]):
-            return value[:-suffix_length], value[-suffix_length:]
-    return value, ""
-
-class ThinkTagStreamParser:
-    def __init__(
-        self,
-        *,
-        on_text_delta: Callable[[str], None],
-        on_reasoning_start: Callable[[], None],
-        on_reasoning_delta: Callable[[str], None],
-        on_reasoning_done: Callable[[], None],
-    ) -> None:
-        self.on_text_delta = on_text_delta
-        self.on_reasoning_start = on_reasoning_start
-        self.on_reasoning_delta = on_reasoning_delta
-        self.on_reasoning_done = on_reasoning_done
-        self.buffer = ""
-        self.in_reasoning = False
-
-    def feed(self, delta: str) -> None:
-        safe_delta = sanitize_text(delta)
-        if not safe_delta:
-            return
-
-        self.buffer = f"{self.buffer}{safe_delta}"
-        self._drain()
-
-    def finish(self) -> None:
-        if self.buffer:
-            if self.in_reasoning:
-                self.on_reasoning_delta(self.buffer)
-            else:
-                self.on_text_delta(self.buffer)
-            self.buffer = ""
-
-        if self.in_reasoning:
-            self.in_reasoning = False
-            self.on_reasoning_done()
-
-    def _drain(self) -> None:
-        while self.buffer:
-            if self.in_reasoning:
-                close_index = _find_tag(self.buffer, "</think>")
-                if close_index >= 0:
-                    before_close = self.buffer[:close_index]
-                    if before_close:
-                        self.on_reasoning_delta(before_close)
-                    self.buffer = self.buffer[close_index + len("</think>") :]
-                    self.in_reasoning = False
-                    self.on_reasoning_done()
-                    continue
-
-                emit_text, retained = _safe_emit_split(self.buffer, "</think>")
-                if emit_text:
-                    self.on_reasoning_delta(emit_text)
-                self.buffer = retained
-                return
-
-            open_index = _find_tag(self.buffer, "<think>")
-            if open_index >= 0:
-                before_open = self.buffer[:open_index]
-                if before_open:
-                    self.on_text_delta(before_open)
-                self.buffer = self.buffer[open_index + len("<think>") :]
-                self.in_reasoning = True
-                self.on_reasoning_start()
-                continue
-
-            emit_text, retained = _safe_emit_split(self.buffer, "<think>")
-            if emit_text:
-                self.on_text_delta(emit_text)
-            self.buffer = retained
-            return
-
-def blocks_from_text_and_tools(
-    role: str,
-    text: str,
-    tool_events: list[dict[str, object]],
-) -> list[dict[str, object]]:
-    if role != "assistant":
-        return fallback_blocks_from_text_and_tools(role, text, tool_events)
-
-    blocks: list[dict[str, object]] = []
-    active_reasoning_index: int | None = None
-
-    def append_text_delta(delta: str) -> None:
-        safe_delta = sanitize_text(delta)
-        if not safe_delta:
-            return
-        if blocks and blocks[-1].get("kind") == "text":
-            blocks[-1]["text"] = sanitize_text(f"{blocks[-1].get('text', '')}{safe_delta}")
-            return
-        blocks.append({"kind": "text", "text": safe_delta})
-
-    def start_reasoning() -> None:
-        nonlocal active_reasoning_index
-        if active_reasoning_index is not None:
-            return
-        blocks.append({"kind": "reasoning", "text": "", "status": "streaming"})
-        active_reasoning_index = len(blocks) - 1
-
-    def append_reasoning_delta(delta: str) -> None:
-        nonlocal active_reasoning_index
-        safe_delta = sanitize_text(delta)
-        if not safe_delta:
-            return
-        if active_reasoning_index is None:
-            start_reasoning()
-        if active_reasoning_index is None:
-            return
-        block = blocks[active_reasoning_index]
-        block["text"] = sanitize_text(f"{block.get('text', '')}{safe_delta}")
-
-    def finish_reasoning() -> None:
-        nonlocal active_reasoning_index
-        if active_reasoning_index is None:
-            return
-        blocks[active_reasoning_index]["status"] = "completed"
-        active_reasoning_index = None
-
-    parser = ThinkTagStreamParser(
-        on_text_delta=append_text_delta,
-        on_reasoning_start=start_reasoning,
-        on_reasoning_delta=append_reasoning_delta,
-        on_reasoning_done=finish_reasoning,
-    )
-    parser.feed(text)
-    parser.finish()
-
-    for tool_event in tool_events:
-        blocks.append(
-            {
-                "kind": "tool",
-                "tool_event": sanitize_value(tool_event),
-            }
-        )
-
-    return blocks
 
 def normalize_message_blocks(raw_blocks: Any) -> list[dict[str, object]]:
     if not isinstance(raw_blocks, list):
@@ -504,9 +323,6 @@ def message_blocks_to_text(blocks: list[dict[str, object]]) -> str:
 
     return "".join(text_parts)
 
-def message_blocks_have_reasoning(blocks: list[dict[str, object]]) -> bool:
-    return any(sanitize_text(block.get("kind") or "").strip() == "reasoning" for block in blocks)
-
 def is_core_transcript_node(value: Any) -> bool:
     return (
         isinstance(value, dict)
@@ -691,45 +507,6 @@ def serialize_tool_event(event: ToolEvent) -> dict[str, object]:
         "status": event.status,
     }
 
-def settings_payload(settings: Settings) -> dict[str, object]:
-    return settings.public_payload()
-
-def estimate_provider_item_token_count(item: dict[str, Any]) -> int:
-    item_type = sanitize_text(item.get("type") or "").strip()
-    if item_type == "message":
-        return estimate_token_count(extract_text_from_provider_message_content(item.get("content")))
-
-    if item_type == "function_call":
-        source = "\n".join(
-            part
-            for part in [
-                sanitize_text(item.get("name") or ""),
-                sanitize_text(item.get("arguments") or ""),
-            ]
-            if part.strip()
-        )
-        return estimate_token_count(source)
-
-    if item_type == "function_call_output":
-        return estimate_token_count(sanitize_text(item.get("output") or ""))
-
-    return 0
-
-def estimate_tool_schema_token_count(schema: dict[str, Any]) -> int:
-    parts = [
-        sanitize_text(schema.get("name") or ""),
-        sanitize_text(schema.get("description") or ""),
-    ]
-    parameters = schema.get("parameters")
-    if isinstance(parameters, dict):
-        parts.append(json.dumps(sanitize_value(parameters), ensure_ascii=False))
-    elif parameters is not None:
-        parameter_text = sanitize_text(parameters)
-        if parameter_text.strip():
-            parts.append(parameter_text)
-
-    return estimate_token_count("\n".join(part for part in parts if part.strip()))
-
 def debug_request_item_summary(item: Any, index: int) -> dict[str, object]:
     item_json = json.dumps(sanitize_value(item), ensure_ascii=False)
     summary: dict[str, object] = {
@@ -834,19 +611,6 @@ def write_context_request_debug(
     except Exception:
         return
 
-def provider_items_tool_token_count(items: list[dict[str, Any]]) -> int:
-    total = 0
-    for item in items:
-        if sanitize_text(item.get("type") or "").strip() not in {"function_call", "function_call_output"}:
-            continue
-        total += estimate_provider_item_token_count(item)
-    return total
-
-def is_environment_context_record(record: dict[str, object]) -> bool:
-    if sanitize_text(record.get("role") or "").strip() != "user":
-        return False
-    return sanitize_text(record.get("text") or "").lstrip().lower().startswith("<environment_context>")
-
 def context_record_node_id(record: dict[str, object]) -> str:
     return transcript_node_id(record)
 
@@ -864,10 +628,6 @@ def context_node_locked_indexes(
         for index, record in enumerate(transcript)
         if isinstance(record, dict) and is_context_record_locked(record, node_locks)
     }
-
-
-def internal_context_prefix_indexes(transcript: list[dict[str, object]]) -> set[int]:
-    return context_node_locked_indexes(transcript)
 
 
 def editable_context_node_entries(
@@ -952,30 +712,8 @@ def collapsed_context_map_preview(text: str, limit: int = 72) -> str:
 
     return preview
 
-def normalize_node_numbers(raw_numbers: Any, max_node_number: int) -> list[int]:
-    if not isinstance(raw_numbers, list):
-        return []
-
-    normalized: list[int] = []
-    for raw_item in raw_numbers:
-        try:
-            node_number = int(raw_item)
-        except (TypeError, ValueError):
-            continue
-
-        if 1 <= node_number <= max_node_number and node_number not in normalized:
-            normalized.append(node_number)
-
-    return normalized
-
 def utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-
-def append_jsonl_state_event(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8", newline="\n") as handle:
-        handle.write(json.dumps(sanitize_value(payload), ensure_ascii=False, separators=(",", ":")))
-        handle.write("\n")
 
 def get_token_encoding() -> Any | None:
     global _TOKEN_ENCODING, _TOKEN_ENCODING_LOAD_FAILED
@@ -1032,32 +770,6 @@ def _estimate_token_count_fallback(text: str) -> int:
     ascii_tokens = re.findall(r"[A-Za-z0-9_]+", compact)
     non_ascii_chars = [char for char in compact if not char.isspace() and not char.isascii()]
     return max(1, len(ascii_tokens) + len(non_ascii_chars))
-
-def unique_int_list(values: Any) -> list[int]:
-    if not isinstance(values, list):
-        return []
-
-    unique_values: list[int] = []
-    for raw_value in values:
-        try:
-            value = int(raw_value)
-        except (TypeError, ValueError):
-            continue
-        if value not in unique_values:
-            unique_values.append(value)
-    return unique_values
-
-def normalize_change_type(raw_value: Any) -> str:
-    value = sanitize_text(raw_value or "").strip().lower()
-    if value in {"delete", "replace", "compress", "mixed", "update"}:
-        return value
-    if value.startswith("delete"):
-        return "delete"
-    if value.startswith("replace"):
-        return "replace"
-    if value.startswith("compress"):
-        return "compress"
-    return "update"
 
 def load_context_edit_markers() -> dict[str, dict[str, object]]:
     try:
@@ -1404,33 +1116,6 @@ def extract_text_from_provider_agent_message_content(content: Any) -> str:
         return "\n".join(parts)
     return "[encrypted subagent message]" if encrypted else ""
 
-def replace_provider_message_text(content: Any, replacement_text: str) -> str | list[dict[str, Any]]:
-    safe_text = sanitize_text(replacement_text)
-    if isinstance(content, list):
-        rewritten: list[dict[str, Any]] = []
-        text_item_type = "input_text"
-        for item in content:
-            if not isinstance(item, dict):
-                continue
-            item_type = sanitize_text(item.get("type") or "").strip()
-            if item_type in {"input_text", "output_text", "text"} or "text" in item:
-                if item_type == "output_text":
-                    text_item_type = "output_text"
-                continue
-            rewritten.append(sanitize_value(item))
-
-        if safe_text:
-            rewritten.insert(
-                0,
-                {
-                    "type": text_item_type,
-                    "text": safe_text,
-                },
-            )
-        return rewritten
-
-    return safe_text
-
 def provider_item_type(item: dict[str, Any] | None) -> str:
     return sanitize_text((item or {}).get("type") or "").strip()
 
@@ -1580,75 +1265,6 @@ def tool_display_detail_from_provider_item(item: dict[str, Any] | None) -> str:
 
     detail_text = provider_payload_text(arguments_value)
     return block_text_preview(detail_text, limit=160) if detail_text.strip() not in {"", "{}", "[]"} else ""
-
-def provider_item_detail(item: dict[str, Any], item_number: int) -> dict[str, object]:
-    item_type = provider_item_type(item) or "unknown"
-    detail: dict[str, object] = {
-        "item_number": item_number,
-        "item_label": f"item #{item_number}",
-        "item_type": item_type,
-        "type": item_type,
-        "provider_item_ref": f"provider_items[{item_number - 1}]",
-        "delete_supported": True,
-        "replace_supported": item_type in CONTEXT_EDITABLE_PROVIDER_ITEM_TYPES,
-        "compress_supported": item_type in {"message", "function_call", "custom_tool_call", *CODEX_TOOL_OUTPUT_ITEM_TYPES},
-    }
-
-    if item_type == "message":
-        content = item.get("content")
-        detail["role"] = sanitize_text(item.get("role") or "").strip() or "assistant"
-        text = extract_text_from_provider_message_content(content)
-        detail["text_preview"] = block_text_preview(text, limit=220)
-        detail["editable_text_ref"] = f"provider_items[{item_number - 1}].content"
-        preview_source = (
-            json.dumps(sanitize_value(content), ensure_ascii=False)
-            if isinstance(content, list)
-            else sanitize_text(content or "")
-        )
-        detail["preview"] = block_text_preview(preview_source, limit=180)
-        return detail
-
-    if item_type == "agent_message":
-        text = extract_text_from_provider_agent_message_content(item.get("content"))
-        detail["author"] = sanitize_text(item.get("author") or "").strip()
-        detail["recipient"] = sanitize_text(item.get("recipient") or "").strip()
-        detail["text_preview"] = block_text_preview(text, limit=220)
-        detail["preview"] = block_text_preview(text, limit=180)
-        return detail
-
-    if item_type in CODEX_TOOL_CALL_ITEM_TYPES:
-        detail["name"] = tool_display_title_from_provider_item(item)
-        detail["call_id"] = provider_item_call_id(item)
-        arguments = provider_payload_text(tool_call_arguments_value(item))
-        detail["arguments_preview"] = block_text_preview(arguments, limit=220)
-        detail["editable_text_ref"] = (
-            f"provider_items[{item_number - 1}].input"
-            if item_type == "custom_tool_call"
-            else f"provider_items[{item_number - 1}].arguments"
-        )
-        detail["preview"] = block_text_preview(arguments, limit=180)
-        return detail
-
-    if item_type in CODEX_TOOL_OUTPUT_ITEM_TYPES:
-        detail["name"] = sanitize_text(item.get("name") or "").strip()
-        detail["call_id"] = provider_item_call_id(item)
-        output = tool_output_text_from_provider_item(item)
-        detail["output_preview"] = block_text_preview(output, limit=220)
-        detail["editable_text_ref"] = (
-            f"provider_items[{item_number - 1}].tools"
-            if item_type == "tool_search_output"
-            else f"provider_items[{item_number - 1}].output"
-        )
-        detail["preview"] = block_text_preview(output, limit=180)
-        return detail
-
-    if item_type in CODEX_COMPACTION_ITEM_TYPES:
-        encoded_content = sanitize_text(item.get("encrypted_content") or "")
-        detail["encoded_content_preview"] = block_text_preview(encoded_content, limit=220)
-        detail["preview"] = block_text_preview(encoded_content, limit=180)
-        return detail
-
-    return detail
 
 def visible_text_from_compaction_provider_item(item: dict[str, Any]) -> str:
     parts: list[str] = []
@@ -2284,37 +1900,6 @@ def format_node_ranges(node_numbers: list[int]) -> str:
 def tool_output_type_matches_call_type(output_type: str, call_type: str) -> bool:
     return output_type in CODEX_TOOL_OUTPUT_TYPES_BY_CALL_TYPE.get(call_type, set())
 
-def paired_tool_item_indexes(provider_items: list[dict[str, Any]], item_index: int) -> list[int]:
-    if item_index < 0 or item_index >= len(provider_items):
-        return []
-    item = provider_items[item_index]
-    item_type = provider_item_type(item)
-    call_id = provider_item_call_id(item)
-    if not call_id:
-        return [item_index]
-
-    if item_type in CODEX_PAIRED_TOOL_CALL_ITEM_TYPES:
-        paired = [item_index]
-        allowed_output_types = CODEX_TOOL_OUTPUT_TYPES_BY_CALL_TYPE.get(item_type, set())
-        for index, candidate in enumerate(provider_items):
-            if index == item_index or provider_item_call_id(candidate) != call_id:
-                continue
-            if provider_item_type(candidate) in allowed_output_types:
-                paired.append(index)
-        return sorted(set(paired))
-
-    if item_type in CODEX_TOOL_OUTPUT_ITEM_TYPES:
-        paired = [item_index]
-        allowed_call_types = CODEX_TOOL_CALL_TYPES_BY_OUTPUT_TYPE.get(item_type, set())
-        for index, candidate in enumerate(provider_items):
-            if index == item_index or provider_item_call_id(candidate) != call_id:
-                continue
-            if provider_item_type(candidate) in allowed_call_types:
-                paired.append(index)
-        return sorted(set(paired))
-
-    return [item_index]
-
 def validate_context_provider_items(provider_items: list[dict[str, Any]]) -> None:
     calls_by_id: dict[str, list[tuple[int, str]]] = {}
     outputs_by_id: dict[str, list[tuple[int, str]]] = {}
@@ -2346,28 +1931,6 @@ def validate_context_provider_items(provider_items: list[dict[str, Any]]) -> Non
                 raise ValueError(
                     f"tool output item #{output_index + 1} ({output_type}, call_id={call_id}) has no matching call item"
                 )
-
-def validate_context_replacement_identity(original_item: dict[str, Any], replacement_item: dict[str, Any]) -> None:
-    original_type = provider_item_type(original_item)
-    replacement_type = provider_item_type(replacement_item)
-    if not replacement_type:
-        raise ValueError("replacement_item.type is required")
-    if original_type and replacement_type != original_type:
-        raise ValueError(
-            f"replacement_item must keep item type {original_type!r}; use node compression/deletion for structural rewrites"
-        )
-
-    if original_type == "message":
-        original_role = sanitize_text(original_item.get("role") or "").strip()
-        replacement_role = sanitize_text(replacement_item.get("role") or "").strip()
-        if original_role and replacement_role != original_role:
-            raise ValueError(f"replacement message must keep role {original_role!r}")
-
-    if original_type in CODEX_TOOL_CALL_ITEM_TYPES or original_type in CODEX_TOOL_OUTPUT_ITEM_TYPES:
-        original_call_id = provider_item_call_id(original_item)
-        replacement_call_id = provider_item_call_id(replacement_item)
-        if original_call_id and replacement_call_id != original_call_id:
-            raise ValueError(f"replacement tool item must keep call_id {original_call_id!r}")
 
 def letter_index(value: int) -> str:
     result = ""
@@ -2430,27 +1993,17 @@ class ContextWorkbenchDraft:
         self._draft_counter = 0
         self._working_version = 0
 
-    @property
-    def has_changes(self) -> bool:
-        return bool(self.operations)
-
     def _record_operation(self, operation: dict[str, object]) -> None:
         self._working_version += 1
         operation["working_version"] = self._working_version
         self.operations.append(operation)
 
-    def active_nodes(self) -> list[ContextWorkbenchDraftNode]:
-        return [
-            node
-            for node in sorted(self.nodes, key=lambda item: item.order)
-            if node.active and node.editable
-        ]
+    @property
+    def has_changes(self) -> bool:
+        return bool(self.operations)
 
     def committed_nodes(self) -> list[ContextWorkbenchDraftNode]:
         return [node for node in sorted(self.nodes, key=lambda item: item.order) if node.active]
-
-    def max_node_number(self) -> int:
-        return max((node.source_node_number or 0) for node in self.nodes) if self.nodes else 0
 
     def _nodes_by_number(self, node_numbers: list[int], *, include_inactive: bool = False) -> list[ContextWorkbenchDraftNode]:
         targets: list[ContextWorkbenchDraftNode] = []
@@ -2467,191 +2020,6 @@ class ContextWorkbenchDraft:
                 targets.append(node)
         return targets
 
-    def _node_search_text(self, node: ContextWorkbenchDraftNode) -> str:
-        overview = context_record_overview(
-            node.record,
-            node_number=node.source_node_number or 1,
-            selected=(node.source_node_number or 0) in self.selected_node_numbers,
-        )
-        parts = [
-            node.label,
-            sanitize_text(overview.get("role") or ""),
-            sanitize_text(overview.get("preview") or ""),
-            sanitize_text(overview.get("full_text") or ""),
-            format_tool_usage(sanitize_value(overview.get("tool_usage"))),
-            record_context_weight_source(node.record),
-        ]
-        return "\n".join(part for part in parts if sanitize_text(part).strip())
-
-    def _candidate_score(self, node: ContextWorkbenchDraftNode, target_hint: str) -> int:
-        safe_hint = sanitize_text(target_hint).strip()
-        overview = self._overview_for_node(node)
-        if not safe_hint:
-            return int(overview.get("token_estimate") or 0) + int(overview.get("tool_count") or 0) * 120
-
-        hint_text = safe_hint.lower()
-        haystack = self._node_search_text(node).lower()
-        score = 0
-
-        if sanitize_text(node.label).strip().lower() in hint_text:
-            score += 400
-
-        for token in re.findall(r"[a-z0-9_]+|[\u4e00-\u9fff]+", hint_text):
-            if len(token) <= 1:
-                continue
-            if token in haystack:
-                score += 120
-
-        if any(keyword in hint_text for keyword in ["latest", "recent", "last", "最近", "最后"]):
-            score += int(node.source_node_number or 0) * 10
-
-        if any(keyword in hint_text for keyword in ["tool", "tools", "工具", "调用"]):
-            score += int(overview.get("tool_count") or 0) * 160
-
-        if any(keyword in hint_text for keyword in ["long", "heavy", "verbose", "冗长", "很重", "最长"]):
-            score += int(overview.get("token_estimate") or 0)
-
-        if any(keyword in hint_text for keyword in ["user", "用户"]):
-            score += 160 if sanitize_text(overview.get("role") or "") == "user" else 0
-
-        if any(keyword in hint_text for keyword in ["assistant", "助手"]):
-            score += 160 if sanitize_text(overview.get("role") or "") == "assistant" else 0
-
-        return score
-
-    def suggest_target_nodes(self, target_hint: str = "", *, limit: int = 4) -> list[dict[str, object]]:
-        candidates = [
-            (self._candidate_score(node, target_hint), node)
-            for node in self.active_nodes()
-        ]
-        candidates.sort(
-            key=lambda item: (
-                -item[0],
-                -int(self._overview_for_node(item[1]).get("token_estimate") or 0),
-                -(item[1].source_node_number or 0),
-            )
-        )
-        ranked_nodes = [node for score, node in candidates if score > 0][: max(1, limit)]
-        if not ranked_nodes and not target_hint:
-            ranked_nodes = self.active_nodes()[: max(1, limit)]
-        return self.overview_items(ranked_nodes)
-
-    def _resolve_target_nodes_from_hint(
-        self,
-        target_hint: str,
-        *,
-        include_inactive: bool = False,
-    ) -> list[ContextWorkbenchDraftNode]:
-        searchable_nodes = self.nodes if include_inactive else self.active_nodes()
-        ranked = [
-            (self._candidate_score(node, target_hint), node)
-            for node in searchable_nodes
-        ]
-        ranked = [item for item in ranked if item[0] > 0]
-        ranked.sort(
-            key=lambda item: (
-                -item[0],
-                -int(self._overview_for_node(item[1]).get("token_estimate") or 0),
-                -(item[1].source_node_number or 0),
-            )
-        )
-        if not ranked:
-            return []
-
-        best_score = ranked[0][0]
-        second_score = ranked[1][0] if len(ranked) > 1 else -1
-        if len(ranked) == 1 or best_score >= second_score + 120:
-            return [ranked[0][1]]
-        return []
-
-    def resolve_target_nodes(
-        self,
-        arguments: dict[str, Any],
-        *,
-        allow_selected: bool = True,
-        allow_all_active: bool = False,
-        include_inactive: bool = False,
-    ) -> list[ContextWorkbenchDraftNode]:
-        explicit_numbers = normalize_node_numbers(arguments.get("node_numbers"), self.max_node_number())
-        if explicit_numbers:
-            return self._nodes_by_number(explicit_numbers, include_inactive=include_inactive)
-
-        del allow_selected
-
-        if allow_all_active:
-            return self.active_nodes()
-
-        return []
-
-    def _overview_for_node(self, node: ContextWorkbenchDraftNode) -> dict[str, object]:
-        display_number = node.source_node_number or 1
-        overview = context_record_overview(
-            node.record,
-            node_number=display_number,
-            selected=(node.source_node_number or 0) in self.selected_node_numbers,
-        )
-        overview["payload_kind"] = "node_overview"
-        overview["node_number"] = node.source_node_number
-        overview["label"] = node.label
-        overview["status"] = node.status
-        overview["node_kind"] = node.kind
-        overview["active"] = node.active
-        return overview
-
-    def current_overview_items(self) -> list[dict[str, object]]:
-        return [self._overview_for_node(node) for node in self.active_nodes()]
-
-    def compact_overview_for_node(self, node: ContextWorkbenchDraftNode) -> dict[str, object]:
-        overview = self._overview_for_node(node)
-        overview.pop("full_text", None)
-        return overview
-
-    def compact_overview_items(self, nodes: list[ContextWorkbenchDraftNode]) -> list[dict[str, object]]:
-        return [self.compact_overview_for_node(node) for node in nodes]
-
-    def final_snapshot_payload(self) -> dict[str, object]:
-        active_nodes = self.active_nodes()
-        inactive_nodes = [node for node in sorted(self.nodes, key=lambda item: item.order) if not node.active]
-        compressed_replacements: dict[int, str] = {}
-        for operation in self.operations:
-            if sanitize_text(operation.get("operation_type") or "").strip() != "compress_nodes":
-                continue
-            created_label = sanitize_text(operation.get("created_label") or "").strip()
-            if not created_label:
-                continue
-            for node_number in unique_int_list(operation.get("compressed_node_numbers") or operation.get("target_node_numbers")):
-                compressed_replacements[node_number] = created_label
-
-        active_overviews = self.compact_overview_items(active_nodes)
-        inactive_overviews: list[dict[str, object]] = []
-        for node in inactive_nodes:
-            item: dict[str, object] = {
-                "node_number": node.source_node_number,
-                "label": node.label,
-                "status": node.status,
-                "node_kind": node.kind,
-                "active": node.active,
-            }
-            if node.status == "compressed" and node.source_node_number in compressed_replacements:
-                item["replaced_by"] = compressed_replacements[node.source_node_number]
-            inactive_overviews.append(item)
-
-        return {
-            "payload_kind": "final_working_snapshot",
-            "working_version": self._working_version,
-            "active_node_count": len(active_nodes),
-            "inactive_node_count": len(inactive_nodes),
-            "total_token_estimate": sum(int(item.get("token_estimate") or 0) for item in active_overviews),
-            "tool_token_estimate": sum(int(item.get("tool_token_estimate") or 0) for item in active_overviews),
-            "selected_node_numbers": list(self.selected_node_numbers),
-            "active_nodes": active_overviews,
-            "inactive_nodes": inactive_overviews,
-            "operations": sanitize_value(self.operations),
-        }
-
-    def overview_items(self, nodes: list[ContextWorkbenchDraftNode]) -> list[dict[str, object]]:
-        return [self._overview_for_node(node) for node in nodes]
-
     def node_details(self, nodes: list[ContextWorkbenchDraftNode]) -> list[dict[str, object]]:
         details: list[dict[str, object]] = []
         for node in nodes:
@@ -2664,31 +2032,6 @@ class ContextWorkbenchDraft:
             detail["node_kind"] = node.kind
             details.append(detail)
         return details
-
-    def mutation_node_details(self, nodes: list[ContextWorkbenchDraftNode]) -> list[dict[str, object]]:
-        details: list[dict[str, object]] = []
-        for node in nodes:
-            provider_items = self._provider_items_for_node(node)
-            overview = self._overview_for_node(node)
-            details.append(
-                {
-                    "payload_kind": "node_mutation_detail",
-                    "node_number": node.source_node_number,
-                    "label": node.label,
-                    "status": node.status,
-                    "active": node.active,
-                    "node_kind": node.kind,
-                    "overview": overview,
-                    "item_count": len(provider_items),
-                    "full_detail_note": (
-                        "Mutation results intentionally omit full provider_items and per-item detail to avoid repeating large node content. "
-                        "For simple delete/replace/compress steps, do not re-open node details just to verify; use the mutation delta. "
-                        "Only call get_context_node_details again when the next edit requires exact updated provider_items from the current working snapshot."
-                    ),
-                }
-            )
-        return details
-
     def _next_draft_label(self) -> str:
         self._draft_counter += 1
         return f"Draft Node {letter_index(self._draft_counter)}"
@@ -2709,768 +2052,6 @@ class ContextWorkbenchDraft:
             return []
         node_transcript = normalize_transcript([node.record])
         return transcript_node_provider_items(node_transcript[0]) if node_transcript else []
-
-    def _resolve_item_detail(self, node: ContextWorkbenchDraftNode, item_number: int) -> dict[str, object]:
-        provider_items = self._provider_items_for_node(node)
-        if item_number < 1 or item_number > len(provider_items):
-            raise ValueError(f"item #{item_number} does not exist in {node.label}")
-        item = provider_items[item_number - 1]
-        return provider_item_detail(item, item_number)
-
-    def _item_ref(self, node: ContextWorkbenchDraftNode, item_number: int) -> str:
-        return context_node_item_ref(int(node.source_node_number or 0), item_number)
-
-    def _parse_item_ref(self, raw_ref: Any) -> tuple[int, int] | None:
-        safe_ref = sanitize_text(raw_ref or "").strip().lower()
-        if not safe_ref:
-            return None
-
-        match = re.search(r"node\D*(\d+)\D+item\D*(\d+)", safe_ref)
-        if match is None:
-            match = re.fullmatch(r"(\d+)\s*[:/]\s*(\d+)", safe_ref)
-        if match is None:
-            return None
-
-        try:
-            node_number = int(match.group(1))
-            item_number = int(match.group(2))
-        except (TypeError, ValueError):
-            return None
-        if node_number <= 0 or item_number <= 0:
-            return None
-        return node_number, item_number
-
-    def _item_text_source(self, item: dict[str, Any]) -> str:
-        item_type = provider_item_type(item)
-        if item_type == "message":
-            return extract_text_from_provider_message_content(item.get("content"))
-        if item_type == "reasoning":
-            return provider_payload_text(item.get("summary") or item.get("content") or item.get("text"))
-        if item_type in CODEX_COMPACTION_ITEM_TYPES:
-            return visible_text_from_compaction_provider_item(item)
-        if item_type in CODEX_TOOL_CALL_ITEM_TYPES:
-            return provider_payload_text(tool_call_arguments_value(item))
-        if item_type in CODEX_TOOL_OUTPUT_ITEM_TYPES or item_type == "image_generation_call":
-            return tool_output_text_from_provider_item(item)
-        return provider_payload_text(item)
-
-    def _can_replace_item_content(self, item: dict[str, Any]) -> bool:
-        return provider_item_type(item) in {
-            "message",
-            "function_call",
-            "custom_tool_call",
-            "function_call_output",
-            "custom_tool_call_output",
-            "local_shell_call_output",
-            "mcp_tool_call_output",
-            "tool_search_output",
-        }
-
-    def _replace_item_content(self, item: dict[str, Any], replacement_text: str) -> dict[str, Any]:
-        item_type = provider_item_type(item)
-        replacement_item = sanitize_value(item)
-        safe_content = sanitize_text(replacement_text)
-
-        if item_type == "message":
-            replacement_item["content"] = replace_provider_message_text(item.get("content"), safe_content)
-            return replacement_item
-        if item_type == "function_call":
-            replacement_item["arguments"] = safe_content
-            return replacement_item
-        if item_type == "custom_tool_call":
-            replacement_item["input"] = safe_content
-            return replacement_item
-        if item_type in {"function_call_output", "custom_tool_call_output", "local_shell_call_output"}:
-            replacement_item["output"] = safe_content
-            return replacement_item
-        if item_type == "mcp_tool_call_output":
-            replacement_item["output"] = {
-                "content": [{"type": "text", "text": safe_content}],
-                "structured_content": None,
-                "is_error": False,
-                "meta": None,
-            }
-            return replacement_item
-        if item_type == "tool_search_output":
-            replacement_item["tools"] = [{"summary": safe_content}]
-            return replacement_item
-
-        raise ValueError(f"{item_type or 'unknown'} items do not support batch content replacement")
-
-    def _light_item_entry(
-        self,
-        node: ContextWorkbenchDraftNode,
-        provider_items: list[dict[str, Any]],
-        item_index: int,
-    ) -> dict[str, object]:
-        item = provider_items[item_index]
-        item_number = item_index + 1
-        item_type = provider_item_type(item) or "unknown"
-        text_source = self._item_text_source(item)
-        paired_indexes = paired_tool_item_indexes(provider_items, item_index)
-        detail = provider_item_detail(item, item_number)
-        entry: dict[str, object] = {
-            "node_number": node.source_node_number,
-            "node_label": node.label,
-            "item_number": item_number,
-            "item_ref": self._item_ref(node, item_number),
-            "item_type": item_type,
-            "type": item_type,
-            "role": sanitize_text(item.get("role") or "").strip(),
-            "name": tool_display_title_from_provider_item(item)
-            if item_type in CODEX_TOOL_CALL_ITEM_TYPES or item_type in CODEX_TOOL_OUTPUT_ITEM_TYPES
-            else "",
-            "call_id": provider_item_call_id(item),
-            "token_estimate": estimate_token_count(text_source),
-            "text_chars": len(text_source),
-            "preview": block_text_preview(text_source, limit=160),
-            "display_detail": tool_display_detail_from_provider_item(item)
-            if item_type in CODEX_TOOL_CALL_ITEM_TYPES
-            else "",
-            "paired_item_numbers": [index + 1 for index in paired_indexes],
-            "is_tool_call": item_type in CODEX_TOOL_CALL_ITEM_TYPES,
-            "is_tool_output": item_type in CODEX_TOOL_OUTPUT_ITEM_TYPES,
-            "delete_supported": True,
-            "replace_content_supported": self._can_replace_item_content(item),
-        }
-        for key in ("text_preview", "arguments_preview", "output_preview", "encoded_content_preview"):
-            if key in detail:
-                entry[key] = detail[key]
-        return entry
-
-    def _selector_item_refs(self, selector: dict[str, Any]) -> set[tuple[int, int]]:
-        raw_refs = selector.get("item_refs")
-        if not isinstance(raw_refs, list):
-            return set()
-        refs: set[tuple[int, int]] = set()
-        for raw_ref in raw_refs:
-            parsed_ref = self._parse_item_ref(raw_ref)
-            if parsed_ref is not None:
-                refs.add(parsed_ref)
-        return refs
-
-    def _selector_nodes(self, selector: dict[str, Any], item_refs: set[tuple[int, int]]) -> list[ContextWorkbenchDraftNode]:
-        explicit_numbers = normalize_node_numbers(selector.get("node_numbers"), self.max_node_number())
-        if explicit_numbers:
-            return self._nodes_by_number(explicit_numbers)
-
-        if item_refs:
-            return self._nodes_by_number(sorted({node_number for node_number, _item_number in item_refs}))
-
-        target_hint = sanitize_text(selector.get("target_hint") or "").strip()
-        if target_hint:
-            return self.resolve_target_nodes(
-                {"target_hint": target_hint},
-                allow_selected=False,
-                allow_all_active=False,
-            )
-
-        if bool(selector.get("selected_only")) and self.selected_node_numbers:
-            return self._nodes_by_number(self.selected_node_numbers)
-
-        return self.active_nodes()
-
-    def _selector_item_numbers(self, selector: dict[str, Any]) -> set[int]:
-        raw_numbers = selector.get("item_numbers")
-        if not isinstance(raw_numbers, list):
-            return set()
-
-        numbers: set[int] = set()
-        for raw_number in raw_numbers:
-            try:
-                item_number = int(raw_number)
-            except (TypeError, ValueError):
-                continue
-            if item_number > 0:
-                numbers.add(item_number)
-        return numbers
-
-    def _selector_text_list(self, raw_value: Any) -> set[str]:
-        if not isinstance(raw_value, list):
-            return set()
-        return {
-            sanitize_text(item).strip()
-            for item in raw_value
-            if sanitize_text(item).strip()
-        }
-
-    def _match_context_items(
-        self,
-        selector: dict[str, Any],
-        *,
-        limit: int | None = None,
-    ) -> list[tuple[ContextWorkbenchDraftNode, int, dict[str, object]]]:
-        safe_selector = selector if isinstance(selector, dict) else {}
-        item_refs = self._selector_item_refs(safe_selector)
-        nodes = self._selector_nodes(safe_selector, item_refs)
-        item_numbers = self._selector_item_numbers(safe_selector)
-        item_types = self._selector_text_list(safe_selector.get("item_types"))
-        roles = self._selector_text_list(safe_selector.get("roles"))
-        text_contains = sanitize_text(safe_selector.get("text_contains") or "").strip().lower()
-        try:
-            min_token_estimate = int(safe_selector.get("min_token_estimate") or 0)
-        except (TypeError, ValueError):
-            min_token_estimate = 0
-
-        tool_type_filters: set[str] = set()
-        if bool(safe_selector.get("tool_output_only")):
-            tool_type_filters.update(CODEX_TOOL_OUTPUT_ITEM_TYPES)
-        if bool(safe_selector.get("tool_call_only")):
-            tool_type_filters.update(CODEX_TOOL_CALL_ITEM_TYPES)
-
-        matches: list[tuple[ContextWorkbenchDraftNode, int, dict[str, object]]] = []
-        for node in nodes:
-            provider_items = self._provider_items_for_node(node)
-            for item_index, item in enumerate(provider_items):
-                item_number = item_index + 1
-                if item_refs and (int(node.source_node_number or 0), item_number) not in item_refs:
-                    continue
-                if item_numbers and item_number not in item_numbers:
-                    continue
-
-                item_type = provider_item_type(item) or "unknown"
-                if item_types and item_type not in item_types:
-                    continue
-                if tool_type_filters and item_type not in tool_type_filters:
-                    continue
-
-                role = sanitize_text(item.get("role") or "").strip()
-                if roles and role not in roles:
-                    continue
-
-                text_source = self._item_text_source(item)
-                if text_contains and text_contains not in text_source.lower():
-                    continue
-
-                entry = self._light_item_entry(node, provider_items, item_index)
-                if min_token_estimate > 0 and int(entry.get("token_estimate") or 0) < min_token_estimate:
-                    continue
-
-                matches.append((node, item_index, entry))
-                if limit is not None and len(matches) >= limit:
-                    return matches
-
-        return matches
-
-    def find_context_items(self, selector: dict[str, Any]) -> dict[str, object]:
-        safe_selector = selector if isinstance(selector, dict) else {}
-        try:
-            max_results = int(safe_selector.get("max_results") or 120)
-        except (TypeError, ValueError):
-            max_results = 120
-        max_results = max(1, min(max_results, 500))
-
-        all_matches = self._match_context_items(safe_selector)
-        visible_matches = all_matches[:max_results]
-        items = [entry for _node, _index, entry in visible_matches]
-        total_tokens = sum(int(entry.get("token_estimate") or 0) for _node, _index, entry in all_matches)
-        return {
-            "payload_kind": "context_item_list",
-            "matched_count": len(all_matches),
-            "returned_count": len(items),
-            "truncated": len(all_matches) > len(items),
-            "total_token_estimate": total_tokens,
-            "items": items,
-            "selector": sanitize_value(safe_selector),
-            "note": (
-                "This is a lightweight item inventory. It intentionally contains previews and metadata only, not full item content."
-            ),
-        }
-
-    def _compact_batch_mutation_result(
-        self,
-        *,
-        summary: str,
-        change_type: str,
-        matched_count: int,
-        changed_items: list[dict[str, object]],
-        changed_nodes: list[int],
-        dry_run: bool,
-        selector: dict[str, Any],
-        operation: dict[str, Any],
-        before_tokens: int,
-        after_tokens: int,
-    ) -> dict[str, object]:
-        visible_changed_items = changed_items[:80]
-        return {
-            "payload_kind": "batch_mutation_result",
-            "summary": summary,
-            "change_type": normalize_change_type(change_type),
-            "dry_run": dry_run,
-            "matched_count": matched_count,
-            "changed_count": len(changed_items),
-            "changed_nodes": unique_int_list(changed_nodes),
-            "changed_items": visible_changed_items,
-            "omitted_changed_items": max(0, len(changed_items) - len(visible_changed_items)),
-            "token_delta_estimate": {
-                "before": max(0, before_tokens),
-                "after": max(0, after_tokens),
-                "saved": before_tokens - after_tokens,
-            },
-            "working_overview": self.current_overview_items(),
-            "selector": sanitize_value(selector),
-            "operation": sanitize_value(operation),
-            "note": (
-                "Mutation results are compact by design. They omit full provider_items and old full content; call get_context_node_details only if the next edit needs exact current items."
-            ),
-        }
-
-    def edit_context_items(
-        self,
-        *,
-        selector: dict[str, Any],
-        operation: dict[str, Any],
-        reason: str,
-        dry_run: bool = False,
-    ) -> dict[str, object]:
-        safe_selector = selector if isinstance(selector, dict) else {}
-        safe_operation = operation if isinstance(operation, dict) else {}
-        operation_type = sanitize_text(safe_operation.get("type") or "").strip()
-        if operation_type not in {"replace_content", "compress_content", "delete"}:
-            raise ValueError("operation.type must be replace_content, compress_content, or delete")
-
-        matches = self._match_context_items(safe_selector)
-        if not matches:
-            return self._compact_batch_mutation_result(
-                summary="No matching context items found.",
-                change_type=operation_type,
-                matched_count=0,
-                changed_items=[],
-                changed_nodes=[],
-                dry_run=dry_run,
-                selector=safe_selector,
-                operation=safe_operation,
-                before_tokens=0,
-                after_tokens=0,
-            )
-
-        working_by_node: dict[int, tuple[ContextWorkbenchDraftNode, list[dict[str, Any]]]] = {}
-        before_tokens = 0
-        after_tokens = 0
-        changed_items: list[dict[str, object]] = []
-
-        if operation_type == "delete":
-            remove_indexes_by_node: dict[int, set[int]] = {}
-            for node, item_index, entry in matches:
-                node_key = id(node)
-                provider_items = self._provider_items_for_node(node)
-                remove_indexes_by_node.setdefault(node_key, set()).update(
-                    paired_tool_item_indexes(provider_items, item_index)
-                )
-                working_by_node.setdefault(node_key, (node, sanitize_value(provider_items)))
-
-            for node_key, remove_indexes in remove_indexes_by_node.items():
-                node, provider_items = working_by_node[node_key]
-                removed_indexes = sorted(index for index in remove_indexes if 0 <= index < len(provider_items))
-                for remove_index in sorted(removed_indexes, reverse=True):
-                    removed_entry = self._light_item_entry(node, provider_items, remove_index)
-                    before_tokens += int(removed_entry.get("token_estimate") or 0)
-                    changed_items.append(
-                        {
-                            "node_number": removed_entry.get("node_number"),
-                            "item_number": removed_entry.get("item_number"),
-                            "item_ref": removed_entry.get("item_ref"),
-                            "item_type": removed_entry.get("item_type"),
-                            "call_id": removed_entry.get("call_id"),
-                            "change": "delete",
-                            "before_preview": removed_entry.get("preview"),
-                        }
-                    )
-                    del provider_items[remove_index]
-                validate_context_provider_items(provider_items)
-        else:
-            if "content" not in safe_operation:
-                raise ValueError("operation.content is required for replace_content and compress_content")
-            replacement_content = sanitize_text(safe_operation.get("content") or "")
-            for node, item_index, entry in matches:
-                node_key = id(node)
-                if node_key not in working_by_node:
-                    working_by_node[node_key] = (node, self._provider_items_for_node(node))
-                working_node, provider_items = working_by_node[node_key]
-                original_item = provider_items[item_index]
-                replacement_item = self._replace_item_content(original_item, replacement_content)
-                validate_context_replacement_identity(original_item, replacement_item)
-                before_tokens += int(entry.get("token_estimate") or 0)
-                after_tokens += estimate_token_count(self._item_text_source(replacement_item))
-                provider_items[item_index] = replacement_item
-                changed_items.append(
-                    {
-                        "node_number": entry.get("node_number"),
-                        "item_number": entry.get("item_number"),
-                        "item_ref": entry.get("item_ref"),
-                        "item_type": entry.get("item_type"),
-                        "call_id": entry.get("call_id"),
-                        "change": "compress" if operation_type == "compress_content" else "replace",
-                        "before_preview": entry.get("preview"),
-                        "after_preview": block_text_preview(replacement_content, limit=160),
-                    }
-                )
-                working_by_node[node_key] = (working_node, provider_items)
-
-            for _node_key, (_node, provider_items) in working_by_node.items():
-                validate_context_provider_items(provider_items)
-
-        changed_nodes = [
-            node.source_node_number
-            for node, _provider_items in working_by_node.values()
-            if node.source_node_number is not None
-        ]
-        changed_node_numbers = unique_int_list(changed_nodes)
-        change_type = "delete" if operation_type == "delete" else (
-            "compress" if operation_type == "compress_content" else "replace"
-        )
-        summary_action = {
-            "delete": "Delete",
-            "replace": "Replace content in",
-            "compress": "Compress content in",
-        }.get(change_type, "Update")
-        summary = f"{summary_action} {len(changed_items)} context item(s)"
-        if changed_node_numbers:
-            summary = f"{summary} across Node #{format_node_ranges(changed_node_numbers)}"
-
-        if not dry_run:
-            for _node_key, (node, provider_items) in working_by_node.items():
-                self._set_node_record(node, compile_record_from_provider_items(node.record, provider_items))
-            self._record_operation(
-                {
-                    "operation_type": "edit_context_items",
-                    "change_type": change_type,
-                    "label": summary,
-                    "summary": summary,
-                    "changed_nodes": changed_node_numbers,
-                    "target_node_numbers": changed_node_numbers,
-                    "target_items": [
-                        {
-                            "node_number": item.get("node_number"),
-                            "item_number": item.get("item_number"),
-                            "item_type": item.get("item_type"),
-                            "call_id": item.get("call_id"),
-                            "change": item.get("change"),
-                        }
-                        for item in changed_items
-                    ],
-                    "selector": sanitize_value(safe_selector),
-                    "operation": sanitize_value(safe_operation),
-                    "reason": sanitize_text(reason).strip(),
-                }
-            )
-
-        return self._compact_batch_mutation_result(
-            summary=summary if not dry_run else f"Dry run: {summary}",
-            change_type=change_type,
-            matched_count=len(matches),
-            changed_items=changed_items,
-            changed_nodes=changed_node_numbers,
-            dry_run=dry_run,
-            selector=safe_selector,
-            operation=safe_operation,
-            before_tokens=before_tokens,
-            after_tokens=after_tokens,
-        )
-
-    def _build_mutation_result(
-        self,
-        *,
-        summary: str,
-        change_type: str,
-        changed_nodes: list[int],
-        extra: dict[str, object] | None = None,
-    ) -> dict[str, object]:
-        changed_node_details = self.mutation_node_details(
-            self._nodes_by_number(changed_nodes, include_inactive=True)
-        )
-        active_nodes = self.active_nodes()
-        payload: dict[str, object] = {
-            "payload_kind": "mutation_delta",
-            "summary": summary,
-            "change_type": normalize_change_type(change_type),
-            "working_version": self._working_version,
-            "changed_nodes": unique_int_list(changed_nodes),
-            "active_node_count": len(active_nodes),
-            "inactive_node_count": len([node for node in self.nodes if not node.active]),
-            "changed_node_details": changed_node_details,
-        }
-        if extra:
-            payload.update(sanitize_value(extra))
-        return payload
-
-    def delete_nodes(self, nodes: list[ContextWorkbenchDraftNode], *, reason: str) -> dict[str, object]:
-        active_nodes = [node for node in nodes if node.active]
-        if not active_nodes:
-            raise ValueError("No active nodes were resolved for deletion.")
-
-        deleted_numbers = [
-            node.source_node_number
-            for node in active_nodes
-            if node.source_node_number is not None
-        ]
-        for node in active_nodes:
-            node.active = False
-            node.status = "deleted"
-
-        summary = f"Delete nodes #{format_node_ranges(deleted_numbers)}"
-        self._record_operation(
-            {
-                "operation_type": "delete_nodes",
-                "change_type": "delete",
-                "label": summary,
-                "summary": summary,
-                "changed_nodes": deleted_numbers,
-                "target_node_numbers": deleted_numbers,
-                "reason": sanitize_text(reason),
-            }
-        )
-        return self._build_mutation_result(
-            summary=summary,
-            change_type="delete",
-            changed_nodes=deleted_numbers,
-            extra={
-                "deleted_node_numbers": deleted_numbers,
-            },
-        )
-
-    def compress_nodes(
-        self,
-        nodes: list[ContextWorkbenchDraftNode],
-        *,
-        summary_markdown: str,
-        style: str,
-        title: str,
-    ) -> dict[str, object]:
-        active_nodes = [node for node in nodes if node.active]
-        if not active_nodes:
-            raise ValueError("No active nodes were resolved for compression.")
-
-        safe_summary = sanitize_text(summary_markdown).strip()
-        if not safe_summary:
-            raise ValueError("summary_markdown is required")
-
-        target_numbers = [
-            node.source_node_number
-            for node in active_nodes
-            if node.source_node_number is not None
-        ]
-        for node in active_nodes:
-            node.active = False
-            node.status = "compressed"
-
-        label = self._next_draft_label()
-        heading = sanitize_text(title).strip()
-        summary_text = safe_summary if not heading else f"### {heading}\n\n{safe_summary}"
-        created_node = ContextWorkbenchDraftNode(
-            order=min(node.order for node in active_nodes) + 0.01,
-            label=label,
-            record={
-                "role": "user",
-                "text": summary_text,
-                "attachments": [],
-                "toolEvents": [],
-                "blocks": [{"kind": "text", "text": summary_text}],
-                "providerItems": [
-                    {
-                        "type": "message",
-                        "role": "user",
-                        "content": summary_text,
-                    }
-                ],
-            },
-            active=True,
-            source_node_number=None,
-            kind="draft",
-            status="created",
-        )
-        self.nodes.append(created_node)
-
-        summary = f"Compress nodes #{format_node_ranges(target_numbers)}"
-        self._record_operation(
-            {
-                "operation_type": "compress_nodes",
-                "change_type": "compress",
-                "label": summary,
-                "summary": summary,
-                "changed_nodes": target_numbers,
-                "target_node_numbers": target_numbers,
-                "style": sanitize_text(style).strip(),
-                "created_label": label,
-            }
-        )
-        return self._build_mutation_result(
-            summary=summary,
-            change_type="compress",
-            changed_nodes=target_numbers,
-            extra={
-                "compressed_node_numbers": target_numbers,
-                "created_label": label,
-                "created_node": self.compact_overview_for_node(created_node),
-            },
-        )
-
-    def delete_items(self, node: ContextWorkbenchDraftNode, *, item_numbers: list[int], reason: str) -> dict[str, object]:
-        provider_items = self._provider_items_for_node(node)
-        if not item_numbers:
-            raise ValueError("at least one item_number is required")
-
-        resolved_items = []
-        removed_indexes: list[int] = []
-        for item_number in sorted(set(item_numbers)):
-            resolved_items.append(self._resolve_item_detail(node, item_number))
-            removed_indexes.extend(paired_tool_item_indexes(provider_items, item_number - 1))
-        removed_indexes = sorted(set(removed_indexes))
-        for remove_index in sorted(removed_indexes, reverse=True):
-            del provider_items[remove_index]
-        validate_context_provider_items(provider_items)
-        self._set_node_record(node, compile_record_from_provider_items(node.record, provider_items))
-
-        changed_nodes = [node.source_node_number] if node.source_node_number is not None else []
-        paired_suffix = " pair" if len(removed_indexes) > 1 else ""
-        requested_label = format_node_ranges(sorted(set(item_numbers)))
-        summary = f"Delete {node.label} item #{requested_label}{paired_suffix}"
-        self._record_operation(
-            {
-                "operation_type": "delete_items",
-                "change_type": "delete",
-                "label": summary,
-                "summary": summary,
-                "changed_nodes": changed_nodes,
-                "target_node_numbers": changed_nodes,
-                "target_items": [
-                    {
-                        "node_number": node.source_node_number,
-                        "item_number": sanitize_value(item.get("item_number")),
-                        "item_type": sanitize_text(item.get("item_type") or ""),
-                        "paired_item_numbers": [index + 1 for index in removed_indexes],
-                    }
-                    for item in resolved_items
-                ],
-                "reason": sanitize_text(reason).strip(),
-            }
-        )
-        return self._build_mutation_result(
-            summary=summary,
-            change_type="delete",
-            changed_nodes=changed_nodes,
-            extra={
-                "deleted_items": [
-                    {
-                        "node_number": node.source_node_number,
-                        "item_number": sanitize_value(item.get("item_number")),
-                        "paired_item_numbers": [index + 1 for index in removed_indexes],
-                        "item": item,
-                    }
-                    for item in resolved_items
-                ],
-            },
-        )
-
-    def delete_item(self, node: ContextWorkbenchDraftNode, *, item_number: int, reason: str) -> dict[str, object]:
-        return self.delete_items(node, item_numbers=[item_number], reason=reason)
-
-    def replace_item(
-        self,
-        node: ContextWorkbenchDraftNode,
-        *,
-        item_number: int,
-        replacement_item: dict[str, Any],
-        reason: str,
-        change_type: str = "replace",
-    ) -> dict[str, object]:
-        provider_items = self._provider_items_for_node(node)
-        original_item = self._resolve_item_detail(node, item_number)
-        original_provider_item = provider_items[item_number - 1]
-        normalized_replacement = normalize_provider_items([replacement_item])
-        if len(normalized_replacement) != 1:
-            raise ValueError("replacement_item must normalize into exactly one content item")
-        validate_context_replacement_identity(original_provider_item, normalized_replacement[0])
-        provider_items[item_number - 1] = normalized_replacement[0]
-        validate_context_provider_items(provider_items)
-        self._set_node_record(node, compile_record_from_provider_items(node.record, provider_items))
-
-        changed_nodes = [node.source_node_number] if node.source_node_number is not None else []
-        summary_prefix = "Compress" if normalize_change_type(change_type) == "compress" else "Replace"
-        summary = f"{summary_prefix} {node.label} item #{item_number}"
-        self._record_operation(
-            {
-                "operation_type": "compress_item"
-                if normalize_change_type(change_type) == "compress"
-                else "replace_item",
-                "change_type": normalize_change_type(change_type),
-                "label": summary,
-                "summary": summary,
-                "changed_nodes": changed_nodes,
-                "target_node_numbers": changed_nodes,
-                "target_items": [
-                    {
-                        "node_number": node.source_node_number,
-                        "item_number": item_number,
-                        "item_type": sanitize_text(original_item.get("item_type") or ""),
-                    }
-                ],
-                "replacement_item": sanitize_value(normalized_replacement[0]),
-                "reason": sanitize_text(reason).strip(),
-            }
-        )
-        return self._build_mutation_result(
-            summary=summary,
-            change_type=change_type,
-            changed_nodes=changed_nodes,
-            extra={
-                "replaced_items": [
-                    {
-                        "node_number": node.source_node_number,
-                        "item_number": item_number,
-                        "before": original_item,
-                        "after": provider_item_detail(normalized_replacement[0], item_number),
-                    }
-                ],
-            },
-        )
-
-    def compress_item(
-        self,
-        node: ContextWorkbenchDraftNode,
-        *,
-        item_number: int,
-        compressed_content: str,
-        style: str,
-    ) -> dict[str, object]:
-        provider_items = self._provider_items_for_node(node)
-        if item_number < 1 or item_number > len(provider_items):
-            raise ValueError(f"item #{item_number} does not exist in {node.label}")
-
-        original_item = provider_items[item_number - 1]
-        item_type = sanitize_text(original_item.get("type") or "").strip()
-        safe_content = sanitize_text(compressed_content).strip()
-        if not safe_content:
-            raise ValueError("compressed_content is required")
-
-        replacement_item = sanitize_value(original_item)
-        if item_type == "message":
-            replacement_item["content"] = replace_provider_message_text(original_item.get("content"), safe_content)
-        elif item_type == "function_call":
-            replacement_item["arguments"] = safe_content
-        elif item_type == "custom_tool_call":
-            replacement_item["input"] = safe_content
-        elif item_type in {"function_call_output", "custom_tool_call_output", "local_shell_call_output"}:
-            replacement_item["output"] = safe_content
-        elif item_type == "mcp_tool_call_output":
-            replacement_item["output"] = {
-                "content": [{"type": "text", "text": safe_content}],
-                "structured_content": None,
-                "is_error": False,
-                "meta": None,
-            }
-        elif item_type == "tool_search_output":
-            replacement_item["tools"] = [{"summary": safe_content}]
-        else:
-            raise ValueError(f"{node.label} item #{item_number} cannot be compressed")
-
-        return self.replace_item(
-            node,
-            item_number=item_number,
-            replacement_item=replacement_item,
-            reason=sanitize_text(style).strip(),
-            change_type="compress",
-        )
 
     def committed_transcript(self) -> list[dict[str, object]]:
         core_nodes: list[dict[str, object]] = []
@@ -3666,29 +2247,6 @@ class ContextWorkbenchToolRegistry:
     def schemas(self) -> list[dict[str, Any]]:
         return [tool.to_schema() for tool in self._tools.values()]
 
-    @classmethod
-    def tool_catalog(cls) -> list[dict[str, str]]:
-        return [
-            {
-                "id": "get_nodes",
-                "label": "Get Nodes",
-                "description": "Expand one or more nodes into full structured item details.",
-                "status": "available",
-            },
-            {
-                "id": "write_nodes",
-                "label": "Write Nodes",
-                "description": "Delete and/or insert nodes in the working snapshot.",
-                "status": "available",
-            },
-            {
-                "id": "write_items",
-                "label": "Write Items",
-                "description": "Delete and/or insert items within a single node.",
-                "status": "available",
-            },
-        ]
-
     def execute(self, name: str, arguments: dict[str, Any]) -> ToolExecution:
         tool = self._tools.get(name)
         if tool is None:
@@ -3748,7 +2306,7 @@ class ContextWorkbenchToolRegistry:
                 },
                 "required": ["node_numbers"], "additionalProperties": False,
             },
-            status="available", handler=handler,
+            handler=handler,
         )
 
     def _build_write_nodes_tool(self) -> "ContextWorkbenchToolDefinition":
@@ -3801,7 +2359,7 @@ class ContextWorkbenchToolRegistry:
                 },
                 "additionalProperties": False,
             },
-            status="available", handler=handler,
+            handler=handler,
         )
 
     def _build_write_items_tool(self) -> "ContextWorkbenchToolDefinition":
@@ -3854,30 +2412,42 @@ class ContextWorkbenchToolRegistry:
                 },
                 "required": ["node_number"], "additionalProperties": False,
             },
-            status="available", handler=handler,
+            handler=handler,
         )
 
 
-def normalize_context_chat_history(raw_history: Any) -> list[dict[str, str]]:
+def normalize_context_chat_history(raw_history: Any) -> list[dict[str, object]]:
     if not isinstance(raw_history, list):
         return []
 
-    history: list[dict[str, str]] = []
+    history: list[dict[str, object]] = []
     for item in raw_history:
         if not isinstance(item, dict):
             continue
         role = sanitize_text(item.get("role") or "").strip()
         if role not in {"user", "assistant"}:
             continue
-        content = sanitize_text(item.get("content") or "").strip()
-        if not content:
-            continue
-        history.append(
-            {
-                "role": role,
-                "content": content,
-            }
+        blocks = normalize_message_blocks(item.get("blocks"))
+        tool_events = (
+            sanitize_value(item.get("toolEvents"))
+            if isinstance(item.get("toolEvents"), list)
+            else extract_tool_events_from_blocks(blocks)
         )
+        if not isinstance(tool_events, list):
+            tool_events = []
+        content = sanitize_text(item.get("content") or "").strip() or message_blocks_to_text(blocks).strip()
+        if not content and not blocks and not tool_events:
+            continue
+        record: dict[str, object] = {
+            "role": role,
+            "content": content,
+        }
+        if role == "assistant":
+            if tool_events:
+                record["toolEvents"] = tool_events
+            if blocks:
+                record["blocks"] = blocks
+        history.append(record)
     return history
 
 def normalize_attachment_records(raw_attachments: Any) -> list[dict[str, object]]:
@@ -3981,7 +2551,4 @@ def model_options(default_model: str, configured_models: list[str] | None = None
         if safe_model and safe_model not in unique_models:
             unique_models.append(safe_model)
     return unique_models
-
-def active_provider_models(settings: Settings) -> list[str]:
-    return settings.active_provider_model_ids()
 

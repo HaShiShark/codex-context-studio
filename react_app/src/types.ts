@@ -1,11 +1,3 @@
-export type ContextMapMode = 'all' | 'condensed';
-
-export interface ContextMapState {
-  stage: 0 | 1 | 2;
-  mode: ContextMapMode;
-  width: number;
-}
-
 export interface AttachmentRecord {
   id?: string;
   name: string;
@@ -14,10 +6,6 @@ export interface AttachmentRecord {
   size_bytes?: number;
   url?: string;
   relative_path?: string;
-}
-
-export interface ComposerAttachment extends AttachmentRecord {
-  data_url: string;
 }
 
 export interface ToolEvent {
@@ -122,16 +110,11 @@ export interface ResponseProviderModel {
   provider?: string;
 }
 
-export interface ContextWorkbenchToolCatalogItem {
-  id: string;
-  label: string;
-  description: string;
-  status: 'available' | 'preview';
-}
-
 export interface ContextWorkbenchChatMessage {
   role: 'user' | 'assistant';
   content: string;
+  toolEvents?: ToolEvent[];
+  blocks?: MessageBlock[];
 }
 
 export interface ProxyUsageBucket {
@@ -168,14 +151,6 @@ export interface InitPayload {
   context_workbench_histories?: Record<string, ContextWorkbenchChatMessage[]>;
 }
 
-export interface ContextChatResponse {
-  answer: string;
-  used_model?: string;
-  tool_events?: ToolEvent[];
-  history: ContextWorkbenchChatMessage[];
-  conversation: TranscriptEntry[];
-}
-
 export interface ContextWorkbenchSettingsResponse {
   settings: {
     context_workbench_model: string;
@@ -193,7 +168,6 @@ export interface ContextWorkbenchSettingsResponse {
     auto_local_compact_prompt_default: string;
   };
   models: string[];
-  tool_catalog: ContextWorkbenchToolCatalogItem[];
 }
 
 export interface StreamDeltaEvent {
@@ -260,19 +234,6 @@ export type CanonicalJsonValue =
 
 export type CanonicalJsonObject = { [key: string]: CanonicalJsonValue };
 
-export type PromptBlockKind = 'system' | 'developer' | 'memory' | 'summary';
-// Mirrors agent_runtime CanonicalItem.role only. Proxy transcript nodes use
-// TranscriptNode.role and MessageRecord.role for lossless multi-role display.
-export type TranscriptRole = 'user' | 'assistant';
-export type CanonicalItemType = 'message' | 'tool_call' | 'tool_result';
-export type CanonicalStatus =
-  | 'pending'
-  | 'running'
-  | 'completed'
-  | 'error'
-  | 'skipped'
-  | (string & {});
-
 export interface ProviderRaw {
   provider_id?: string;
   model?: string;
@@ -280,55 +241,4 @@ export interface ProviderRaw {
   event_type?: string;
   payload?: CanonicalJsonValue;
   notes?: string[];
-}
-
-export interface PromptBlock {
-  kind: PromptBlockKind;
-  text: string;
-  editable?: boolean;
-  source?: string;
-  id?: string;
-  metadata?: CanonicalJsonObject;
-}
-
-export interface CanonicalItem {
-  type: CanonicalItemType;
-  role?: TranscriptRole;
-  content?: CanonicalJsonValue;
-  name?: string;
-  call_id?: string;
-  arguments?: CanonicalJsonValue;
-  output?: CanonicalJsonValue;
-  status?: CanonicalStatus;
-  provider_raw?: ProviderRaw;
-  providerRaw?: ProviderRaw;
-  metadata?: CanonicalJsonObject;
-}
-
-export interface ToolEventRecord {
-  name: string;
-  arguments?: CanonicalJsonValue;
-  output_preview?: string;
-  raw_output?: string;
-  display_title?: string;
-  display_detail?: string;
-  display_result?: string;
-  status?: CanonicalStatus;
-  call_id?: string;
-  error?: string;
-  provider_raw?: ProviderRaw;
-  providerRaw?: ProviderRaw;
-  metadata?: CanonicalJsonObject;
-}
-
-export interface AssistantRoundState {
-  round_id?: string;
-  answer_text?: string;
-  canonical_items?: CanonicalItem[];
-  tool_events?: ToolEventRecord[];
-  provider_raw?: ProviderRaw;
-  providerRaw?: ProviderRaw;
-  is_final?: boolean;
-  error?: string;
-  metadata?: CanonicalJsonObject;
 }

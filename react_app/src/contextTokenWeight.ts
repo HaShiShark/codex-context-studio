@@ -149,13 +149,6 @@ export function getContextTokenWeightClass(
   return 'light';
 }
 
-export function isContextTokenCritical(
-  tokenCount: number,
-  thresholds: ContextTokenThresholds = DEFAULT_CONTEXT_TOKEN_THRESHOLDS,
-) {
-  return Math.max(0, Math.floor(tokenCount || 0)) > normalizeContextTokenThresholds(thresholds).criticalThreshold;
-}
-
 export function getContextToolWeightSource(message: MessageRecord) {
   const parts: string[] = [];
 

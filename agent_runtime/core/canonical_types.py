@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import field
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, TypeAlias
-
-if TYPE_CHECKING:
-    from agent_runtime.core.tool_events import ToolEventRecord
+from dataclasses import field
+from typing import Literal, TypeAlias
 
 
 JsonScalar: TypeAlias = str | int | float | bool | None
@@ -66,20 +63,6 @@ class CanonicalItem:
     metadata: JsonObject = field(default_factory=dict)
 
 
-@dataclass(slots=True)
-class AssistantRoundState:
-    """Transient aggregation for one assistant round before transcript write."""
-
-    round_id: str = ""
-    answer_text: str = ""
-    canonical_items: list[CanonicalItem] = field(default_factory=list)
-    tool_events: list["ToolEventRecord"] = field(default_factory=list)
-    provider_raw: ProviderRaw | None = None
-    is_final: bool = False
-    error: str = ""
-    metadata: JsonObject = field(default_factory=dict)
-
-
 def is_transcript_role(value: str) -> bool:
     return value in ("user", "assistant")
 
@@ -91,7 +74,6 @@ def assert_transcript_role(value: str) -> TranscriptRole:
 
 
 __all__ = [
-    "AssistantRoundState",
     "CanonicalItem",
     "CanonicalItemType",
     "CanonicalStatus",

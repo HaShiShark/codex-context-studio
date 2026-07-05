@@ -519,9 +519,6 @@ class ProxyStore:
         self.active_session_id = ""
         self.load()
 
-    def _sessions_root(self) -> Path:
-        return self.storage.sessions_root
-
     def _session_dir(self, session: ProxySession) -> Path:
         return self.storage.session_dir(session.id)
 

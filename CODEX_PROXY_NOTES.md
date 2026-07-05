@@ -1,14 +1,9 @@
 # Codex Proxy Notes
 
-## MVP Boundary
+## Current Boundary
 
-第一版不修改 `D:\opensource\codex`。接入方式是外层包装器：
-
-```powershell
-npm run codex
-```
-
-包装器会启动本地窗口服务，然后通过 Codex 自己支持的 `-c` 临时覆盖 provider：
+This project does not modify the official Codex source. It runs local services
+and points Codex at a Responses-compatible proxy:
 
 ```powershell
 codex `
@@ -20,48 +15,76 @@ codex `
   -c "model_provider=hash-context"
 ```
 
-包装器还会启用 `UserPromptSubmit` hook。用户输入 `context` 或 `ctx` 时，hook 会打开 Electron 小窗，并阻止这条控制命令发送给模型。
+The wrapper also installs a `UserPromptSubmit` hook. When the user enters
+`ctx` or `context`, the hook opens the workbench and blocks that control command
+from being sent to the model. The proxy still has a fallback interceptor for
+cases where the hook does not run.
 
 ## Local Services
 
-- `backend/proxy_fastapi.py`: Codex-compatible Responses proxy, port `8787`.
-- `backend/web_server.py`: HashCode backend, port `8765`.
-- Vite dev server: React frontend, port `5174`.
+- `backend/proxy_fastapi.py`: Codex-compatible Responses proxy on port `8787`.
+- `backend/web_server.py`: Hash Context web backend on port `8765`.
+- Vite dev server: React frontend on port `5174`.
 - `electron/context-window.cjs`: Electron shell and local service supervisor.
-- Electron control server: show/hide window API, port `8790`.
+- Electron control server: show/hide window API on port `8790`.
 
 ## Proxy API
 
-- `POST /v1/responses`: Codex-compatible Responses SSE entry.
-- `POST /v1/responses/compact`: Codex remote compact entry; the proxy swaps in its canonical transcript before forwarding when this path is used.
-- `GET /v1/models`: minimal Codex compatibility response.
+- `POST /v1/responses`: main Responses SSE entry. Captured Codex requests go
+  through the unified transcript/cursor path before being forwarded upstream.
+- `POST /v1/responses/compact`: remote compact is disabled and returns
+  `410 remote_compact_disabled`. Local compact is detected on `/v1/responses`
+  through Codex turn metadata.
+- `GET /v1/models`: forwards upstream `/models`, normalizes model payloads, and
+  falls back to a local list only when ChatGPT-auth model lookup fails.
 - `GET /api/proxy/sessions`: list captured sessions.
-- `GET /api/proxy/sessions/:id`: read transcript, running status, override status.
-- `POST /api/proxy/sessions/:id/override`: save edited transcript.
-- `POST /api/proxy/sessions/:id/reset`: clear override and return to mirror mode.
+- `GET /api/proxy/sessions/{id}`: read transcript, running state, compact state,
+  lock state, and usage summary.
+- `POST /api/proxy/sessions/{id}/transcript`: replace the canonical transcript
+  with proxy-core transcript nodes.
+- `POST /api/proxy/sessions/{id}/node-locks`: toggle a transcript node lock.
+- `POST /api/proxy/sessions/{id}/context-run`: mark the context model as running
+  or idle so main Codex requests can wait safely.
+- `POST /api/proxy/sessions/{id}/main-turn`: mark the full Codex agent turn as
+  running or finished from Codex lifecycle hooks.
+
+There is no `/override` or `/reset` session API.
 
 ## Transcript Rules
 
-- Top-level transcript only keeps `user` and `assistant` records.
-- Tool calls, tool results, reasoning summaries, and provider raw items stay inside assistant records.
-- UI edits transcript, not provider wire format directly.
-- Before sending a request, the proxy compiles transcript back into Responses `input`.
-- When a record's `text` is edited, compilation uses that text for message content while preserving structured tool/function items where possible.
+- `transcript` is the canonical business state. The UI and context workbench edit
+  transcript nodes, not a separate override layer.
+- `codex_input_cursor` is only the raw Codex input diff anchor. Normal workbench
+  edits do not update it.
+- Every captured request follows one path: cursor diff, conservative pop/append,
+  optional local compact prompt replacement, rebuild `body.input`, then forward.
+- `TranscriptNode` keeps `{ id, role, items, source_map }`. Roles can include
+  `user`, `assistant`, `developer`, `system`, `subagent`, `compaction`,
+  `context`, or `unknown`.
+- Provider items are preserved losslessly. Unknown and non-dict items are wrapped
+  instead of dropped.
 
 ## Session States
 
-- `mirror`: no local edit; proxy stores and transparently forwards.
-- `running`: current turn is generating; UI is read-only.
-- `compacting`: Codex requested remote compaction or sent a local compact prompt; UI is read-only until the compact result is installed.
-- `override`: user applied an edited transcript; later requests use the edited transcript.
-- `error`: request failed; partial transcript and error details are kept for inspection.
+- `mirror`: no upstream request is currently streaming.
+- `running`: a normal captured `/v1/responses` request is streaming.
+- `compacting`: a local compact request is streaming.
+- `error`: the last captured request failed; transcript and error details remain
+  available for inspection.
+
+User edits do not create an `override` state. They replace the canonical
+transcript, and the next request is rebuilt from that transcript plus Codex's
+new raw input tail.
 
 ## Key Constraints
 
-- MVP supports OpenAI Responses HTTP SSE, Responses compact, and current Codex local compact prompt interception.
-- `supports_websockets=false`.
-- Codex may send local proxy requests with `Content-Encoding: zstd`; the proxy decodes those bodies before JSON parsing and forwards plain JSON upstream.
-- Edited context affects the next request, not the currently running request.
-- Override requests remove `previous_response_id` defensively when the field is present.
+- The supported compact path is local compact only. Remote compact is explicitly
+  disabled because it does not expose the full content this project needs.
+- `supports_websockets=false` for the Codex provider. The proxy WebSocket is only
+  for frontend realtime events, not for Codex upstream traffic.
+- Codex may send local proxy requests with `Content-Encoding: zstd`; the proxy
+  decodes those bodies before JSON parsing and forwards plain JSON upstream.
+- Edited context affects the next request, not a request already streaming.
+- `previous_response_id` is preserved by the current unified proxy path.
 - API key auth goes to `https://api.openai.com/v1`.
 - ChatGPT auth goes to `https://chatgpt.com/backend-api/codex`.

@@ -19,9 +19,12 @@ import {
 import type {
   ContextWorkbenchChatMessage,
   ContextWorkbenchSettingsResponse,
+  MessageBlock,
   MessageRecord,
   ProxyUsageSummary,
   ReasoningOption,
+  ToolEvent,
+  TranscriptEntry,
 } from '../types';
 import { normalizeSupportedLocale, type UiLocale } from '../i18n';
 import { copyText, countTokens, getReasoningLabel, normalizeConversation } from '../utils';
@@ -46,7 +49,7 @@ import {
   type WorkbenchTab,
 } from './ContextWorkbench.helpers';
 import Dropdown from './Dropdown';
-import MarkdownRenderer from './MarkdownRenderer';
+import MessageContent from './MessageContent';
 import UsageSummaryCard from './UsageSummaryCard';
 
 interface ContextWorkbenchProps {
@@ -65,6 +68,7 @@ interface ContextWorkbenchProps {
   onConversationChange: (
     sessionId: string,
     conversation: MessageRecord[],
+    rawTranscript?: TranscriptEntry[],
   ) => void | Promise<void>;
   onProxyUsageSummaryChange: (summary: ProxyUsageSummary | null) => void;
   onEnsureSession: () => Promise<string>;
@@ -80,6 +84,35 @@ interface ManualMessageItemProps {
   onCopy: (content: string) => void;
 }
 
+function manualEntryBlocks(entry: ManualWorkbenchMessage): MessageBlock[] {
+  if (entry.blocks?.length) {
+    return entry.blocks;
+  }
+
+  const blocks: MessageBlock[] = [];
+  if (entry.content.trim()) {
+    blocks.push({ kind: 'text', text: entry.content });
+  }
+  entry.toolEvents?.forEach((toolEvent) => {
+    blocks.push({ kind: 'tool', tool_event: toolEvent });
+  });
+  return blocks;
+}
+
+function manualEntryRecord(entry: ManualWorkbenchMessage): MessageRecord {
+  return {
+    nodeId: entry.id,
+    role: entry.role === 'assistant' ? 'an' : 'user',
+    text: entry.content,
+    attachments: [],
+    toolEvents: entry.toolEvents || [],
+    blocks: manualEntryBlocks(entry),
+    providerItems: [],
+    pending: Boolean(entry.pending),
+    sourceText: '',
+  };
+}
+
 function ManualMessageItem({
   entry,
   uiLocale,
@@ -91,13 +124,9 @@ function ManualMessageItem({
     <div className={`manual-workbench-message ${entry.role}`}>
       <div className="manual-workbench-message-shell">
         <div className="manual-workbench-bubble">
-          {entry.pending && !entry.content.trim() ? (
-            <div className="thinking-inline-line" role="status">
-              <span className="thinking-inline-text">{uiText(uiLocale, 'Thinking...', '正在思考...')}</span>
-            </div>
-          ) : entry.role === 'assistant' ? (
+          {entry.role === 'assistant' ? (
             <>
-              <MarkdownRenderer content={entry.content} />
+              <MessageContent record={manualEntryRecord(entry)} variant="context-map" />
               {entry.pending && entry.statusText ? (
                 <div className="thinking-inline-line" role="status">
                   <span className="thinking-inline-text">{entry.statusText}</span>
@@ -426,19 +455,6 @@ export default function ContextWorkbench({
   }, [onTokenThresholdsChange]);
 
   useEffect(() => {
-    if (!isWorkbenchModelOpen) return;
-    function handleOutside(event: globalThis.MouseEvent) {
-      const target = event.target as Element | null;
-      if (!target?.closest('.workbench-model-picker-trigger')?.parentElement?.contains(target)) {
-        setIsWorkbenchModelOpen(false);
-      }
-    }
-    document.addEventListener('mousedown', handleOutside);
-    return () => document.removeEventListener('mousedown', handleOutside);
-  }, [isWorkbenchModelOpen]);
-
-
-  useEffect(() => {
     setManualMessages(buildManualMessagesFromChat(contextWorkbenchChat));
     setIsManualSending(false);
   }, [manualChatKey, sessionId]);
@@ -483,6 +499,30 @@ export default function ContextWorkbench({
     setManualMessages((previous) =>
       previous.map((item) => (item.id === messageId ? updater(item) : item)),
     );
+  }
+
+  function appendManualTextBlock(blocks: MessageBlock[] | undefined, delta: string): MessageBlock[] {
+    const nextBlocks = [...(blocks || [])];
+    const lastBlock = nextBlocks[nextBlocks.length - 1];
+    if (lastBlock?.kind === 'text') {
+      nextBlocks[nextBlocks.length - 1] = {
+        ...lastBlock,
+        text: `${lastBlock.text}${delta}`,
+      };
+    } else {
+      nextBlocks.push({ kind: 'text', text: delta });
+    }
+    return nextBlocks;
+  }
+
+  function appendManualToolBlock(blocks: MessageBlock[] | undefined, toolEvent: ToolEvent): MessageBlock[] {
+    return [
+      ...(blocks || []),
+      {
+        kind: 'tool',
+        tool_event: toolEvent,
+      },
+    ];
   }
 
   function handleManualReasoningSelect(event: MouseEvent<HTMLDivElement>, option: ReasoningOption) {
@@ -787,6 +827,7 @@ export default function ContextWorkbench({
             updatePendingManualMessage(pendingMessage.id, (lastMessage) => ({
               ...lastMessage,
               content: `${lastMessage.content}${event.delta}`,
+              blocks: appendManualTextBlock(lastMessage.blocks, event.delta),
               pending: true,
             }));
             return;
@@ -805,6 +846,13 @@ export default function ContextWorkbench({
           }
 
           if (event.type === 'tool_event') {
+            updatePendingManualMessage(pendingMessage.id, (lastMessage) => ({
+              ...lastMessage,
+              toolEvents: [...(lastMessage.toolEvents || []), event.tool_event],
+              blocks: appendManualToolBlock(lastMessage.blocks, event.tool_event),
+              pending: true,
+              statusText: '',
+            }));
             return;
           }
 
@@ -825,7 +873,7 @@ export default function ContextWorkbench({
           streamCompleted = true;
           onContextWorkbenchChatChange(targetSessionId, event.history);
           conversationCommit = Promise.resolve(
-            onConversationChange(targetSessionId, normalizeConversation(event.conversation)),
+            onConversationChange(targetSessionId, normalizeConversation(event.conversation), event.conversation),
           );
           setManualMessages(buildManualMessagesFromChat(event.history));
         },
@@ -902,7 +950,7 @@ export default function ContextWorkbench({
     try {
       const response = await clearContextWorkbenchChatRequest(sessionId);
       onContextWorkbenchChatChange(sessionId, response.history);
-      await onConversationChange(sessionId, normalizeConversation(response.conversation));
+      await onConversationChange(sessionId, normalizeConversation(response.conversation), response.conversation);
       setManualMessages(buildManualMessagesFromChat(response.history));
       setManualFeedback('');
       setManualFeedbackError(false);
@@ -1063,6 +1111,7 @@ export default function ContextWorkbench({
                       )}
                       disabled={manualReasoningDisabled}
                       isOpen={isManualReasoningOpen}
+                      onClose={() => setIsManualReasoningOpen(false)}
                       onToggle={() => setIsManualReasoningOpen((previous) => !previous)}
                     >
                       {reasoningOptions.map((option) => (
@@ -1261,6 +1310,7 @@ export default function ContextWorkbench({
                       )}
                       disabled={isSettingsLoading}
                       isOpen={isWorkbenchModelOpen}
+                      onClose={() => setIsWorkbenchModelOpen(false)}
                       onToggle={() => {
                         setIsWorkbenchModelOpen((previous) => !previous);
                         setSettingsError('');

@@ -545,8 +545,10 @@ def test_append_supports_repository_codec_when_present() -> None:
 def main() -> None:
     tests = [
         test_fingerprint_includes_protocol_ids,
+        test_tool_search_output_preserves_schema_property_named_id,
         test_full_prefix_match_is_idempotent,
         test_response_item_projection_can_preserve_protocol_id,
+        test_fingerprint_distinguishes_missing_schema_property_named_id,
         test_response_item_projection_matches_next_request_shape,
         test_message_phase_difference_is_not_suppressed,
         test_reasoning_empty_content_matches_next_request_shape,

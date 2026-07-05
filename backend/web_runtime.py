@@ -66,11 +66,19 @@ def prepare_context_chat_history_for_model(raw_history: Any, *, limit: int = 12)
     filtered: list[dict[str, str]] = []
 
     for item in history:
-        if item["role"] == "assistant":
-            content = sanitize_text(item["content"])
+        role = sanitize_text(item.get("role") or "").strip()
+        content = sanitize_text(item.get("content") or "")
+        if role == "assistant":
             if "empty response" in content.lower():
                 continue
-        filtered.append(item)
+        elif role != "user":
+            continue
+        filtered.append(
+            {
+                "role": role,
+                "content": content,
+            }
+        )
 
     if limit > 0:
         return filtered[-limit:]
@@ -172,6 +180,37 @@ def resolve_context_reasoning_effort(
         return cleaned_effort
 
     return None
+
+def context_workbench_fallback_answer_for_changes(
+    draft: ContextWorkbenchDraft,
+    tool_events: list[ToolEvent],
+) -> str:
+    for event in reversed(tool_events):
+        if sanitize_text(event.name).strip() not in {"write_nodes", "write_items"}:
+            continue
+        if sanitize_text(event.status).strip() == "error":
+            continue
+        summary = sanitize_text(
+            event.display_result
+            or event.display_detail
+            or event.output_preview
+        ).strip()
+        if summary:
+            return f"Context edit applied: {summary}"
+
+    for operation in reversed(draft.operations):
+        if not isinstance(operation, dict):
+            continue
+        summary = sanitize_text(
+            operation.get("summary")
+            or operation.get("label")
+            or operation.get("operation_type")
+            or ""
+        ).strip()
+        if summary:
+            return f"Context edit applied: {summary}"
+
+    return "Context edit applied."
 
 def extract_context_proxy_message_text(item: dict[str, Any]) -> str:
     if sanitize_text(item.get("type") or "").strip() != "message":
@@ -481,17 +520,36 @@ def run_context_chat_turn(
             return request
 
         request = build_request()
-        response = stream_context_codex_proxy_response_with_retry(
-            request,
-            on_text_delta=on_text_delta,
-            check_cancelled=check_cancelled,
-        )
+        try:
+            response = stream_context_codex_proxy_response_with_retry(
+                request,
+                on_text_delta=on_text_delta,
+                check_cancelled=check_cancelled,
+            )
+        except Exception:
+            if check_cancelled is not None:
+                check_cancelled()
+            if draft.has_changes:
+                return (
+                    context_workbench_fallback_answer_for_changes(draft, tool_events),
+                    request_model,
+                    draft,
+                    tool_events,
+                )
+            raise
         if check_cancelled is not None:
             check_cancelled()
 
         if not response.function_calls:
             final_answer = sanitize_text(response.output_text).strip()
             if not final_answer:
+                if draft.has_changes:
+                    return (
+                        context_workbench_fallback_answer_for_changes(draft, tool_events),
+                        request_model,
+                        draft,
+                        tool_events,
+                    )
                 error_msg = "Model returned empty response"
                 if response.finish_reason:
                     error_msg += f" (Finish reason: {response.finish_reason})"
@@ -627,10 +685,12 @@ def build_context_chat_response_payload(
     else:
         conversation = sanitize_value(session.transcript)
 
+    serialized_tool_events = [serialize_tool_event(event) for event in tool_events] if tool_events is not None else None
     history = app_state.append_context_workbench_turn(
         session,
         user_message=user_message,
         answer=answer,
+        tool_events=serialized_tool_events,
     )
     payload: dict[str, object] = {
         "answer": answer,
@@ -638,8 +698,8 @@ def build_context_chat_response_payload(
         "history": history,
         "conversation": conversation,
     }
-    if tool_events is not None:
-        payload["tool_events"] = [serialize_tool_event(event) for event in tool_events]
+    if serialized_tool_events is not None:
+        payload["tool_events"] = serialized_tool_events
     if proxy_transcript_sync is not None:
         payload["proxy_transcript_sync"] = proxy_transcript_sync
     return payload

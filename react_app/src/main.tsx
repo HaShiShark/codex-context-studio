@@ -30,7 +30,6 @@ const phosphorIconCodes: Record<string, string> = {
   'ph-paper-plane-tilt': '\\e398',
   'ph-square': '\\e45e',
   'ph-stop': '\\e46c',
-  'ph-trash': '\\e4a6',
   'ph-x': '\\e4f6',
 };
 

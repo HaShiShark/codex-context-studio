@@ -92,7 +92,7 @@ const WINDOW_RESIZE_EDGE_PX = 8;
 const WINDOW_DRAG_SURFACE_SELECTOR =
   '.context-map-header, .extended-header, .workbench-window-state-panel, .workbench-window-title';
 const WINDOW_DRAG_BLOCK_SELECTOR =
-  'button, a, input, textarea, select, [role="button"], [role="menuitem"], .dropdown-menu, .dropdown-item, .extended-tab, .context-map-toggle';
+  'button, a, input, textarea, select, [role="button"], [role="menuitem"], .dropdown-menu, .dropdown-item, .extended-tab';
 
 const WINDOW_RESIZE_CURSORS: Record<WindowResizeEdge, string> = {
   top: 'ns-resize', bottom: 'ns-resize', left: 'ew-resize', right: 'ew-resize',
@@ -509,8 +509,11 @@ export default function WorkbenchWindow() {
   );
 
   const handleConversationChange = useCallback(
-    (changedSessionId: string, conversation: MessageRecord[]) => {
+    (changedSessionId: string, conversation: MessageRecord[], rawTranscript?: TranscriptEntry[]) => {
       if (changedSessionId !== proxySessionId) return;
+      if (rawTranscript) {
+        transcriptRef.current = rawTranscript;
+      }
       setMessagesIfChanged(conversation);
     },
     [proxySessionId, setMessagesIfChanged],
@@ -605,10 +608,7 @@ export default function WorkbenchWindow() {
         <WorkbenchWindowControls uiLocale={uiLocale} />
         {realtimeError ? <div className="workbench-realtime-error">{realtimeError}</div> : null}
         <ContextMapSidebar
-          stage={2}
           messages={messages}
-          onToggle={() => undefined}
-          onJumpToMessage={() => undefined}
           sessionId={proxySessionId}
           isMainChatBusy={isMainTurnRunning}
           isContextModelBusy={isContextRunning}

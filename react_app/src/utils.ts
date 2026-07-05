@@ -1,5 +1,4 @@
 import type {
-  AttachmentRecord,
   MessageBlock,
   MessageRecord,
   ProviderItem,
@@ -105,38 +104,6 @@ export const DEFAULT_REASONING_OPTIONS: ReasoningOption[] = [
   { value: 'medium', label: '中' },
   { value: 'high', label: '高' },
 ];
-
-export function normalizeAttachments(value: AttachmentRecord[] | undefined): AttachmentRecord[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  return value.reduce<AttachmentRecord[]>((normalized, item) => {
-    const name = String(item?.name || '').trim();
-    const mimeType = String(item?.mime_type || '').trim() || 'application/octet-stream';
-    const kind = item?.kind === 'image' ? 'image' : 'file';
-    const url = typeof item?.url === 'string' ? item.url : undefined;
-    const id = typeof item?.id === 'string' ? item.id : undefined;
-    const relativePath = typeof item?.relative_path === 'string' ? item.relative_path : undefined;
-    const rawSize = item?.size_bytes;
-    const sizeBytes = typeof rawSize === 'number' ? rawSize : Number(rawSize || 0);
-
-    if (!name) {
-      return normalized;
-    }
-
-    normalized.push({
-      id,
-      name,
-      mime_type: mimeType,
-      kind,
-      size_bytes: Number.isFinite(sizeBytes) ? sizeBytes : 0,
-      url,
-      relative_path: relativePath,
-    } satisfies AttachmentRecord);
-    return normalized;
-  }, []);
-}
 
 type ProviderItemRecord = Record<string, unknown>;
 
@@ -940,20 +907,6 @@ export function normalizeReasoningOptions(options?: ReasoningOption[]): Reasonin
 export function getReasoningLabel(value: string, options: ReasoningOption[]): string {
   const match = options.find((option) => option.value === value);
   return match ? match.label : FALLBACK_REASONING_LABELS[value] || value;
-}
-
-
-
-
-export function getConversation(
-  conversations: Record<string, MessageRecord[]>,
-  sessionId: string,
-): MessageRecord[] {
-  if (!sessionId) {
-    return [];
-  }
-
-  return conversations[sessionId] || [];
 }
 
 export function formatBytes(sizeBytes: number | undefined): string {

@@ -264,14 +264,6 @@ def _normalize_context_token_thresholds(
     return warning, max(warning + 1, critical)
 
 
-def _mask_secret(secret: str | None) -> str:
-    if not secret:
-        return ""
-    if len(secret) <= 8:
-        return "*" * len(secret)
-    return f"{secret[:6]}...{secret[-4:]}"
-
-
 def _normalize_provider_models(raw_models: Any) -> list[dict[str, str]]:
     if not isinstance(raw_models, (list, tuple)):
         return []
@@ -419,26 +411,6 @@ def _normalize_active_provider_id(raw_provider_id: Any, providers: list[dict[str
     return all_ids[0] if all_ids else "openai"
 
 
-def _public_provider_payload(record: dict[str, Any]) -> dict[str, object]:
-    api_key = _clean_string(record.get("api_key")) or None
-    return {
-        "id": _clean_string(record.get("id")),
-        "name": _clean_string(record.get("name")),
-        "provider_type": _normalize_provider_type(record.get("provider_type"), _clean_string(record.get("id"))),
-        "enabled": bool(record.get("enabled")),
-        "supports_model_fetch": bool(record.get("supports_model_fetch")),
-        "supports_responses": _normalize_provider_type(record.get("provider_type"), _clean_string(record.get("id"))) == "responses",
-        "api_base_url": _clean_string(record.get("api_base_url")),
-        "default_model": _clean_string(record.get("default_model")),
-        "has_api_key": bool(api_key),
-        "api_key_preview": _mask_secret(api_key),
-        "api_key": api_key or "",
-        "models": _normalize_provider_models(record.get("models")),
-        "last_sync_at": _clean_string(record.get("last_sync_at")),
-        "last_sync_error": _clean_string(record.get("last_sync_error")),
-    }
-
-
 @dataclass(slots=True)
 class Settings:
     model: str
@@ -484,59 +456,6 @@ class Settings:
             if _clean_string(provider.get("id")) == self.active_provider_id:
                 return provider
         return self.response_providers[0] if self.response_providers else {}
-
-    def active_provider_model_ids(self) -> list[str]:
-        return [
-            _clean_string(model.get("id"))
-            for model in _normalize_provider_models(self.active_provider().get("models"))
-            if _clean_string(model.get("id"))
-        ]
-
-    def public_payload(self) -> dict[str, object]:
-        return {
-            "default_model": self.model,
-            "default_reasoning_effort": self.default_reasoning_effort,
-            "context_workbench_model": self.context_workbench_model,
-            "context_workbench_provider_id": self.context_workbench_provider_id,
-            "context_token_warning_threshold": self.context_token_warning_threshold,
-            "context_token_critical_threshold": self.context_token_critical_threshold,
-            "openai_base_url": self.openai_base_url or "",
-            "max_tool_rounds": self.max_tool_rounds,
-            "assistant_name": self.assistant_name,
-            "assistant_greeting": self.assistant_greeting,
-            "assistant_prompt": self.assistant_prompt,
-            "codex_system_prompt": self.codex_system_prompt,
-            "codex_system_prompt_default": self.codex_system_prompt_default,
-            "manual_local_compact_prompt": self.manual_local_compact_prompt,
-            "auto_local_compact_prompt": self.auto_local_compact_prompt,
-            "temperature": self.temperature,
-            "top_p": self.top_p,
-            "context_message_limit": self.context_message_limit,
-            "streaming": self.streaming,
-            "user_name": self.user_name,
-            "user_locale": self.user_locale,
-            "user_timezone": self.user_timezone,
-            "user_profile": self.user_profile,
-            "theme_color": self.theme_color,
-            "theme_mode": self.theme_mode,
-            "background_color": self.background_color,
-            "ui_font": self.ui_font,
-            "code_font": self.code_font,
-            "ui_font_size": self.ui_font_size,
-            "code_font_size": self.code_font_size,
-            "appearance_contrast": self.appearance_contrast,
-            "service_hints_enabled": self.service_hints_enabled,
-            "tool_settings": normalize_tool_settings(self.tool_settings),
-            "has_api_key": bool(self.openai_api_key),
-            "api_key_preview": _mask_secret(self.openai_api_key),
-            "openai_api_key": self.openai_api_key or "",
-            "project_root": str(self.project_root),
-            "active_provider_id": self.active_provider_id,
-            "response_providers": [
-                _public_provider_payload(provider)
-                for provider in self.response_providers
-            ],
-        }
 
 
 def load_settings() -> Settings:

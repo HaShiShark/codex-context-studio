@@ -38,15 +38,6 @@ def safe_session_path_part(value: str) -> str:
     return safe or f"sess_{uuid.uuid4().hex}"
 
 
-def json_loads_value(value: str | None, default: Any) -> Any:
-    if not value:
-        return copy.deepcopy(default)
-    try:
-        return json.loads(value)
-    except json.JSONDecodeError:
-        return copy.deepcopy(default)
-
-
 def read_json(path: Path, default: Any) -> Any:
     if not path.exists():
         return copy.deepcopy(default)
@@ -194,28 +185,6 @@ class ProxySessionStorage:
             cursor=copy.deepcopy(cursor) if isinstance(cursor, list) else [],
             workbench_history=read_jsonl(self.workbench_path(stored_id)),
             path=self.session_dir(stored_id),
-        )
-
-    def save_all(
-        self,
-        sessions: Iterable[Any],
-        *,
-        active_session_id: str = "",
-        usage_summary: Callable[[Any], dict[str, Any]] | None = None,
-    ) -> None:
-        self.root.mkdir(parents=True, exist_ok=True)
-        index_sessions: list[dict[str, Any]] = []
-        for session in sorted(sessions, key=lambda item: str(getattr(item, "updated_at", "")), reverse=True):
-            self.save_session(session, usage_summary=usage_summary)
-            index_sessions.append(self._index_entry(session))
-
-        write_json(
-            self.index_path,
-            {
-                "version": STORAGE_VERSION,
-                "active_session_id": active_session_id,
-                "sessions": index_sessions,
-            },
         )
 
     def save_session(

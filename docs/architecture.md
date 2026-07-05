@@ -1,178 +1,200 @@
-# Hash Context Proxy — Architecture
+# Hash Context Proxy - Architecture
 
-## 整体数据流
+## Overall Flow
 
 ```mermaid
 flowchart LR
-    CD["Codex Desktop"]
-    PX["Proxy Server\n:8787"]
-    OAI["OpenAI API"]
-    FE["Frontend React\n(Context Map)"]
+    CD["Codex CLI / Desktop"]
+    PX["Responses Proxy\n:8787"]
+    WEB["Web Backend\n:8765"]
+    FE["React Workbench"]
+    OAI["OpenAI API / ChatGPT Codex backend"]
 
-    CD -- "HTTP POST /responses\n完整 input 数组（每轮）" --> PX
-    PX -- "重组后 request" --> OAI
+    CD -- "POST /v1/responses\nfull raw input array" --> PX
+    PX -- "rebuilt request input" --> OAI
     OAI -- "SSE stream" --> PX
-    PX -- "SSE stream（边解析边转发）" --> CD
-    FE <-- "WebSocket\ntranscript 快照 / edit 指令" --> PX
+    PX -- "SSE stream" --> CD
+
+    FE -- "HTTP edit / lock / settings APIs" --> WEB
+    WEB -- "HTTP proxy control APIs" --> PX
+    PX -- "WebSocket realtime events only" --> FE
 ```
+
+The proxy WebSocket only supports realtime subscriptions (`ping` and
+`subscribe`). Transcript replacement, node locking, context-run state, and
+main-turn state all use HTTP APIs.
 
 ---
 
-## 每轮请求处理
+## Request Handling
 
 ```mermaid
 flowchart TD
-    A["收到 Codex 请求\nbody.input = full_input_array"]
-    B["检测 compact\nclient_metadata\nx-codex-turn-metadata\nrequest_kind == compaction?"]
-    C{"是 compact?"}
-    CP["compact_pending = True"]
+    A["Receive Codex request\nbody.input = full_input_array"]
+    B["Detect local compact from\nclient_metadata / x-codex-turn-metadata"]
+    D["compute_diff(cursor, new_input)\npop = cursor[prefix_len:]\nappend = new_input[prefix_len:]"]
 
-    D["CodexInputCursor.compute_diff\nprefix_len = longest_common_prefix\npop  = cursor[prefix_len:]\nappend = new_input[prefix_len:]"]
-    E{"prefix_len == 0\nAND cursor 非空?"}
-    RST["Reset 路径\ntranscript = to_transcript(new_input)\ntail_conflict = False"]
+    F["Reset tail_conflict for this request"]
+    G{"pop non-empty?"}
+    H["Conservative transcript pop\ncompare expected provider item\nwith transcript tail fingerprint"]
+    I{"tail matches?"}
+    J["Remove matching tail items"]
+    K["Stop popping\nset tail_conflict = true\npreserve edited transcript tail"]
+    L["Append new provider items\nthrough TranscriptCodec grouping"]
 
-    F["tail_conflict = False（每轮复位）"]
-    G{"pop 非空?"}
-    H["TranscriptDeltaApplier.pop\nfingerprint 校验尾部"]
-    I{"校验通过?"}
-    J["移除尾部节点"]
-    K["跳过 pop\ntail_conflict = True"]
-    L["TranscriptDeltaApplier.append\n按归组规则追加节点"]
+    M{"local compact request?"}
+    N["Replace Codex compact prompt\nwith configured local compact prompt"]
 
-    M{"compact_pending?"}
-    N["替换 compact prompt\n找最后 user 节点\n用自定义 prompt 覆盖写入 transcript"]
+    O["Rebuild body.input\nfrom canonical transcript"]
+    P["Forward upstream"]
 
-    O["TranscriptCodec.to_input_items\n从 transcript 重组 body.input"]
-    P["转发到上游"]
-
-    A --> B --> C
-    C -- 是 --> CP --> D
-    C -- 否 --> D
-    D --> E
-    E -- 是（reset）--> RST --> M
-    E -- 否 --> F --> G
-    G -- 是 --> H --> I
-    I -- 通过 --> J --> L
-    I -- 不通过 --> K --> L
-    G -- 否 --> L
+    A --> B --> D --> F --> G
+    G -- "yes" --> H --> I
+    I -- "yes" --> J --> L
+    I -- "no" --> K --> L
+    G -- "no" --> L
     L --> M
-    M -- 是 --> N --> O --> P
-    M -- 否 --> O --> P
+    M -- "yes" --> N --> O --> P
+    M -- "no" --> O --> P
 ```
+
+There is no reset branch when `prefix_len == 0`. If the old cursor tail cannot
+be safely matched against the transcript tail, the proxy preserves the local
+transcript tail and appends the new raw input suffix.
 
 ---
 
-## 响应处理（SSE 流）
+## Response Handling
 
 ```mermaid
 flowchart TD
-    S["SSE stream 开始"]
-    LOOP["读取下一个 event"]
-    FWD["转发给 Codex（实时）"]
-    T{"event.type?"}
-    COL["收集 response_items\n.append(event.item)"]
-    DONE{"compact_pending?"}
-    CS["CompactController.on_compact_success\n提取 summary\n重建 checkpoint\ntranscript = to_transcript(new_items)\ncursor = new_items\ncompact_pending = False"]
-    CA["正常 turn\ncursor.extend(response_items)\n推送 transcript_update 到前端"]
-    END["结束"]
+    S["SSE stream starts"]
+    LOOP["Read next SSE event"]
+    FWD["Forward event to Codex client"]
+    T{"event type"}
+    COL["Collect output items and text deltas"]
+    DONE{"response.completed?"}
+    C{"compact_pending?"}
+    CS["CompactController.on_compact_success\nbuild simulated compact state\ntranscript = new compact transcript\ncursor = compact prefix"]
+    CA["Normal completion\nappend assistant output items\nextend cursor"]
+    PUSH["Publish session / transcript events"]
+    END["End"]
 
     S --> LOOP --> FWD --> T
-    T -- "output_item.done" --> COL --> LOOP
-    T -- "其他" --> LOOP
-    T -- "response.completed" --> DONE
-    DONE -- 是 --> CS --> END
-    DONE -- 否 --> CA --> END
+    T -- "output item or text delta" --> COL --> DONE
+    T -- "other event" --> DONE
+    DONE -- "no" --> LOOP
+    DONE -- "yes" --> C
+    C -- "yes" --> CS --> PUSH --> END
+    C -- "no" --> CA --> PUSH --> END
 ```
+
+The proxy parses SSE across chunk boundaries. Response items are projected into
+request-item shape before they are appended to the cursor.
 
 ---
 
-## Compact 成功后状态重建
+## Local Compact
 
 ```mermaid
 flowchart TD
-    SUC["CompactController.on_compact_success"]
-    EXT["从 response_items 提取 assistant 摘要文本"]
-    USR["从当前 transcript 提取 compact 前 user messages\n（排除 summary message 和 contextual items）"]
-    BLD["重建 checkpoint\nnew_items = recent_user_msgs(≤20k token)\n        + summary as user message\n对应 compact.rs build_compacted_history"]
-    UPD["transcript = to_transcript(new_items)\ncursor = new_items\ncompact_pending = False"]
-    PUSH["推送 transcript_update 到前端"]
+    REQ["/v1/responses with\nrequest_kind = compaction"]
+    SNAP["Save inflight checkpoint"]
+    PROMPT["Replace last compact prompt"]
+    SEND["Send summary request upstream"]
+    OK{"response.completed?"}
+    SUMMARY["Extract assistant summary"]
+    SIM["Simulate compacted state\nrecent user messages + summary user message"]
+    FAIL["Restore checkpoint\nrecord compact_error"]
+    PUB["Publish full transcript update"]
 
-    SUC --> EXT --> USR --> BLD --> UPD --> PUSH
+    REQ --> SNAP --> PROMPT --> SEND --> OK
+    OK -- "success" --> SUMMARY --> SIM --> PUB
+    OK -- "failure" --> FAIL --> PUB
 ```
+
+Remote compact is disabled at `POST /v1/responses/compact`. The only supported
+compact path is local compact metadata on `/v1/responses`.
 
 ---
 
-## 归组规则
+## Transcript Grouping
 
 ```mermaid
 flowchart TD
-    ITEM["input item"]
-    R{"item 类型"}
+    ITEM["provider item"]
+    R{"item type / role"}
 
-    USR["新建 user 节点\ncurrent_assistant = None"]
-    DEV["新建 developer 节点\ncurrent_assistant = None"]
-    ASS["归入 current_assistant\n（不存在则新建）"]
-    TOUT["按 call_id 找最近 assistant\n找不到 → 最近 assistant\n再没有 → 新建 assistant"]
-    CMP["新建节点\nrole = 原始值"]
-    OTHER["新建节点\nrole = 原始值或 unknown\n无跳过，全部保留"]
+    USR["new user node\ncurrent_assistant = None"]
+    DEV["new developer or system node\ncurrent_assistant = None"]
+    ASS["append to current assistant\nor create assistant"]
+    TOUT["attach tool output by call_id\nfallback to recent assistant\nor create assistant"]
+    CMP["new compaction/context node"]
+    OTHER["new role-specific or unknown node\npreserve item"]
 
     ITEM --> R
-    R -- "role: user" --> USR
-    R -- "role: developer / system\nAdditionalTools" --> DEV
-    R -- "role: assistant\nReasoning\nFunctionCall / CustomToolCall\nLocalShellCall / ToolSearchCall\nWebSearchCall / ImageGenerationCall" --> ASS
-    R -- "FunctionCallOutput\nCustomToolCallOutput\nToolSearchOutput" --> TOUT
-    R -- "Compaction\nContextCompaction" --> CMP
-    R -- "其他任何类型" --> OTHER
+    R -- "message role=user" --> USR
+    R -- "message role=developer/system\nadditional_tools" --> DEV
+    R -- "assistant message/reasoning/tool call" --> ASS
+    R -- "tool/function output" --> TOUT
+    R -- "compaction/context_compaction" --> CMP
+    R -- "unknown or non-dict" --> OTHER
 ```
+
+No provider item is skipped because it is unfamiliar. Unknown and non-dict items
+are preserved so transcript can rebuild provider input losslessly.
 
 ---
 
-## 模块职责
+## Module Responsibilities
 
 ```mermaid
 flowchart TB
-    subgraph PH1["Phase 1 — 纯数据层（可独立单测）"]
-        TC["TranscriptCodec\ninput_items ↔ transcript\n归组状态机"]
-        CI["CodexInputCursor\ncompute_diff\nfingerprint normalize\nreset 检测"]
-        DA["TranscriptDeltaApplier\npop fingerprint 校验\nappend 归组追加"]
-        CO["CompactController\ncompact 状态机\non_compact_success\nsimulate_post_compact_state\ncompact prompt 替换"]
-        TE["TranscriptEditor\nrevision_id + node_id 双重校验\n编辑操作"]
+    subgraph Core["Pure proxy core"]
+        TC["transcript_codec.py\nprovider items <-> transcript"]
+        CI["codex_input_cursor.py\nfingerprint + prefix diff"]
+        DA["transcript_delta_applier.py\nconservative pop + grouped append"]
+        CO["compact_controller.py\nlocal compact prompt + compact simulation"]
+        PC["proxy_core.py\nunified request/response state transitions"]
     end
 
-    subgraph PH2["Phase 2 — 代理核心"]
-        PC["ProxyCore\nhandle_request（每轮统一路径）\nhandle_response（SSE 解析）"]
-    end
-
-    subgraph PH3["Phase 3 — HTTP 服务"]
-        PS["ProxyServer\nHTTP 拦截转发\nSSE 流边解析边转发\nWebSocket 推送前端"]
+    subgraph Runtime["Runtime shells"]
+        STORE["proxy_store.py\nsession state, persistence, locks, turn gates"]
+        FASTAPI["proxy_fastapi.py\nHTTP, SSE, upstream auth, realtime events"]
+        WEB["web_runtime.py / web_context.py\ncontext model snapshot, tools, commit"]
+        REACT["React workbench\ncontext map, locks, manual context model"]
     end
 
     TC --> DA
-    TC --> CO
     CI --> PC
     DA --> PC
     CO --> PC
-    TE --> PC
-    PC --> PS
+    PC --> STORE
+    STORE --> FASTAPI
+    WEB --> FASTAPI
+    REACT --> WEB
 ```
 
 ---
 
-## 编辑流程
+## Workbench Commit Flow
 
 ```mermaid
 flowchart TD
-    ED["前端发送 EditRequest\nrevision_id / node_idx / node_id\nitem_range / replacement"]
-    V1{"revision_id\n匹配当前 state?"}
-    V2{"node_id 匹配\ntranscript[node_idx].id?"}
-    REJ["拒绝：返回错误"]
-    APPLY["执行替换\nnode.items[range] = replacement\nrebuild source_map"]
-    REV["revision += 1"]
-    PUSH["推送 transcript_update 到前端"]
+    UI["User chats with context model"]
+    SNAP["Web backend builds lightweight snapshot\nonly unlocked nodes get Node #"]
+    TOOL["Context model uses tools\nagainst an in-memory draft"]
+    REV{"node_lock_revision unchanged?"}
+    COMMIT["Commit draft transcript"]
+    POST["POST /api/proxy/sessions/{id}/transcript"]
+    PUB["Proxy publishes realtime transcript update"]
+    REJ["Reject commit and ask user to retry"]
 
-    ED --> V1
-    V1 -- 否 --> REJ
-    V1 -- 是 --> V2
-    V2 -- 否 --> REJ
-    V2 -- 是 --> APPLY --> REV --> PUSH
+    UI --> SNAP --> TOOL --> REV
+    REV -- "yes" --> COMMIT --> POST --> PUB
+    REV -- "no" --> REJ
 ```
+
+The draft is temporary and belongs to one context-model turn. The committed
+object is still the canonical proxy transcript; there is no second persistent
+transcript or override layer.

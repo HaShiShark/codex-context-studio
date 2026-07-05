@@ -66,6 +66,7 @@ def main() -> None:
 
         from backend import web_constants, web_state
         from backend.proxy_routes_support import is_title_generation_request
+        from backend.transcript_codec import input_items_to_transcript
         from backend.web_constants import NEW_SESSION_TITLE
         from backend.web_handler import HashHTTPRequestHandler
         from backend.web_state import AppState
@@ -89,6 +90,52 @@ def main() -> None:
         )
         if proxy_session.title != NEW_SESSION_TITLE:
             raise AssertionError("empty proxy title should use the neutral new-session placeholder")
+
+        existing_transcript = input_items_to_transcript(
+            [{"type": "message", "role": "user", "content": "keep me"}]
+        )
+        app_state.upsert_proxy_session(
+            session_id="proxy-keep-transcript",
+            title="Before",
+            transcript=existing_transcript,
+        )
+        refreshed_session = app_state.upsert_proxy_session(
+            session_id="proxy-keep-transcript",
+            title="After",
+            transcript=None,
+        )
+        if refreshed_session.title != "After":
+            raise AssertionError("proxy sync without transcript should still update metadata")
+        if refreshed_session.transcript != existing_transcript:
+            raise AssertionError("proxy sync without transcript should not clear existing transcript")
+
+        history_session = app_state.upsert_proxy_session(
+            session_id="history-keeps-tools",
+            title="History Keeps Tools",
+            transcript=[],
+        )
+        tool_event = {
+            "name": "write_nodes",
+            "arguments": {"node_numbers": [1]},
+            "output_preview": "updated",
+            "raw_output": "{\"ok\": true}",
+            "display_title": "write_nodes",
+            "display_detail": "node #1",
+            "display_result": "Updated node #1",
+            "status": "completed",
+        }
+        saved_history = app_state.append_context_workbench_turn(
+            history_session,
+            user_message="整理上下文",
+            answer="已经整理完成",
+            tool_events=[tool_event],
+        )
+        if saved_history[-1].get("toolEvents", [{}])[0].get("name") != "write_nodes":
+            raise AssertionError("context workbench history should keep assistant tool events")
+        reloaded_app_state = AppState(_settings(tmp_dir))
+        reloaded_history = reloaded_app_state.get_session("history-keeps-tools").context_workbench_history
+        if reloaded_history[-1].get("blocks", [{}])[0].get("kind") != "tool":
+            raise AssertionError("persisted context workbench history should keep tool blocks")
 
         for attribute in (
             "create_project",

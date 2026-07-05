@@ -65,7 +65,7 @@ html[data-workbench-window-maximized="true"] .workbench-window-control-btn.close
   border-top-right-radius: 0;
 }
 
-.workbench-window-shell :where(:not(i, .ph, .ph-light, .ph-bold, .codicon, svg, svg *)) {
+.workbench-window-shell :where(:not(i, .ph-light, .ph-bold, svg, svg *)) {
   font-family: var(--ui-font-family) !important;
 }
 
@@ -193,10 +193,6 @@ html[data-workbench-window-moving] {
   line-height: 1;
 }
 
-.workbench-window-shell .context-map-header .context-map-toggle {
-  display: none;
-}
-
 .workbench-window-shell .context-map-item.user .map-bubble {
   align-self: flex-end;
   width: fit-content;
@@ -237,7 +233,6 @@ html[data-workbench-window-moving] {
 .workbench-window-shell input,
 .workbench-window-shell textarea,
 .workbench-window-shell select,
-.workbench-window-shell .context-map-toggle,
 .workbench-window-shell .extended-tab {
   -webkit-app-region: no-drag;
 }
@@ -400,8 +395,7 @@ html[data-workbench-window-moving] {
 .workbench-window-shell .context-map-title,
 .workbench-window-shell .workbench-panel-title,
 .workbench-window-shell .workbench-setting-title,
-.workbench-window-shell .suggestion-row-title,
-.workbench-window-shell .workbench-tool-card-title {
+.workbench-window-shell .suggestion-row-title {
   color: var(--text-primary);
   font-weight: 650;
   letter-spacing: 0;
@@ -409,12 +403,10 @@ html[data-workbench-window-moving] {
 
 .workbench-window-shell .workbench-panel-desc,
 .workbench-window-shell .workbench-setting-desc,
-.workbench-window-shell .workbench-setting-provider-hint,
 .workbench-window-shell .suggestion-card-label,
 .workbench-window-shell .suggestion-card-note,
 .workbench-window-shell .suggestion-row-body,
 .workbench-window-shell .suggestion-row-meta,
-.workbench-window-shell .workbench-tool-card-desc,
 .workbench-window-shell .manual-workbench-empty-title,
 .workbench-window-shell .manual-workbench-empty-body,
 .workbench-window-shell .map-metadata,
@@ -476,7 +468,6 @@ html[data-workbench-window-moving] {
 
 .workbench-window-shell .context-node-gutter:hover,
 .workbench-window-shell .context-node-gutter:focus-visible,
-.workbench-window-shell .context-node-row.hovered .context-node-gutter,
 .workbench-window-shell .context-node-row.expanded .context-node-gutter {
   color: var(--accent-strong);
   background: rgba(184, 105, 78, 0.08);
@@ -521,8 +512,7 @@ html[data-workbench-window-moving] {
   min-height: 14px;
 }
 
-.workbench-window-shell .context-map-item-button:hover,
-.workbench-window-shell .context-node-row.hovered .context-map-item-button {
+.workbench-window-shell .context-map-item-button:hover {
   background: rgba(184, 105, 78, 0.07);
   box-shadow: none;
 }
@@ -530,7 +520,6 @@ html[data-workbench-window-moving] {
 .workbench-window-shell .context-map-item-button:focus-visible,
 .workbench-window-shell .extended-tab:focus-visible,
 .workbench-window-shell .tool-btn-capsule:focus-visible,
-.workbench-window-shell .tool-btn-primary:focus-visible,
 .workbench-window-shell .workbench-language-btn:focus-visible,
 .workbench-window-shell .manual-workbench-clear:focus-visible,
 .workbench-window-shell .send-btn:focus-visible,
@@ -540,7 +529,6 @@ html[data-workbench-window-moving] {
 }
 
 .workbench-window-shell .context-map-item.expanded,
-.workbench-window-shell .context-node-row.hovered .context-map-item.expanded,
 .workbench-window-shell .context-node-row.selected .context-map-item-button,
 .workbench-window-shell .context-node-row.selected .context-map-item.expanded {
   background: rgba(184, 105, 78, 0.07);
@@ -555,7 +543,6 @@ html[data-workbench-window-moving] {
 
 .workbench-window-shell .context-map-item.expanded .context-map-item-button,
 .workbench-window-shell .context-map-item.expanded .context-map-item-button:hover,
-.workbench-window-shell .context-node-row.hovered .context-map-item.expanded .context-map-item-button,
 .workbench-window-shell .context-node-row.selected .context-map-item.expanded .context-map-item-button,
 .workbench-window-shell .context-map-expanded-shell.open,
 .workbench-window-shell .context-map-expanded-content {
@@ -598,8 +585,7 @@ html[data-workbench-window-moving] {
   box-shadow: 0 8px 20px rgba(96, 61, 45, 0.08);
 }
 
-.workbench-window-shell .manual-workbench-message.user .manual-workbench-bubble,
-.workbench-window-shell .message.user .content {
+.workbench-window-shell .manual-workbench-message.user .manual-workbench-bubble {
   color: #ffffff;
   background: var(--an-theme);
   box-shadow: 0 8px 22px rgba(132, 70, 49, 0.18);
@@ -611,7 +597,6 @@ html[data-workbench-window-moving] {
 
 .workbench-window-shell .context-node-row.locked .context-map-item-button,
 .workbench-window-shell .context-node-row.locked .context-map-item-button:hover,
-.workbench-window-shell .context-node-row.locked.hovered .context-map-item-button,
 .workbench-window-shell .context-node-row.locked.selected .context-map-item-button {
   background: transparent;
   box-shadow: none;
@@ -629,8 +614,7 @@ html[data-workbench-window-moving] {
 .workbench-window-shell .context-map-expanded-content,
 .workbench-window-shell .manual-workbench-user-text,
 .workbench-window-shell .manual-workbench-message .markdown-body,
-.workbench-window-shell .markdown-body,
-.workbench-window-shell .message.an .content {
+.workbench-window-shell .markdown-body {
   color: var(--text-primary);
 }
 
@@ -683,7 +667,6 @@ html[data-workbench-window-moving] {
   opacity: 0.58;
 }
 
-.workbench-window-shell .context-minimap-bar.hovered,
 .workbench-window-shell .context-minimap-bar:hover,
 .workbench-window-shell .context-minimap-bar.selected {
   opacity: 1;
@@ -712,7 +695,6 @@ html[data-workbench-window-moving] {
 .workbench-window-shell .suggestion-card,
 .workbench-window-shell .suggestion-row,
 .workbench-window-shell .workbench-setting-card,
-.workbench-window-shell .workbench-tool-card,
 .workbench-window-shell .usage-summary-item,
 .workbench-window-shell .manual-workbench-composer-shell,
 .workbench-window-shell .manual-workbench-reference-chip,
@@ -725,7 +707,6 @@ html[data-workbench-window-moving] {
 }
 
 .workbench-window-shell .usage-summary-item,
-.workbench-window-shell .workbench-tool-card,
 .workbench-window-shell .suggestion-row {
   background: var(--paper-soft);
 }
@@ -754,11 +735,11 @@ html[data-workbench-window-moving] {
   box-shadow: 0 2px 12px rgba(96, 61, 45, 0.08);
 }
 
-/* 强制左右双列，覆盖 react-entry.css 的 1280px 媒体查询折叠 */
+/* Window settings keep a compact two-column layout. */
 .workbench-window-shell .workbench-settings-row {
-  grid-template-columns: minmax(180px, 0.38fr) minmax(0, 1fr) !important;
-  align-items: center !important;
-  gap: 20px !important;
+  grid-template-columns: minmax(180px, 0.38fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 20px;
   min-height: 56px;
   padding: 14px 20px;
 }
@@ -786,7 +767,7 @@ html[data-workbench-window-moving] {
 }
 
 .workbench-window-shell .workbench-settings-row-control {
-  justify-content: flex-end !important;
+  justify-content: flex-end;
 }
 
 .workbench-window-shell .workbench-settings-row-control .tool-btn-capsule {
@@ -844,7 +825,6 @@ html[data-workbench-window-moving] {
   color: var(--accent-strong);
 }
 
-.workbench-window-shell .tool-btn-primary,
 .workbench-window-shell .send-btn {
   border: 0;
   color: #ffffff;
@@ -852,7 +832,6 @@ html[data-workbench-window-moving] {
   box-shadow: 0 8px 20px rgba(132, 70, 49, 0.18);
 }
 
-.workbench-window-shell .tool-btn-primary:hover,
 .workbench-window-shell .send-btn:hover {
   background: var(--accent-strong);
 }
@@ -1083,15 +1062,9 @@ html[data-workbench-window-moving] {
   color: var(--text-secondary);
 }
 
-.workbench-window-shell .workbench-tool-status.available,
 .workbench-window-shell .workbench-setting-feedback {
   color: #44693e;
   background: transparent;
-}
-
-.workbench-window-shell .workbench-tool-status.preview {
-  color: #8b5f1f;
-  background: rgba(201, 154, 84, 0.12);
 }
 
 .workbench-window-shell .workbench-setting-feedback.error,
@@ -1272,7 +1245,6 @@ html[data-theme-mode="dark"] .workbench-window-shell .context-map-title,
 html[data-theme-mode="dark"] .workbench-window-shell .workbench-panel-title,
 html[data-theme-mode="dark"] .workbench-window-shell .workbench-setting-title,
 html[data-theme-mode="dark"] .workbench-window-shell .suggestion-row-title,
-html[data-theme-mode="dark"] .workbench-window-shell .workbench-tool-card-title,
 html[data-theme-mode="dark"] .workbench-window-shell .suggestion-card-value,
 html[data-theme-mode="dark"] .workbench-window-shell .usage-summary-item strong,
 html[data-theme-mode="dark"] .workbench-window-shell .usage-cost-row strong,
@@ -1282,12 +1254,10 @@ html[data-theme-mode="dark"] .workbench-window-shell .workbench-window-title {
 
 html[data-theme-mode="dark"] .workbench-window-shell .workbench-panel-desc,
 html[data-theme-mode="dark"] .workbench-window-shell .workbench-setting-desc,
-html[data-theme-mode="dark"] .workbench-window-shell .workbench-setting-provider-hint,
 html[data-theme-mode="dark"] .workbench-window-shell .suggestion-card-label,
 html[data-theme-mode="dark"] .workbench-window-shell .suggestion-card-note,
 html[data-theme-mode="dark"] .workbench-window-shell .suggestion-row-body,
 html[data-theme-mode="dark"] .workbench-window-shell .suggestion-row-meta,
-html[data-theme-mode="dark"] .workbench-window-shell .workbench-tool-card-desc,
 html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-empty-title,
 html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-empty-body,
 html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-reasoning,
@@ -1308,7 +1278,6 @@ html[data-theme-mode="dark"] .workbench-window-shell .context-node-gutter {
 
 html[data-theme-mode="dark"] .workbench-window-shell .context-node-gutter:hover,
 html[data-theme-mode="dark"] .workbench-window-shell .context-node-gutter:focus-visible,
-html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.hovered .context-node-gutter,
 html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.expanded .context-node-gutter {
   color: var(--accent-strong);
   background: var(--item-hover);
@@ -1321,7 +1290,6 @@ html[data-theme-mode="dark"] .workbench-window-shell .context-node-gutter.locked
 html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.selected .context-node-gutter span,
 html[data-theme-mode="dark"] .workbench-window-shell .extended-tab.active,
 html[data-theme-mode="dark"] .workbench-window-shell .workbench-language-btn.is-active,
-html[data-theme-mode="dark"] .workbench-window-shell .tool-btn-primary,
 html[data-theme-mode="dark"] .workbench-window-shell .send-btn {
   color: #fff6ee;
   background: var(--an-theme);
@@ -1329,7 +1297,6 @@ html[data-theme-mode="dark"] .workbench-window-shell .send-btn {
 
 html[data-theme-mode="dark"] .workbench-window-shell .extended-tab:hover,
 html[data-theme-mode="dark"] .workbench-window-shell .context-map-item-button:hover,
-html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.hovered .context-map-item-button,
 html[data-theme-mode="dark"] .workbench-window-shell .workbench-language-btn:hover:not(:disabled),
 html[data-theme-mode="dark"] .workbench-window-shell .tool-btn-capsule:hover,
 html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-clear:hover,
@@ -1340,12 +1307,10 @@ html[data-theme-mode="dark"] .workbench-window-control-btn:hover {
 }
 
 html[data-theme-mode="dark"] .workbench-window-shell .context-map-item.expanded,
-html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.hovered .context-map-item.expanded,
 html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.selected .context-map-item-button,
 html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.selected .context-map-item.expanded,
 html[data-theme-mode="dark"] .workbench-window-shell .context-map-item.expanded .context-map-item-button,
 html[data-theme-mode="dark"] .workbench-window-shell .context-map-item.expanded .context-map-item-button:hover,
-html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.hovered .context-map-item.expanded .context-map-item-button,
 html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.selected .context-map-item.expanded .context-map-item-button,
 html[data-theme-mode="dark"] .workbench-window-shell .context-map-expanded-shell.open,
 html[data-theme-mode="dark"] .workbench-window-shell .context-map-expanded-content,
@@ -1372,9 +1337,8 @@ html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.selected 
 }
 
 html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-message.user .manual-workbench-bubble,
-html[data-theme-mode="dark"] .workbench-window-shell .message.user .content,
 html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-message.assistant .manual-workbench-bubble,
-html[data-theme-mode="dark"] .workbench-window-shell .message.an .content {
+html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-message.assistant .manual-workbench-bubble {
   color: var(--text-primary);
   background: var(--paper-raised);
   box-shadow: 0 8px 20px rgba(11, 8, 6, 0.2);
@@ -1387,7 +1351,6 @@ html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-message.a
 
 html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.locked .context-map-item-button,
 html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.locked .context-map-item-button:hover,
-html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.locked.hovered .context-map-item-button,
 html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.locked.selected .context-map-item-button,
 html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.locked .map-bubble {
   background: transparent;
@@ -1408,7 +1371,6 @@ html[data-theme-mode="dark"] .workbench-window-shell .markdown-body {
 html[data-theme-mode="dark"] .workbench-window-shell .suggestion-card,
 html[data-theme-mode="dark"] .workbench-window-shell .suggestion-row,
 html[data-theme-mode="dark"] .workbench-window-shell .workbench-setting-card,
-html[data-theme-mode="dark"] .workbench-window-shell .workbench-tool-card,
 html[data-theme-mode="dark"] .workbench-window-shell .usage-summary-item,
 html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-composer-shell,
 html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-reference-chip,
@@ -1422,7 +1384,6 @@ html[data-theme-mode="dark"] .workbench-window-shell .workbench-prompts-panel {
 }
 
 html[data-theme-mode="dark"] .workbench-window-shell .usage-summary-item,
-html[data-theme-mode="dark"] .workbench-window-shell .workbench-tool-card,
 html[data-theme-mode="dark"] .workbench-window-shell .suggestion-row {
   background: var(--paper-soft);
 }
@@ -1468,7 +1429,6 @@ html[data-theme-mode="dark"] .workbench-window-shell .workbench-prompt-reset-btn
   background: rgba(58, 50, 43, 0.58);
 }
 
-html[data-theme-mode="dark"] .workbench-window-shell .tool-btn-primary:hover,
 html[data-theme-mode="dark"] .workbench-window-shell .send-btn:hover {
   color: #fff6ee;
   background: #c98d75;
@@ -1495,15 +1455,9 @@ html[data-theme-mode="dark"] .workbench-window-shell .dropdown-item.selected {
   background: var(--item-hover);
 }
 
-html[data-theme-mode="dark"] .workbench-window-shell .workbench-tool-status.available,
 html[data-theme-mode="dark"] .workbench-window-shell .workbench-setting-feedback {
   color: #a9c09a;
   background: transparent;
-}
-
-html[data-theme-mode="dark"] .workbench-window-shell .workbench-tool-status.preview {
-  color: #d0ad75;
-  background: rgba(208, 173, 117, 0.12);
 }
 
 html[data-theme-mode="dark"] .workbench-window-shell .workbench-setting-feedback.error,
@@ -1645,7 +1599,6 @@ html[data-theme-mode="dark"] .workbench-window-control-btn.close:hover {
 
 /* Final scoped typography bridge for the Electron window. */
 .workbench-window-shell .markdown-body,
-.workbench-window-shell .message .content,
 .workbench-window-shell .inline-tool-call-count,
 .workbench-window-shell .reasoning-block-toggle {
   font-size: var(--ui-font-size-lg);
@@ -1668,8 +1621,7 @@ html[data-theme-mode="dark"] .workbench-window-control-btn.close:hover {
 .workbench-window-shell .suggestion-row-title,
 .workbench-window-shell .manual-workbench-empty-title,
 .workbench-window-shell .manual-workbench-reference-chip,
-.workbench-window-shell .workbench-setting-title,
-.workbench-window-shell .workbench-tool-card-title {
+.workbench-window-shell .workbench-setting-title {
   font-size: var(--ui-font-size-md);
 }
 
@@ -1705,12 +1657,10 @@ html[data-theme-mode="dark"] .workbench-window-control-btn.close:hover {
 .workbench-window-shell .manual-workbench-empty-body,
 .workbench-window-shell .manual-workbench-reasoning,
 .workbench-window-shell .workbench-settings-row-meta,
-.workbench-window-shell .workbench-setting-provider-hint,
 .workbench-window-shell .workbench-language-btn,
 .workbench-window-shell .workbench-token-threshold-field,
 .workbench-window-shell .workbench-setting-desc,
-.workbench-window-shell .workbench-setting-feedback,
-.workbench-window-shell .workbench-tool-card-desc {
+.workbench-window-shell .workbench-setting-feedback {
   font-size: var(--ui-font-size-sm);
 }
 
@@ -1722,8 +1672,7 @@ html[data-theme-mode="dark"] .workbench-window-control-btn.close:hover {
 .workbench-window-shell .context-map-expanded-content .tool-shell-scroll pre,
 .workbench-window-shell .context-map-expanded-content .tool-json-scroll pre,
 .workbench-window-shell .context-map-expanded-content .tool-shell-footer,
-.workbench-window-shell .workbench-model-picker-trigger + .dropdown-menu .dropdown-item-left small,
-.workbench-window-shell .workbench-tool-status {
+.workbench-window-shell .workbench-model-picker-trigger + .dropdown-menu .dropdown-item-left small {
   font-size: var(--ui-font-size-xs);
 }
 
@@ -1732,7 +1681,6 @@ html[data-theme-mode="dark"] .workbench-window-control-btn.close:hover {
 }
 
 .workbench-window-shell .context-map-title,
-.workbench-window-shell .context-map-toggle,
 .workbench-window-shell .manual-workbench-clear i,
 .workbench-window-shell .send-btn i {
   font-size: var(--ui-font-size-lg);

@@ -138,9 +138,6 @@ class ToolRegistry:
     def schemas(self) -> list[dict[str, Any]]:
         return [tool.to_openai_schema() for tool in self._tools.values()]
 
-    def describe(self) -> str:
-        return "\n".join(f"- {tool.name}: {tool.description}" for tool in self._tools.values())
-
     def execute(self, name: str, arguments: dict[str, Any]) -> ToolExecution:
         canonical_name = name
         tool = self._all_tools.get(canonical_name)

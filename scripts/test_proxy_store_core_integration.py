@@ -23,7 +23,6 @@ from backend.compact_controller import (  # noqa: E402
 )
 from backend.proxy_core import ProxyState  # noqa: E402
 from backend.proxy_routes_support import CONTEXT_CONTROL_NOTICE_TEXT  # noqa: E402
-from backend.proxy_session_storage import json_loads_value  # noqa: E402
 from backend.proxy_store import ProxySession, ProxyStore, read_message_text  # noqa: E402
 from backend.transcript_codec import input_items_to_transcript, transcript_to_input_items  # noqa: E402
 
@@ -223,10 +222,10 @@ def test_persistence_writes_proxy_session_folder_layout() -> None:
         session = store.sessions[SESSION_ID]
         session_dir = store._session_dir(session)
 
-        index = json_loads_value((Path(temp_dir) / "index.json").read_text(encoding="utf-8"), {})
-        session_json = json_loads_value((session_dir / "session.json").read_text(encoding="utf-8"), {})
-        transcript_json = json_loads_value((session_dir / "transcript.json").read_text(encoding="utf-8"), {})
-        cursor_json = json_loads_value((session_dir / "cursor.json").read_text(encoding="utf-8"), {})
+        index = json.loads((Path(temp_dir) / "index.json").read_text(encoding="utf-8"))
+        session_json = json.loads((session_dir / "session.json").read_text(encoding="utf-8"))
+        transcript_json = json.loads((session_dir / "transcript.json").read_text(encoding="utf-8"))
+        cursor_json = json.loads((session_dir / "cursor.json").read_text(encoding="utf-8"))
 
         assert index["active_session_id"] == SESSION_ID
         assert session_json["id"] == SESSION_ID
@@ -485,7 +484,7 @@ def test_prune_sessions_missing_from_codex_deletes_only_missing_proxy_sessions()
         assert not delete_dir.exists()
         assert fallback_dir.exists()
 
-        index = json_loads_value((Path(temp_dir) / "index.json").read_text(encoding="utf-8"), {})
+        index = json.loads((Path(temp_dir) / "index.json").read_text(encoding="utf-8"))
         indexed_ids = {item["id"] for item in index["sessions"]}
         assert keep_id in indexed_ids
         assert fallback_id in indexed_ids

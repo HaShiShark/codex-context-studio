@@ -20,6 +20,7 @@ const tests = [
   'scripts/test_proxy_store_core_integration.py',
   'scripts/test_proxy_remote_compact_disabled.py',
   'scripts/test_web_restore_disabled.py',
+  'scripts/test_web_state_cleanup.py',
 ];
 
 for (const test of tests) {

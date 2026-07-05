@@ -139,7 +139,7 @@ class AppState:
         *,
         session_id: str,
         title: str,
-        transcript: list[dict[str, object]],
+        transcript: list[dict[str, object]] | None = None,
         is_main_turn_running: bool = False,
         main_turn_id: str = "",
         main_turn_started_at: str = "",
@@ -166,7 +166,8 @@ class AppState:
 
             active_mode = sanitize_text(session.active_request_mode or "").strip()
             active_request_id = sanitize_text(session.active_request_id or "").strip()
-            next_transcript = normalize_transcript(transcript)
+            has_transcript_update = transcript is not None
+            next_transcript = normalize_transcript(transcript) if has_transcript_update else []
             next_title = sanitize_text(title or "").strip() or session.title or NEW_SESSION_TITLE
             next_main_turn_id = sanitize_text(main_turn_id or "").strip()
             next_main_turn_started_at = sanitize_text(main_turn_started_at or "").strip()
@@ -186,7 +187,7 @@ class AppState:
                 if int(session.node_lock_revision or 0) != next_node_lock_revision:
                     session.node_lock_revision = next_node_lock_revision
                     should_persist = True
-            if active_mode != "context":
+            if active_mode != "context" and has_transcript_update:
                 transcript_changed = next_transcript != normalize_transcript(session.transcript)
                 if transcript_changed:
                     session.transcript = next_transcript
@@ -218,13 +219,32 @@ class AppState:
         *,
         user_message: str,
         answer: str,
-    ) -> list[dict[str, str]]:
+        tool_events: list[dict[str, object]] | None = None,
+    ) -> list[dict[str, object]]:
+        safe_answer = sanitize_text(answer)
+        safe_tool_events = sanitize_value(tool_events) if isinstance(tool_events, list) else []
+        if not isinstance(safe_tool_events, list):
+            safe_tool_events = []
+        assistant_record: dict[str, object] = {
+            "role": "assistant",
+            "content": safe_answer,
+        }
+        if safe_tool_events:
+            assistant_record["toolEvents"] = safe_tool_events
+            assistant_record["blocks"] = [
+                {"kind": "tool", "tool_event": tool_event}
+                for tool_event in safe_tool_events
+                if isinstance(tool_event, dict)
+            ]
+            if safe_answer.strip():
+                assistant_record["blocks"].append({"kind": "text", "text": safe_answer})
+
         with self.lock:
             session.context_workbench_history = normalize_context_chat_history(
                 [
                     *session.context_workbench_history,
                     {"role": "user", "content": sanitize_text(user_message)},
-                    {"role": "assistant", "content": sanitize_text(answer)},
+                    assistant_record,
                 ]
             )
             self._save_state_locked()
@@ -235,7 +255,7 @@ class AppState:
         session: SessionState,
         *,
         message_index: int,
-    ) -> tuple[list[dict[str, object]], list[dict[str, str]]]:
+    ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
         with self.lock:
             normalized_history = normalize_context_chat_history(session.context_workbench_history)
             if not normalized_history:
@@ -259,7 +279,7 @@ class AppState:
     def clear_context_workbench_history(
         self,
         session: SessionState,
-    ) -> tuple[list[dict[str, object]], list[dict[str, str]]]:
+    ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
         with self.lock:
             session.context_workbench_history = []
             self._save_state_locked()
@@ -328,11 +348,11 @@ class AppState:
             "context_workbench_history": normalize_context_chat_history(workbench_history),
         }
 
-    def _load_workbench_history(self, session_id: str) -> list[dict[str, str]]:
+    def _load_workbench_history(self, session_id: str) -> list[dict[str, object]]:
         path = self._session_state_path(session_id, "workbench.jsonl")
         if not path.exists():
             return []
-        records: list[dict[str, str]] = []
+        records: list[dict[str, object]] = []
         try:
             lines = path.read_text(encoding="utf-8").splitlines()
         except OSError:
@@ -345,14 +365,9 @@ class AppState:
             except json.JSONDecodeError:
                 continue
             if isinstance(item, dict) and item.get("role") in {"user", "assistant"}:
-                records.append(
-                    {
-                        "role": sanitize_text(item.get("role") or ""),
-                        "content": sanitize_text(item.get("content") or ""),
-                    }
-                )
+                records.append(item)
         if records:
-            return records
+            return normalize_context_chat_history(records)
         return normalize_context_chat_history(read_jsonl_state_file(path, []))
 
     def _persist_session_payload(self, session: SessionState) -> None:
@@ -370,11 +385,7 @@ class AppState:
         if previous.get("context_workbench_history", []) != current["context_workbench_history"] or not path.exists():
             lines = [
                 json.dumps(
-                    {
-                        "role": item.get("role"),
-                        "content": item.get("content"),
-                        "created_at": utc_timestamp(),
-                    },
+                    {**item, "created_at": utc_timestamp()},
                     ensure_ascii=False,
                     separators=(",", ":"),
                 )
@@ -431,7 +442,7 @@ class AppState:
             encoding="utf-8",
         )
 
-    def _context_workbench_history_map_locked(self) -> dict[str, list[dict[str, str]]]:
+    def _context_workbench_history_map_locked(self) -> dict[str, list[dict[str, object]]]:
         return {
             session_id: sanitize_value(session.context_workbench_history)
             for session_id, session in self.sessions.items()

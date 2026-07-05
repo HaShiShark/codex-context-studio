@@ -25,14 +25,6 @@ textarea {
   font: inherit;
 }
 
-.message.user .content {
-  white-space: pre-wrap;
-}
-
-.message.an .content {
-  width: min(100%, var(--chat-shell-width));
-}
-
 .markdown-body {
   color: inherit;
   font-size: var(--ui-font-size-lg);
@@ -692,26 +684,6 @@ textarea {
   border-color: rgba(var(--an-theme-rgb), 0.7);
 }
 
-.tool-btn-secondary,
-.tool-btn-primary {
-  min-height: 36px;
-  padding: 0 14px;
-  border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  color: var(--text-primary);
-  cursor: pointer;
-}
-
-.tool-btn-primary {
-  background: rgba(var(--an-theme-rgb), 0.14);
-}
-
-.tool-btn-primary:disabled,
-.tool-btn-secondary:disabled {
-  cursor: not-allowed;
-  opacity: 0.6;
-}
-
 .context-map-list {
   overflow: hidden;
 }
@@ -744,11 +716,6 @@ textarea {
   align-items: flex-end;
 }
 
-.context-node-row.hovered .context-map-item-button {
-  background: rgba(255, 255, 255, 0.03);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.035);
-}
-
 .context-node-row.selected .context-map-item-button {
   background: rgba(255, 255, 255, 0.028);
   box-shadow: inset 0 0 0 1px rgba(var(--an-theme-rgb), 0.18);
@@ -775,11 +742,6 @@ textarea {
   overflow: hidden;
 }
 
-.context-node-row.hovered .context-map-item.expanded {
-  background: var(--surface-bg);
-  box-shadow: none;
-}
-
 .context-node-row.selected .context-map-item.expanded {
   background: var(--surface-bg);
   box-shadow: none;
@@ -787,7 +749,6 @@ textarea {
 
 .context-map-item.expanded .context-map-item-button,
 .context-map-item.expanded .context-map-item-button:hover,
-.context-node-row.hovered .context-map-item.expanded .context-map-item-button,
 .context-node-row.selected .context-map-item.expanded .context-map-item-button {
   background: transparent;
   box-shadow: none;
@@ -1611,11 +1572,6 @@ textarea {
   width: min(100%, 320px);
 }
 
-.workbench-setting-provider-hint {
-  color: rgba(255, 255, 255, 0.52);
-  font-size: var(--ui-font-size-sm);
-}
-
 .workbench-language-toggle {
   display: inline-flex;
   align-self: flex-start;
@@ -1684,60 +1640,6 @@ textarea {
   color: rgba(255, 158, 158, 0.96);
 }
 
-.workbench-tool-grid {
-  display: grid;
-  gap: 10px;
-}
-
-.workbench-tool-card {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 14px 14px 12px;
-  border-radius: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  background: rgba(255, 255, 255, 0.02);
-}
-
-.workbench-tool-card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.workbench-tool-card-title {
-  color: rgba(255, 255, 255, 0.94);
-  font-size: var(--ui-font-size-sm);
-  font-weight: 600;
-}
-
-.workbench-tool-card-desc {
-  color: rgba(255, 255, 255, 0.54);
-  font-size: var(--ui-font-size-sm);
-  line-height: 1.55;
-}
-
-.workbench-tool-status {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 22px;
-  padding: 0 9px;
-  border-radius: 999px;
-  font-size: var(--ui-font-size-xs);
-}
-
-.workbench-tool-status.available {
-  background: rgba(103, 211, 145, 0.12);
-  color: rgba(165, 220, 181, 0.96);
-}
-
-.workbench-tool-status.preview {
-  background: rgba(249, 199, 79, 0.12);
-  color: rgba(249, 199, 79, 0.96);
-}
-
 @media (max-width: 1280px) {
   .suggestion-card-grid {
     grid-template-columns: 1fr;
@@ -1761,7 +1663,7 @@ html[data-theme-mode="dark"] .right-panel {
   box-shadow: -18px 0 34px var(--shadow-color);
 }
 
-html[data-theme-mode="dark"] .right-panel:not(.stage-0) {
+html[data-theme-mode="dark"] .right-panel.stage-2 {
   filter: var(--app-contrast-filter);
 }
 
@@ -1815,8 +1717,7 @@ html[data-theme-mode="dark"] .workbench-panel-title,
 html[data-theme-mode="dark"] .suggestion-card-value,
 html[data-theme-mode="dark"] .suggestion-row-title,
 html[data-theme-mode="dark"] .manual-workbench-empty-title,
-html[data-theme-mode="dark"] .workbench-setting-title,
-html[data-theme-mode="dark"] .workbench-tool-card-title {
+html[data-theme-mode="dark"] .workbench-setting-title {
   color: var(--text-primary);
 }
 
@@ -1826,9 +1727,7 @@ html[data-theme-mode="dark"] .suggestion-card-note,
 html[data-theme-mode="dark"] .suggestion-row-body,
 html[data-theme-mode="dark"] .suggestion-row-meta,
 html[data-theme-mode="dark"] .manual-workbench-empty-body,
-html[data-theme-mode="dark"] .workbench-setting-provider-hint,
-html[data-theme-mode="dark"] .workbench-setting-desc,
-html[data-theme-mode="dark"] .workbench-tool-card-desc {
+html[data-theme-mode="dark"] .workbench-setting-desc {
   color: var(--text-secondary);
 }
 
@@ -1837,7 +1736,6 @@ html[data-theme-mode="dark"] .suggestion-row,
 html[data-theme-mode="dark"] .manual-workbench-composer-shell,
 html[data-theme-mode="dark"] .manual-workbench-reference-chip,
 html[data-theme-mode="dark"] .workbench-setting-card,
-html[data-theme-mode="dark"] .workbench-tool-card,
 html[data-theme-mode="dark"] .manual-workbench-clear {
   background: var(--surface-bg);
   border-color: var(--border-subtle);
@@ -1875,7 +1773,6 @@ html[data-theme-mode="dark"] .context-node-gutter:focus-visible {
   background: var(--item-hover);
 }
 
-html[data-theme-mode="dark"] .context-node-row.hovered .context-map-item-button,
 html[data-theme-mode="dark"] .context-map-item-button:hover {
   background: var(--item-hover);
   box-shadow: inset 0 0 0 1px var(--border-subtle);
@@ -1883,7 +1780,6 @@ html[data-theme-mode="dark"] .context-map-item-button:hover {
 
 html[data-theme-mode="dark"] .context-node-row.selected .context-map-item-button,
 html[data-theme-mode="dark"] .context-map-item.expanded,
-html[data-theme-mode="dark"] .context-node-row.hovered .context-map-item.expanded,
 html[data-theme-mode="dark"] .context-node-row.selected .context-map-item.expanded {
   background: var(--surface-bg);
   box-shadow: inset 0 0 0 1px rgba(var(--an-theme-rgb), 0.2);
@@ -1913,7 +1809,6 @@ html[data-theme-mode="dark"] .markdown-table-wrap td {
 
 /* Global typography scale. Keep this late so older component-local px sizes follow Settings > Font Size. */
 .markdown-body,
-.message .content,
 .inline-tool-call-count,
 .reasoning-block-toggle {
   font-size: var(--ui-font-size-lg);
@@ -1938,8 +1833,7 @@ html[data-theme-mode="dark"] .markdown-table-wrap td {
 .suggestion-row-title,
 .manual-workbench-empty-title,
 .manual-workbench-reference-chip,
-.workbench-setting-title,
-.workbench-tool-card-title {
+.workbench-setting-title {
   font-size: var(--ui-font-size-md);
 }
 
@@ -1973,12 +1867,10 @@ html[data-theme-mode="dark"] .markdown-table-wrap td {
 .manual-workbench-empty-body,
 .manual-workbench-reasoning,
 .workbench-settings-row-meta,
-.workbench-setting-provider-hint,
 .workbench-language-btn,
 .workbench-token-threshold-field,
 .workbench-setting-desc,
-.workbench-setting-feedback,
-.workbench-tool-card-desc {
+.workbench-setting-feedback {
   font-size: var(--ui-font-size-sm);
 }
 
@@ -1990,8 +1882,7 @@ html[data-theme-mode="dark"] .markdown-table-wrap td {
 .context-map-expanded-content .tool-shell-scroll pre,
 .context-map-expanded-content .tool-json-scroll pre,
 .context-map-expanded-content .tool-shell-footer,
-.workbench-model-picker-trigger + .dropdown-menu .dropdown-item-left small,
-.workbench-tool-status {
+.workbench-model-picker-trigger + .dropdown-menu .dropdown-item-left small {
   font-size: var(--ui-font-size-xs);
 }
 
