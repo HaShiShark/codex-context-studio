@@ -910,6 +910,48 @@ html[data-workbench-window-moving] {
   overflow-y: visible;
 }
 
+.workbench-window-shell .workbench-provider-picker-trigger + .dropdown-menu {
+  top: calc(100% + 8px);
+  bottom: auto;
+}
+
+.workbench-window-shell .workbench-provider-picker-trigger + .dropdown-menu .dropdown-item-left small,
+.workbench-window-shell .workbench-model-picker-trigger + .dropdown-menu .dropdown-item-left small {
+  color: var(--text-muted);
+}
+
+.workbench-window-shell .workbench-provider-type-toggle {
+  justify-content: flex-end;
+  border-color: rgba(127, 95, 80, 0.12);
+  border-radius: var(--control-radius);
+  background: var(--bg-input);
+}
+
+.workbench-window-shell .workbench-api-key-row,
+.workbench-window-shell .workbench-model-config-row {
+  justify-content: flex-end;
+}
+
+.workbench-window-shell .settings-input-url,
+.workbench-window-shell .settings-input-key,
+.workbench-window-shell .settings-input-model {
+  width: min(100%, 320px);
+}
+
+.workbench-window-shell .workbench-inline-action,
+.workbench-window-shell .workbench-icon-action {
+  border-color: rgba(127, 95, 80, 0.12);
+  border-radius: var(--control-radius);
+  color: var(--text-secondary);
+  background: var(--bg-input);
+}
+
+.workbench-window-shell .workbench-inline-action:hover:not(:disabled),
+.workbench-window-shell .workbench-icon-action:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: var(--bg-input-hover);
+}
+
 .workbench-window-shell .settings-input-small {
   width: 64px;
 }

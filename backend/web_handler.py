@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, quote, urlparse
 from dotenv import load_dotenv
 
 from simple_agent.agent import ToolEvent, sanitize_text, sanitize_value
-from simple_agent.config import CODEX_PROXY_PROVIDER_ID, load_settings, save_settings
+from simple_agent.config import load_settings, save_settings
 
 from backend.web_constants import (
     ATTACHMENTS_ROUTE,
@@ -150,12 +150,13 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
         latest_settings = load_settings()
         provider_payloads = context_workbench_provider_payloads(
             latest_settings,
-            refresh_codex_proxy_models=refresh_models,
+            refresh_models=refresh_models,
         )
         self._send_json(
             {
                 "settings": context_workbench_settings_payload(latest_settings),
                 "models": context_workbench_models_payload(latest_settings, provider_payloads),
+                "providers": provider_payloads,
             }
         )
 
@@ -268,7 +269,11 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
         updated_settings = save_settings(
             context_workbench_model=sanitize_text(payload.get("context_workbench_model") or "").strip()
             or None,
-            context_workbench_provider_id=CODEX_PROXY_PROVIDER_ID,
+            context_workbench_provider_id=sanitize_text(payload.get("context_workbench_provider_id") or "").strip()
+            or None,
+            response_providers=payload.get("response_providers")
+            if isinstance(payload.get("response_providers"), list)
+            else None,
             context_token_warning_threshold=payload.get("context_token_warning_threshold"),
             context_token_critical_threshold=payload.get("context_token_critical_threshold"),
             codex_system_prompt=payload.get("codex_system_prompt")
@@ -286,14 +291,16 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
             ui_font_size=payload.get("ui_font_size") if type(payload.get("ui_font_size")) is int else None,
         )
         self.app_state.refresh_settings(updated_settings)
+        should_refresh_models = bool(payload.get("refresh_models"))
         provider_payloads = context_workbench_provider_payloads(
             updated_settings,
-            refresh_codex_proxy_models=True,
+            refresh_models=should_refresh_models,
         )
         self._send_json(
             {
                 "settings": context_workbench_settings_payload(updated_settings),
                 "models": context_workbench_models_payload(updated_settings, provider_payloads),
+                "providers": provider_payloads,
             }
         )
 

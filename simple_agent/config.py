@@ -64,6 +64,16 @@ DEFAULT_RESPONSE_PROVIDERS: tuple[dict[str, object], ...] = (
         "models": DEFAULT_CODEX_PROXY_MODELS,
     },
     {
+        "id": "openai-chat",
+        "name": "OpenAI Chat Completions",
+        "provider_type": "chat_completion",
+        "enabled": True,
+        "supports_model_fetch": True,
+        "supports_responses": False,
+        "api_base_url": "https://api.openai.com/v1",
+        "default_model": "gpt-4.1-mini",
+    },
+    {
         "id": "anthropic",
         "name": "Claude",
         "provider_type": "claude",
@@ -143,7 +153,7 @@ def _provider_type_defaults(provider_type: str) -> dict[str, str]:
     if provider_type == "chat_completion":
         return {
             "name": "Chat Completion",
-            "api_base_url": "https://api.example.com/v1",
+            "api_base_url": "https://api.openai.com/v1",
             "default_model": "gpt-4.1-mini",
         }
     return {
@@ -386,8 +396,13 @@ def _normalize_provider_records(
     return normalized_records
 
 
-def _normalize_active_provider_id(raw_provider_id: Any, providers: list[dict[str, Any]]) -> str:
-    candidate = _clean_string(raw_provider_id) or "openai"
+def _normalize_provider_id(
+    raw_provider_id: Any,
+    providers: list[dict[str, Any]],
+    *,
+    fallback_provider_id: str,
+) -> str:
+    candidate = _clean_string(raw_provider_id) or fallback_provider_id
     enabled_ids = {
         _clean_string(provider.get("id"))
         for provider in providers
@@ -395,8 +410,8 @@ def _normalize_active_provider_id(raw_provider_id: Any, providers: list[dict[str
     }
     if candidate in enabled_ids:
         return candidate
-    if "openai" in enabled_ids:
-        return "openai"
+    if fallback_provider_id in enabled_ids:
+        return fallback_provider_id
     if enabled_ids:
         return next(iter(enabled_ids))
     all_ids = [
@@ -406,9 +421,17 @@ def _normalize_active_provider_id(raw_provider_id: Any, providers: list[dict[str
     ]
     if candidate in all_ids:
         return candidate
-    if "openai" in all_ids:
-        return "openai"
-    return all_ids[0] if all_ids else "openai"
+    if fallback_provider_id in all_ids:
+        return fallback_provider_id
+    return all_ids[0] if all_ids else fallback_provider_id
+
+
+def _normalize_active_provider_id(raw_provider_id: Any, providers: list[dict[str, Any]]) -> str:
+    return _normalize_provider_id(
+        raw_provider_id,
+        providers,
+        fallback_provider_id="openai",
+    )
 
 
 @dataclass(slots=True)
@@ -457,6 +480,12 @@ class Settings:
                 return provider
         return self.response_providers[0] if self.response_providers else {}
 
+    def context_workbench_provider(self) -> dict[str, Any]:
+        for provider in self.response_providers:
+            if _clean_string(provider.get("id")) == self.context_workbench_provider_id:
+                return provider
+        return self.active_provider()
+
 
 def load_settings() -> Settings:
     load_dotenv(REPO_ROOT / ".env")
@@ -473,11 +502,9 @@ def load_settings() -> Settings:
         or "gpt-5.4-mini"
     )
     default_reasoning_effort = _normalize_reasoning_effort(stored.get("default_reasoning_effort"))
-    context_workbench_model = (
+    raw_context_workbench_model = (
         _clean_string(stored.get("context_workbench_model"))
         or _clean_string(os.getenv("HASH_CONTEXT_WORKBENCH_MODEL"))
-        or _clean_string(DEFAULT_CODEX_PROXY_MODELS[0].get("id"))
-        or model
     )
     context_token_warning_threshold, context_token_critical_threshold = _normalize_context_token_thresholds(
         stored.get("context_token_warning_threshold"),
@@ -506,6 +533,12 @@ def load_settings() -> Settings:
         stored.get("active_provider_id"),
         response_providers,
     )
+    context_workbench_provider_id = _normalize_provider_id(
+        stored.get("context_workbench_provider_id")
+        or os.getenv("HASH_CONTEXT_WORKBENCH_PROVIDER_ID"),
+        response_providers,
+        fallback_provider_id=CODEX_PROXY_PROVIDER_ID,
+    )
 
     active_provider = next(
         (
@@ -518,7 +551,20 @@ def load_settings() -> Settings:
     model = _clean_string(active_provider.get("default_model")) or model
     openai_base_url = _clean_string(active_provider.get("api_base_url")) or None
     openai_api_key = _clean_string(active_provider.get("api_key")) or None
-    context_workbench_provider_id = CODEX_PROXY_PROVIDER_ID
+    context_provider = next(
+        (
+            provider
+            for provider in response_providers
+            if _clean_string(provider.get("id")) == context_workbench_provider_id
+        ),
+        active_provider,
+    )
+    context_workbench_model = (
+        raw_context_workbench_model
+        or _clean_string(context_provider.get("default_model"))
+        or _clean_string(DEFAULT_CODEX_PROXY_MODELS[0].get("id"))
+        or model
+    )
     tool_settings = normalize_tool_settings(stored.get("tool_settings"))
 
     assistant_name = _clean_string(stored.get("assistant_name")) or DEFAULT_ASSISTANT_NAME
@@ -786,16 +832,41 @@ def save_settings(
     elif "default_reasoning_effort" not in current:
         current["default_reasoning_effort"] = loaded.default_reasoning_effort
 
+    previous_context_workbench_provider_id = _clean_string(
+        current.get("context_workbench_provider_id")
+        or loaded.context_workbench_provider_id
+    )
+    next_context_workbench_provider_id = _normalize_provider_id(
+        context_workbench_provider_id
+        or current.get("context_workbench_provider_id")
+        or loaded.context_workbench_provider_id,
+        ordered_records,
+        fallback_provider_id=CODEX_PROXY_PROVIDER_ID,
+    )
+    context_provider = current_by_id.get(next_context_workbench_provider_id) or active_provider
+    current["context_workbench_provider_id"] = next_context_workbench_provider_id
+
     next_context_workbench_model = _clean_string(current.get("context_workbench_model")) or loaded.context_workbench_model
     if context_workbench_model is not None:
         cleaned_context_workbench_model = _clean_string(context_workbench_model)
         if cleaned_context_workbench_model:
             next_context_workbench_model = cleaned_context_workbench_model
         else:
-            next_context_workbench_model = _clean_string(current.get("model")) or loaded.model
+            next_context_workbench_model = (
+                _clean_string(context_provider.get("default_model"))
+                or _clean_string(current.get("model"))
+                or loaded.model
+            )
+    elif (
+        next_context_workbench_provider_id != previous_context_workbench_provider_id
+        or not next_context_workbench_model
+    ):
+        next_context_workbench_model = (
+            _clean_string(context_provider.get("default_model"))
+            or _clean_string(current.get("model"))
+            or loaded.model
+        )
     current["context_workbench_model"] = next_context_workbench_model
-
-    current["context_workbench_provider_id"] = CODEX_PROXY_PROVIDER_ID
 
     next_context_token_warning_threshold, next_context_token_critical_threshold = _normalize_context_token_thresholds(
         (

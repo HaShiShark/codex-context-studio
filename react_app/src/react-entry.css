@@ -1572,6 +1572,130 @@ textarea {
   width: min(100%, 320px);
 }
 
+.workbench-provider-picker-trigger {
+  width: min(100%, 320px);
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.workbench-provider-picker-trigger span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workbench-provider-picker-trigger + .dropdown-menu {
+  width: min(320px, calc(100vw - 56px));
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.workbench-provider-picker-trigger + .dropdown-menu .dropdown-item-left {
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.workbench-provider-picker-trigger + .dropdown-menu .dropdown-item-left span {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workbench-provider-picker-trigger + .dropdown-menu .dropdown-item-left small {
+  color: rgba(255, 255, 255, 0.42);
+  font-size: var(--ui-font-size-xs);
+  font-weight: 500;
+}
+
+.workbench-provider-type-toggle {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  justify-content: flex-end;
+  padding: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.workbench-api-key-row,
+.workbench-model-config-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.settings-input-url,
+.settings-input-key,
+.settings-input-model {
+  width: min(100%, 320px);
+}
+
+.workbench-model-config-row .settings-input-model {
+  flex: 1 1 180px;
+  min-width: 140px;
+}
+
+.workbench-model-config-row .workbench-model-picker-trigger {
+  flex: 0 1 250px;
+}
+
+.workbench-inline-action,
+.workbench-icon-action {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.74);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--ui-font-size-sm);
+  font-weight: 600;
+}
+
+.workbench-inline-action {
+  min-height: 34px;
+  padding: 0 10px;
+}
+
+.workbench-icon-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+}
+
+.workbench-inline-action:hover:not(:disabled),
+.workbench-icon-action:hover:not(:disabled) {
+  color: rgba(255, 255, 255, 0.94);
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.workbench-inline-action:disabled,
+.workbench-icon-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.workbench-icon-action .is-spinning {
+  animation: workbench-spin 850ms linear infinite;
+}
+
+@keyframes workbench-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .workbench-language-toggle {
   display: inline-flex;
   align-self: flex-start;

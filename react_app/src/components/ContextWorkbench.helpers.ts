@@ -179,7 +179,8 @@ export function isAbortError(error: unknown) {
 
 export function buildWorkbenchModelOptions(
   modelDraft: string,
-  models: string[] = [],
+  models: Array<ResponseProviderModel | string> = [],
+  fallbackProvider = 'Codex',
 ): ResponseProviderModel[] {
   const seen = new Set<string>();
   const options: ResponseProviderModel[] = [];
@@ -196,8 +197,8 @@ export function buildWorkbenchModelOptions(
       options.push({
         id: cleanedId,
         label: cleanedId,
-        group: 'Codex',
-        provider: 'Codex',
+        group: fallbackProvider,
+        provider: fallbackProvider,
       });
       return;
     }
@@ -205,8 +206,8 @@ export function buildWorkbenchModelOptions(
     options.push({
       id: cleanedId,
       label: (model.label || cleanedId).trim(),
-      group: (model.group || 'Codex').trim(),
-      provider: (model.provider || 'Codex').trim(),
+      group: (model.group || fallbackProvider).trim(),
+      provider: (model.provider || fallbackProvider).trim(),
     });
   }
 

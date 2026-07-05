@@ -89,7 +89,13 @@ export function fetchInit(options: { sessionId?: string; includeConversation?: b
   return apiFetch<InitPayload>(query ? `/api/init?${query}` : '/api/init');
 }
 
-export type ContextWorkbenchSettingsPayload = Partial<ContextWorkbenchSettingsResponse['settings']>;
+export type ContextWorkbenchSettingsPayload = Partial<ContextWorkbenchSettingsResponse['settings']> & {
+  refresh_models?: boolean;
+  response_providers?: Array<Partial<ContextWorkbenchSettingsResponse['providers'][number]> & {
+    api_key?: string;
+    clear_api_key?: boolean;
+  }>;
+};
 
 export function fetchContextWorkbenchSettings(options: { refreshModels?: boolean } = {}): Promise<ContextWorkbenchSettingsResponse> {
   const query = options.refreshModels ? '?refresh_models=1' : '';

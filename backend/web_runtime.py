@@ -1,18 +1,37 @@
 ﻿from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timezone
 from http import HTTPStatus
 from typing import Any
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote, urlparse, urlunparse
+from agent_runtime.adapters import (
+    ChatCompletionsAdapter,
+    ClaudeAdapter,
+    GeminiAdapter,
+    ProviderRequestContext,
+    ResponsesAdapter,
+    ResponsesStreamResult,
+)
+from agent_runtime.core.prompt_blocks import PromptBlock
+from agent_runtime.core.stream_events import (
+    ProviderDoneEvent,
+    ReasoningDeltaEvent,
+    ReasoningDoneEvent,
+    ReasoningStartEvent,
+    TextDeltaEvent,
+    ToolCallReadyEvent,
+)
 from simple_agent.agent import BridgedFunctionCall, SimpleAgent, ToolEvent, sanitize_text
 from simple_agent.config import CODEX_PROXY_BASE_URL, CODEX_PROXY_PROVIDER_ID, DEFAULT_CODEX_PROXY_MODELS, Settings
 from simple_agent.codex_tool_registry import ToolExecution
+from simple_agent.provider_clients import ClaudeRESTClient, GeminiRESTClient
 try:
     import tiktoken
 except ImportError:
@@ -44,7 +63,10 @@ def context_workbench_settings_payload(settings: Settings) -> dict[str, object]:
     return {
         "context_workbench_model": sanitize_text(settings.context_workbench_model or "").strip()
         or default_context_model,
-        "context_workbench_provider_id": CODEX_PROXY_PROVIDER_ID,
+        "context_workbench_provider_id": sanitize_text(
+            settings.context_workbench_provider_id or ""
+        ).strip()
+        or CODEX_PROXY_PROVIDER_ID,
         "context_token_warning_threshold": int(settings.context_token_warning_threshold or 5000),
         "context_token_critical_threshold": int(settings.context_token_critical_threshold or 10000),
         "user_locale": sanitize_text(settings.user_locale or "").strip() or "en-US",
@@ -326,6 +348,328 @@ def context_workbench_prompt_cache_key(session_id: str) -> str:
         return "hash-context-workbench"
     return f"hash-context:{safe_session_id[:48]}"
 
+
+def context_workbench_provider(settings: Settings) -> dict[str, Any]:
+    provider = sanitize_value(settings.context_workbench_provider())
+    if not isinstance(provider, dict):
+        provider = {}
+
+    provider_id = sanitize_text(provider.get("id") or "").strip()
+    if provider_id:
+        return provider
+
+    return {
+        "id": CODEX_PROXY_PROVIDER_ID,
+        "name": "Codex",
+        "provider_type": "responses",
+        "api_base_url": CODEX_PROXY_BASE_URL,
+        "default_model": sanitize_text(DEFAULT_CODEX_PROXY_MODELS[0].get("id") or "").strip()
+        or "gpt-5.5",
+    }
+
+
+def context_provider_type(provider: Mapping[str, Any]) -> str:
+    return normalize_provider_type(
+        provider.get("provider_type"),
+        sanitize_text(provider.get("id") or "").strip(),
+    )
+
+
+def context_provider_api_base_url(provider: Mapping[str, Any]) -> str:
+    provider_type = context_provider_type(provider)
+    provider_id = sanitize_text(provider.get("id") or "").strip()
+    raw_base_url = sanitize_text(provider.get("api_base_url") or "").strip()
+    if provider_id == CODEX_PROXY_PROVIDER_ID:
+        raw_base_url = raw_base_url or CODEX_PROXY_BASE_URL
+    return normalize_provider_api_base_url(raw_base_url, provider_type)
+
+
+def context_provider_api_key(provider: Mapping[str, Any], settings: Settings) -> str:
+    provider_type = context_provider_type(provider)
+    provider_id = sanitize_text(provider.get("id") or "").strip()
+    api_key = sanitize_text(provider.get("api_key") or "").strip()
+    if api_key:
+        return api_key
+    if provider_id == CODEX_PROXY_PROVIDER_ID:
+        return "not-needed"
+    if provider_id == "openai":
+        return sanitize_text(settings.openai_api_key or "").strip() or sanitize_text(
+            os.getenv("OPENAI_API_KEY") or ""
+        ).strip()
+    if provider_type in {"responses", "chat_completion"}:
+        return sanitize_text(os.getenv("OPENAI_API_KEY") or "").strip()
+    return ""
+
+
+def build_context_provider_client(provider: Mapping[str, Any], settings: Settings) -> Any:
+    provider_type = context_provider_type(provider)
+    base_url = context_provider_api_base_url(provider)
+    api_key = context_provider_api_key(provider, settings)
+
+    if provider_type == "claude":
+        return ClaudeRESTClient(
+            base_url or "https://api.anthropic.com/v1",
+            api_key,
+        )
+
+    if provider_type == "gemini":
+        return GeminiRESTClient(
+            base_url or "https://generativelanguage.googleapis.com/v1beta",
+            api_key,
+        )
+
+    from openai import OpenAI
+
+    client_kwargs: dict[str, Any] = {
+        "api_key": api_key or "not-needed",
+    }
+    if base_url:
+        client_kwargs["base_url"] = base_url
+    return OpenAI(**client_kwargs)
+
+
+def build_context_provider_adapter(provider: Mapping[str, Any], settings: Settings) -> Any:
+    provider_type = context_provider_type(provider)
+    client = build_context_provider_client(provider, settings)
+
+    if provider_type == "chat_completion":
+        return ChatCompletionsAdapter(client)
+    if provider_type == "claude":
+        return ClaudeAdapter(client)
+    if provider_type == "gemini":
+        return GeminiAdapter(client)
+
+    return ResponsesAdapter(
+        client,
+        instructions="",
+        tools=(),
+        sanitize_text=sanitize_text,
+        sanitize_value=sanitize_value,
+    )
+
+
+def prompt_block_text(prompt_blocks: Iterable[PromptBlock]) -> str:
+    labels = {
+        "system": "System",
+        "developer": "Developer",
+        "memory": "Memory",
+        "summary": "Summary",
+    }
+    sections: list[str] = []
+    for block in prompt_blocks:
+        text = sanitize_text(block.text or "").strip()
+        if not text:
+            continue
+        label = labels.get(block.kind, block.kind.title() or "Prompt")
+        sections.append(f"[{label}]\n{text}")
+    return "\n\n".join(sections)
+
+
+def context_input_to_provider_parts(
+    instructions: str,
+    context_input: list[dict[str, Any]],
+) -> tuple[list[PromptBlock], list[dict[str, Any]]]:
+    prompt_blocks = [
+        PromptBlock(
+            kind="developer",
+            text=sanitize_text(instructions),
+            source="context_workbench",
+        )
+    ]
+    transcript_items: list[dict[str, Any]] = []
+
+    for item in context_input:
+        if not isinstance(item, dict):
+            continue
+        item_type = sanitize_text(item.get("type") or "").strip()
+        role = sanitize_text(item.get("role") or "").strip()
+        if item_type == "message" and role in {"system", "developer"}:
+            text = extract_text_from_provider_message_content(item.get("content"))
+            if text:
+                prompt_blocks.append(
+                    PromptBlock(
+                        kind="system" if role == "system" else "developer",
+                        text=text,
+                        source="context_workbench_input",
+                    )
+                )
+            continue
+        transcript_items.append(sanitize_value(item))
+
+    return prompt_blocks, transcript_items
+
+
+def context_provider_config(
+    settings: Settings,
+    provider: Mapping[str, Any],
+    *,
+    prompt_blocks: list[PromptBlock],
+    session_id: str,
+) -> dict[str, Any]:
+    provider_type = context_provider_type(provider)
+    provider_id = sanitize_text(provider.get("id") or "").strip()
+    config: dict[str, Any] = {}
+
+    if settings.temperature is not None:
+        config["temperature"] = settings.temperature
+    if settings.top_p is not None:
+        config["topP" if provider_type == "gemini" else "top_p"] = settings.top_p
+
+    if provider_type == "responses":
+        config["instructions"] = prompt_block_text(prompt_blocks)
+        config["store"] = False
+        config["prompt_cache_key"] = context_workbench_prompt_cache_key(session_id)
+        if provider_id == CODEX_PROXY_PROVIDER_ID:
+            config["extra_headers"] = {
+                "x-hash-context-internal": "context-workbench",
+                "x-hash-context-session-id": session_id,
+            }
+
+    return config
+
+
+def build_context_provider_request(
+    settings: Settings,
+    provider: Mapping[str, Any],
+    *,
+    instructions: str,
+    request_model: str,
+    request_reasoning_effort: str | None,
+    tool_registry: ContextWorkbenchToolRegistry,
+    context_input: list[dict[str, Any]],
+    session_id: str,
+) -> tuple[Any, dict[str, Any], ProviderRequestContext]:
+    prompt_blocks, transcript_items = context_input_to_provider_parts(
+        instructions,
+        context_input,
+    )
+    context = ProviderRequestContext(
+        prompt_blocks=tuple(prompt_blocks),
+        transcript=tuple(transcript_items),
+        current_turn=(),
+        tools=tuple(tool_registry.schemas),
+        provider_config=context_provider_config(
+            settings,
+            provider,
+            prompt_blocks=prompt_blocks,
+            session_id=session_id,
+        ),
+        model=request_model,
+        reasoning_effort=request_reasoning_effort,
+        metadata={
+            "provider_id": sanitize_text(provider.get("id") or "").strip(),
+        },
+    )
+    adapter = build_context_provider_adapter(provider, settings)
+    return adapter, adapter.build_request(context), context
+
+
+def stream_context_adapter_response(
+    adapter: Any,
+    request: dict[str, Any],
+    context: ProviderRequestContext,
+    *,
+    on_text_delta: Callable[[str], None] | None = None,
+    check_cancelled: Callable[[], None] | None = None,
+) -> ResponsesStreamResult:
+    output_chunks: list[str] = []
+    function_calls: list[BridgedFunctionCall] = []
+    canonical_items: list[Any] = []
+    final_output_text = ""
+    finish_reason: str | None = None
+
+    for event in adapter.stream_response(request, context):
+        if check_cancelled is not None:
+            check_cancelled()
+
+        if isinstance(event, TextDeltaEvent):
+            safe_delta = sanitize_text(event.delta)
+            if safe_delta:
+                output_chunks.append(safe_delta)
+                if on_text_delta is not None:
+                    on_text_delta(safe_delta)
+            continue
+
+        if isinstance(event, (ReasoningStartEvent, ReasoningDeltaEvent, ReasoningDoneEvent)):
+            continue
+
+        if isinstance(event, ToolCallReadyEvent):
+            raw_arguments = sanitize_text(
+                event.raw_arguments
+                or json.dumps(event.arguments, ensure_ascii=False)
+            ) or "{}"
+            function_calls.append(
+                BridgedFunctionCall(
+                    name=sanitize_text(event.name),
+                    arguments=raw_arguments,
+                    call_id=sanitize_text(event.call_id or ""),
+                )
+            )
+            continue
+
+        if isinstance(event, ProviderDoneEvent):
+            final_output_text = sanitize_text(event.output_text)
+            finish_reason = event.finish_reason
+            canonical_items = list(sanitize_value(event.canonical_items or ()))
+
+    output_text = "".join(output_chunks) or final_output_text
+    if not output_chunks and final_output_text and on_text_delta is not None:
+        on_text_delta(final_output_text)
+
+    return ResponsesStreamResult(
+        output_text=output_text,
+        function_calls=function_calls,
+        finish_reason=finish_reason,
+        canonical_items=canonical_items,
+    )
+
+
+def stream_context_adapter_response_with_retry(
+    adapter: Any,
+    request: dict[str, Any],
+    context: ProviderRequestContext,
+    *,
+    on_text_delta: Callable[[str], None] | None = None,
+    check_cancelled: Callable[[], None] | None = None,
+    max_attempts: int = 3,
+) -> ResponsesStreamResult:
+    last_response: ResponsesStreamResult | None = None
+    last_error: Exception | None = None
+
+    for attempt in range(max(1, max_attempts)):
+        if check_cancelled is not None:
+            check_cancelled()
+
+        try:
+            response = stream_context_adapter_response(
+                adapter,
+                request,
+                context,
+                on_text_delta=on_text_delta,
+                check_cancelled=check_cancelled,
+            )
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            if attempt >= max_attempts - 1:
+                raise
+        else:
+            last_response = response
+            output_text = sanitize_text(getattr(response, "output_text", "") or "")
+            function_calls = getattr(response, "function_calls", None) or []
+            if output_text or function_calls:
+                return response
+            last_error = RuntimeError("Context provider stream returned no events")
+
+        if attempt < max_attempts - 1:
+            time.sleep(0.5 * (attempt + 1))
+
+    if last_response is not None:
+        return last_response
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("Context provider stream returned no response")
+
+
 def stream_context_codex_proxy_response(
     request: dict[str, Any],
     *,
@@ -484,6 +828,9 @@ def run_context_chat_turn(
         model_id=request_model,
         requested_effort=reasoning_effort,
     )
+    provider = context_workbench_provider(settings)
+    provider_id = sanitize_text(provider.get("id") or "").strip() or CODEX_PROXY_PROVIDER_ID
+    provider_type = context_provider_type(provider)
     tool_events: list[ToolEvent] = []
     readonly_tool_result_cache: dict[str, str] = {}
     readonly_tool_cache_names = {"get_nodes"}
@@ -495,7 +842,7 @@ def run_context_chat_turn(
         if check_cancelled is not None:
             check_cancelled()
 
-        def build_request() -> dict[str, Any]:
+        def build_codex_proxy_request() -> dict[str, Any]:
             request = {
                 "model": request_model,
                 "instructions": instructions,
@@ -519,13 +866,39 @@ def run_context_chat_turn(
             )
             return request
 
-        request = build_request()
         try:
-            response = stream_context_codex_proxy_response_with_retry(
-                request,
-                on_text_delta=on_text_delta,
-                check_cancelled=check_cancelled,
-            )
+            if provider_id == CODEX_PROXY_PROVIDER_ID:
+                request = build_codex_proxy_request()
+                response = stream_context_codex_proxy_response_with_retry(
+                    request,
+                    on_text_delta=on_text_delta,
+                    check_cancelled=check_cancelled,
+                )
+            else:
+                adapter, request, provider_context = build_context_provider_request(
+                    settings,
+                    provider,
+                    instructions=instructions,
+                    request_model=request_model,
+                    request_reasoning_effort=request_reasoning_effort,
+                    tool_registry=tool_registry,
+                    context_input=context_input,
+                    session_id=session.session_id,
+                )
+                write_context_request_debug(
+                    session_id=session.session_id,
+                    request_model=request_model,
+                    round_count=round_count,
+                    request=request,
+                    note=f"context_workbench_request:{provider_id}:{provider_type}",
+                )
+                response = stream_context_adapter_response_with_retry(
+                    adapter,
+                    request,
+                    provider_context,
+                    on_text_delta=on_text_delta,
+                    check_cancelled=check_cancelled,
+                )
         except Exception:
             if check_cancelled is not None:
                 check_cancelled()
@@ -854,64 +1227,184 @@ def fetch_models_from_provider(
 
     raise last_error or ValueError("Provider returned no usable models")
 
-def context_workbench_provider_payloads(settings: Settings, *, refresh_codex_proxy_models: bool = False) -> list[dict[str, Any]]:
-    context_model = sanitize_text(settings.context_workbench_model or "").strip()
-    models = [dict(model) for model in DEFAULT_CODEX_PROXY_MODELS]
-    provider: dict[str, Any] = {
-        "id": CODEX_PROXY_PROVIDER_ID,
-        "name": "Codex",
-        "provider_type": "responses",
-        "enabled": True,
-        "supports_model_fetch": True,
-        "supports_responses": True,
-        "api_base_url": CODEX_PROXY_BASE_URL,
-        "default_model": context_model or sanitize_text(DEFAULT_CODEX_PROXY_MODELS[0].get("id") or "").strip(),
-        "models": models,
-        "last_sync_at": "",
-        "last_sync_error": "",
-    }
-    if refresh_codex_proxy_models:
-        try:
-            fetched_models = fetch_models_from_provider(
-                CODEX_PROXY_BASE_URL,
-                "not-needed",
-                "responses",
-                timeout_seconds=4,
-            )
-        except Exception as exc:
-            provider["last_sync_error"] = "" if provider.get("models") else sanitize_text(str(exc))
-        else:
-            if context_model and not any(
-                sanitize_text(item.get("id") or "").strip() == context_model
-                for item in fetched_models
-                if isinstance(item, dict)
-            ):
-                fetched_models = [
-                    {
-                        "id": context_model,
-                        "label": context_model,
-                        "group": "Codex",
-                        "provider": "Codex",
-                    },
-                    *fetched_models,
-                ]
-            provider["models"] = fetched_models
-            provider["last_sync_error"] = ""
-            provider["last_sync_at"] = datetime.now(timezone.utc).isoformat()
-    return [provider]
+def normalize_provider_models_for_payload(
+    raw_models: Any,
+    *,
+    provider_label: str,
+) -> list[dict[str, str]]:
+    if not isinstance(raw_models, (list, tuple)):
+        return []
 
-def context_workbench_models_payload(settings: Settings, provider_payloads: list[dict[str, Any]]) -> list[str]:
+    models: list[dict[str, str]] = []
+    seen_ids: set[str] = set()
+    for item in raw_models:
+        if isinstance(item, str):
+            model_id = sanitize_text(item).strip()
+            label = model_id
+            group = provider_label
+        elif isinstance(item, dict):
+            model_id = sanitize_text(item.get("id") or item.get("name") or "").strip()
+            label = sanitize_text(item.get("label") or item.get("displayName") or model_id).strip() or model_id
+            group = sanitize_text(item.get("group") or item.get("provider") or provider_label).strip() or provider_label
+        else:
+            continue
+
+        if not model_id or model_id in seen_ids:
+            continue
+        seen_ids.add(model_id)
+        models.append(
+            {
+                "id": model_id,
+                "label": label,
+                "group": group,
+                "provider": provider_label,
+            }
+        )
+    return models
+
+
+def sanitize_context_workbench_provider_payload(
+    provider: Mapping[str, Any],
+    settings: Settings,
+) -> dict[str, Any]:
+    provider_id = sanitize_text(provider.get("id") or "").strip()
+    provider_type = context_provider_type(provider)
+    name = sanitize_text(provider.get("name") or provider_id).strip() or provider_id
+    api_base_url = context_provider_api_base_url(provider)
+    if provider_id == CODEX_PROXY_PROVIDER_ID:
+        api_base_url = api_base_url or CODEX_PROXY_BASE_URL
+
+    default_model = sanitize_text(provider.get("default_model") or "").strip()
+    models = normalize_provider_models_for_payload(
+        provider.get("models"),
+        provider_label=name,
+    )
+    if provider_id == CODEX_PROXY_PROVIDER_ID and not models:
+        models = normalize_provider_models_for_payload(
+            DEFAULT_CODEX_PROXY_MODELS,
+            provider_label=name or "Codex",
+        )
+
+    return {
+        "id": provider_id,
+        "name": name,
+        "provider_type": provider_type,
+        "enabled": bool(provider.get("enabled", True)),
+        "supports_model_fetch": bool(provider.get("supports_model_fetch", True)),
+        "supports_responses": provider_type == "responses",
+        "api_base_url": api_base_url,
+        "default_model": default_model,
+        "models": models,
+        "last_sync_at": sanitize_text(provider.get("last_sync_at") or "").strip(),
+        "last_sync_error": sanitize_text(provider.get("last_sync_error") or "").strip(),
+        "has_api_key": bool(context_provider_api_key(provider, settings))
+        and provider_id != CODEX_PROXY_PROVIDER_ID,
+    }
+
+
+def context_workbench_provider_payloads(settings: Settings, *, refresh_models: bool = False) -> list[dict[str, Any]]:
+    context_provider_id = sanitize_text(settings.context_workbench_provider_id or "").strip() or CODEX_PROXY_PROVIDER_ID
+    context_model = sanitize_text(settings.context_workbench_model or "").strip()
+    providers = [
+        sanitize_context_workbench_provider_payload(provider, settings)
+        for provider in settings.response_providers
+        if sanitize_text(provider.get("id") or "").strip()
+    ]
+
+    if not any(sanitize_text(provider.get("id") or "").strip() == CODEX_PROXY_PROVIDER_ID for provider in providers):
+        providers.insert(
+            0,
+            sanitize_context_workbench_provider_payload(
+                {
+                    "id": CODEX_PROXY_PROVIDER_ID,
+                    "name": "Codex",
+                    "provider_type": "responses",
+                    "enabled": True,
+                    "api_base_url": CODEX_PROXY_BASE_URL,
+                    "default_model": sanitize_text(DEFAULT_CODEX_PROXY_MODELS[0].get("id") or "").strip()
+                    or "gpt-5.5",
+                    "models": DEFAULT_CODEX_PROXY_MODELS,
+                },
+                settings,
+            ),
+        )
+
+    if refresh_models:
+        for provider in providers:
+            provider_id = sanitize_text(provider.get("id") or "").strip()
+            if provider_id != context_provider_id:
+                continue
+            source_provider = next(
+                (
+                    item
+                    for item in settings.response_providers
+                    if sanitize_text(item.get("id") or "").strip() == provider_id
+                ),
+                provider,
+            )
+            try:
+                fetched_models = fetch_models_from_provider(
+                    sanitize_text(provider.get("api_base_url") or "").strip(),
+                    context_provider_api_key(source_provider, settings),
+                    sanitize_text(provider.get("provider_type") or "").strip(),
+                    timeout_seconds=8 if provider_id != CODEX_PROXY_PROVIDER_ID else 4,
+                )
+            except Exception as exc:  # noqa: BLE001
+                provider["last_sync_error"] = sanitize_text(str(exc))
+            else:
+                if context_model and not any(
+                    sanitize_text(item.get("id") or "").strip() == context_model
+                    for item in fetched_models
+                    if isinstance(item, dict)
+                ):
+                    fetched_models = [
+                        {
+                            "id": context_model,
+                            "label": context_model,
+                            "group": sanitize_text(provider.get("name") or "Models"),
+                            "provider": sanitize_text(provider.get("name") or "Models"),
+                        },
+                        *fetched_models,
+                    ]
+                provider["models"] = normalize_provider_models_for_payload(
+                    fetched_models,
+                    provider_label=sanitize_text(provider.get("name") or "Models"),
+                )
+                provider["last_sync_error"] = ""
+                provider["last_sync_at"] = datetime.now(timezone.utc).isoformat()
+            break
+
+    return providers
+
+
+def context_workbench_models_payload(settings: Settings, provider_payloads: list[dict[str, Any]]) -> list[dict[str, str]]:
     settings_data = context_workbench_settings_payload(settings)
     context_model = sanitize_text(settings_data.get("context_workbench_model") or "").strip()
-    model_ids: list[str] = []
-    for provider in provider_payloads:
-        for model in provider.get("models") or []:
-            if not isinstance(model, dict):
-                continue
-            model_id = sanitize_text(model.get("id") or "").strip()
-            if model_id and model_id not in model_ids:
-                model_ids.append(model_id)
-    return model_options(context_model, model_ids)
+    context_provider_id = sanitize_text(settings_data.get("context_workbench_provider_id") or "").strip()
+    selected_provider = next(
+        (
+            provider
+            for provider in provider_payloads
+            if sanitize_text(provider.get("id") or "").strip() == context_provider_id
+        ),
+        provider_payloads[0] if provider_payloads else {},
+    )
+    provider_label = sanitize_text(selected_provider.get("name") or "Models")
+    models = normalize_provider_models_for_payload(
+        selected_provider.get("models"),
+        provider_label=provider_label,
+    )
+    if context_model and not any(model.get("id") == context_model for model in models):
+        models.insert(
+            0,
+            {
+                "id": context_model,
+                "label": context_model,
+                "group": provider_label,
+                "provider": provider_label,
+            },
+        )
+    return models
 
 def codex_proxy_control_url(path: str) -> str:
     control_base = CODEX_PROXY_BASE_URL.rstrip("/")

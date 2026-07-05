@@ -110,6 +110,23 @@ export interface ResponseProviderModel {
   provider?: string;
 }
 
+export type ResponseProviderType = 'responses' | 'chat_completion' | 'claude' | 'gemini';
+
+export interface ContextWorkbenchProvider {
+  id: string;
+  name: string;
+  provider_type: ResponseProviderType;
+  enabled: boolean;
+  supports_model_fetch: boolean;
+  supports_responses: boolean;
+  api_base_url: string;
+  default_model: string;
+  models: ResponseProviderModel[];
+  last_sync_at?: string;
+  last_sync_error?: string;
+  has_api_key?: boolean;
+}
+
 export interface ContextWorkbenchChatMessage {
   role: 'user' | 'assistant';
   content: string;
@@ -154,6 +171,7 @@ export interface InitPayload {
 export interface ContextWorkbenchSettingsResponse {
   settings: {
     context_workbench_model: string;
+    context_workbench_provider_id: string;
     context_token_warning_threshold: number;
     context_token_critical_threshold: number;
     user_locale?: string;
@@ -167,7 +185,8 @@ export interface ContextWorkbenchSettingsResponse {
     auto_local_compact_prompt: string;
     auto_local_compact_prompt_default: string;
   };
-  models: string[];
+  models: ResponseProviderModel[];
+  providers: ContextWorkbenchProvider[];
 }
 
 export interface StreamDeltaEvent {

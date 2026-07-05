@@ -18,6 +18,7 @@ from backend.web_context import (  # noqa: E402
     normalize_context_chat_history,
     normalize_context_records,
 )
+from agent_runtime.adapters import ProviderRequestContext  # noqa: E402
 import backend.web_runtime as web_runtime  # noqa: E402
 from backend.web_runtime import prepare_context_chat_history_for_model  # noqa: E402
 
@@ -227,6 +228,84 @@ def test_context_chat_turn_returns_fallback_after_changed_draft_empty_final_resp
     ]
 
 
+def test_context_chat_turn_uses_selected_non_codex_provider_adapter_path() -> None:
+    from simple_agent.config import CODEX_PROXY_PROVIDER_ID  # noqa: WPS433
+
+    core_transcript = input_items_to_transcript(
+        [
+            {"type": "message", "role": "user", "content": "old context"},
+        ]
+    )
+    session = SessionState(
+        session_id="session-custom-context-provider",
+        title="Custom Context Provider",
+        transcript=core_transcript,
+        context_workbench_history=[],
+    )
+    settings = _context_settings()
+    settings.context_workbench_provider_id = "openai-chat"
+    settings.context_workbench_model = "gpt-4.1-mini"
+
+    responses = [
+        _FakeContextResponse(
+            function_calls=[
+                web_runtime.BridgedFunctionCall(
+                    name="write_nodes",
+                    call_id="call-write",
+                    arguments=json.dumps(
+                        {
+                            "delete": [1],
+                            "inserts": [
+                                {
+                                    "after": 0,
+                                    "role": "user",
+                                    "content": "custom provider context",
+                                }
+                            ],
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            ],
+        ),
+        _FakeContextResponse(output_text="Done"),
+    ]
+    seen_provider_ids: list[str] = []
+    original_build = web_runtime.build_context_provider_request
+    original_stream = web_runtime.stream_context_adapter_response_with_retry
+
+    def fake_build(settings_arg, provider, **kwargs):
+        seen_provider_ids.append(provider["id"])
+        return object(), {"model": kwargs["request_model"]}, ProviderRequestContext(model=kwargs["request_model"])
+
+    def fake_stream(*args, **kwargs):
+        if not responses:
+            raise AssertionError("unexpected extra custom provider call")
+        return responses.pop(0)
+
+    web_runtime.build_context_provider_request = fake_build
+    web_runtime.stream_context_adapter_response_with_retry = fake_stream
+    try:
+        answer, used_model, draft, tool_events = web_runtime.run_context_chat_turn(
+            settings,
+            session,
+            message="compress",
+        )
+    finally:
+        web_runtime.build_context_provider_request = original_build
+        web_runtime.stream_context_adapter_response_with_retry = original_stream
+
+    assert CODEX_PROXY_PROVIDER_ID not in seen_provider_ids
+    assert seen_provider_ids == ["openai-chat", "openai-chat"]
+    assert used_model == "gpt-4.1-mini"
+    assert answer == "Done"
+    assert draft.has_changes
+    assert tool_events[0].name == "write_nodes"
+    assert transcript_to_input_items(draft.committed_transcript()) == [
+        {"type": "message", "role": "user", "content": "custom provider context"},
+    ]
+
+
 def test_context_chat_response_payload_commits_changed_draft() -> None:
     core_transcript = input_items_to_transcript(
         [
@@ -331,6 +410,7 @@ def main() -> None:
         test_unlocked_developer_is_visible_and_tool_accessible,
         test_context_workbench_draft_reports_changes_after_write,
         test_context_chat_turn_returns_fallback_after_changed_draft_empty_final_response,
+        test_context_chat_turn_uses_selected_non_codex_provider_adapter_path,
         test_context_chat_response_payload_commits_changed_draft,
         test_context_workbench_history_keeps_tool_blocks_but_model_history_stays_light,
     ]
