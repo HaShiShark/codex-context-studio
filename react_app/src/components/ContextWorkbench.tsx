@@ -1745,26 +1745,13 @@ export default function ContextWorkbench({
                           </div>
                         </SettingsRow>
 
-                        <SettingsRow
-                          meta={
-                            isWorkbenchApiKeySaving
-                              ? uiText(uiLocaleDraft, 'Saving...', '正在保存...')
-                              : selectedWorkbenchProvider?.has_api_key || workbenchSavedApiKeyDraft
-                                ? uiText(uiLocaleDraft, 'Saved', '已保存')
-                                : undefined
-                          }
-                          title={uiText(uiLocaleDraft, 'API Key', 'API Key')}
-                        >
+                        <SettingsRow title={uiText(uiLocaleDraft, 'API Key', 'API Key')}>
                           <div className="workbench-field-stack">
                             <div className="workbench-api-key-row">
                               <input
                                 className="settings-input settings-input-key"
                                 disabled={isSettingsLoading || isWorkbenchApiKeySaving || !selectedWorkbenchProvider}
-                                placeholder={
-                                  selectedWorkbenchProvider?.has_api_key
-                                    ? uiText(uiLocaleDraft, 'Saved key; type to update', 'Key 已保存，输入后更新')
-                                    : 'sk-...'
-                                }
+                                placeholder="sk-..."
                                 type="password"
                                 value={workbenchApiKeyDraft}
                                 onBlur={() => void handleSaveWorkbenchApiKey()}
@@ -1844,7 +1831,6 @@ export default function ContextWorkbench({
                                     >
                                       <div className="dropdown-item-left">
                                         <span>{model.label || modelId}</span>
-                                        {model.group ? <small>{model.group}</small> : null}
                                       </div>
                                       {modelId === workbenchModelDraft ? <i className="ph-bold ph-check" /> : null}
                                     </button>

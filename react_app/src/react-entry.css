@@ -1544,8 +1544,8 @@ textarea {
 
 .workbench-provider-picker-trigger + .dropdown-menu {
   width: min(320px, calc(100vw - 56px));
-  max-height: 280px;
-  overflow-y: auto;
+  max-height: none;
+  overflow-y: visible;
 }
 
 .workbench-provider-picker-trigger + .dropdown-menu .dropdown-item-left {

@@ -906,6 +906,8 @@ html[data-workbench-window-moving] {
 .workbench-window-shell .workbench-provider-picker-trigger + .dropdown-menu {
   top: calc(100% + 8px);
   bottom: auto;
+  max-height: none;
+  overflow-y: visible;
 }
 
 .workbench-window-shell .workbench-provider-picker-trigger + .dropdown-menu .dropdown-item-left small,
