@@ -1,7 +1,6 @@
 ﻿from __future__ import annotations
 
 import json
-import os
 import time
 import uuid
 from collections.abc import Callable, Iterable, Mapping
@@ -385,19 +384,12 @@ def context_provider_api_base_url(provider: Mapping[str, Any]) -> str:
 
 
 def context_provider_api_key(provider: Mapping[str, Any], settings: Settings) -> str:
-    provider_type = context_provider_type(provider)
     provider_id = sanitize_text(provider.get("id") or "").strip()
     api_key = sanitize_text(provider.get("api_key") or "").strip()
     if api_key:
         return api_key
     if provider_id == CODEX_PROXY_PROVIDER_ID:
         return "not-needed"
-    if provider_id == "openai":
-        return sanitize_text(settings.openai_api_key or "").strip() or sanitize_text(
-            os.getenv("OPENAI_API_KEY") or ""
-        ).strip()
-    if provider_type in {"responses", "chat_completion"}:
-        return sanitize_text(os.getenv("OPENAI_API_KEY") or "").strip()
     return ""
 
 
@@ -1343,9 +1335,15 @@ def context_workbench_provider_payloads(settings: Settings, *, refresh_models: b
                 provider,
             )
             try:
+                provider_base_url = sanitize_text(provider.get("api_base_url") or "").strip()
+                provider_api_key = context_provider_api_key(source_provider, settings)
+                if provider_id != CODEX_PROXY_PROVIDER_ID and not provider_base_url:
+                    raise ValueError("Base URL is required before getting models.")
+                if provider_id != CODEX_PROXY_PROVIDER_ID and not provider_api_key:
+                    raise ValueError("API Key is required before getting models.")
                 fetched_models = fetch_models_from_provider(
-                    sanitize_text(provider.get("api_base_url") or "").strip(),
-                    context_provider_api_key(source_provider, settings),
+                    provider_base_url,
+                    provider_api_key,
                     sanitize_text(provider.get("provider_type") or "").strip(),
                     timeout_seconds=8 if provider_id != CODEX_PROXY_PROVIDER_ID else 4,
                 )

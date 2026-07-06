@@ -44,7 +44,7 @@ DEFAULT_CODEX_PROXY_MODELS: tuple[dict[str, str], ...] = (
 DEFAULT_RESPONSE_PROVIDERS: tuple[dict[str, object], ...] = (
     {
         "id": "openai",
-        "name": "OpenAI",
+        "name": "OpenAI Responses",
         "provider_type": "responses",
         "enabled": True,
         "supports_model_fetch": True,
@@ -75,7 +75,7 @@ DEFAULT_RESPONSE_PROVIDERS: tuple[dict[str, object], ...] = (
     },
     {
         "id": "anthropic",
-        "name": "Claude",
+        "name": "Anthropic Messages",
         "provider_type": "claude",
         "enabled": True,
         "supports_model_fetch": True,

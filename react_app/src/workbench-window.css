@@ -903,28 +903,22 @@ html[data-workbench-window-moving] {
   border-radius: 10px;
 }
 
-.workbench-window-shell .workbench-model-picker-trigger + .dropdown-menu {
-  top: calc(100% + 8px);
-  bottom: auto;
-  max-height: none;
-  overflow-y: visible;
-}
-
 .workbench-window-shell .workbench-provider-picker-trigger + .dropdown-menu {
   top: calc(100% + 8px);
   bottom: auto;
 }
 
 .workbench-window-shell .workbench-provider-picker-trigger + .dropdown-menu .dropdown-item-left small,
-.workbench-window-shell .workbench-model-picker-trigger + .dropdown-menu .dropdown-item-left small {
+.workbench-window-shell .workbench-model-suggestion-option .dropdown-item-left small {
   color: var(--text-muted);
 }
 
-.workbench-window-shell .workbench-provider-type-toggle {
-  justify-content: flex-end;
-  border-color: rgba(127, 95, 80, 0.12);
-  border-radius: var(--control-radius);
-  background: var(--bg-input);
+.workbench-window-shell .workbench-field-feedback {
+  color: #44693e;
+}
+
+.workbench-window-shell .workbench-field-feedback.error {
+  color: #b54d42;
 }
 
 .workbench-window-shell .workbench-api-key-row,
@@ -936,6 +930,71 @@ html[data-workbench-window-moving] {
 .workbench-window-shell .settings-input-key,
 .workbench-window-shell .settings-input-model {
   width: min(100%, 320px);
+}
+
+.workbench-window-shell .workbench-model-combobox {
+  flex-basis: 320px;
+  min-height: 34px;
+  border: 0;
+  border-radius: var(--control-radius);
+  background: rgba(255, 253, 249, 0.64);
+  color: var(--text-primary);
+}
+
+.workbench-window-shell .workbench-model-combobox .settings-input-model {
+  width: 100%;
+  min-height: 34px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 0 34px 0 11px;
+}
+
+.workbench-window-shell .workbench-model-combobox .settings-input-model:focus,
+.workbench-window-shell .workbench-model-combobox .settings-input-model:focus-visible {
+  border: 0;
+  box-shadow: none;
+  outline: none;
+}
+
+.workbench-window-shell .workbench-model-combobox:hover,
+.workbench-window-shell .workbench-model-combobox.is-open,
+.workbench-window-shell .workbench-model-combobox:focus-within {
+  color: var(--accent-strong);
+  background: rgba(184, 105, 78, 0.1);
+}
+
+.workbench-window-shell .workbench-model-combobox:focus-within {
+  outline: 2px solid rgba(184, 105, 78, 0.42);
+  outline-offset: 2px;
+}
+
+.workbench-window-shell .workbench-model-combobox-icon {
+  color: var(--text-muted);
+}
+
+.workbench-window-shell .workbench-model-suggestion-menu {
+  top: calc(100% + 8px);
+  bottom: auto;
+  border-color: rgba(127, 95, 80, 0.12);
+  background: var(--paper-raised);
+  color: var(--text-primary);
+  box-shadow: 0 8px 28px rgba(96, 61, 45, 0.16);
+  padding: 6px 0;
+}
+
+.workbench-window-shell .workbench-model-suggestion-option {
+  color: var(--text-primary);
+  border-radius: 0;
+}
+
+.workbench-window-shell .workbench-model-suggestion-option:hover,
+.workbench-window-shell .workbench-model-suggestion-option.selected {
+  background: rgba(184, 105, 78, 0.1);
+}
+
+.workbench-window-shell .workbench-model-suggestion-empty {
+  color: var(--text-muted);
 }
 
 .workbench-window-shell .workbench-inline-action,
@@ -1341,6 +1400,9 @@ html[data-theme-mode="dark"] .workbench-window-shell .extended-tab:hover,
 html[data-theme-mode="dark"] .workbench-window-shell .context-map-item-button:hover,
 html[data-theme-mode="dark"] .workbench-window-shell .workbench-language-btn:hover:not(:disabled),
 html[data-theme-mode="dark"] .workbench-window-shell .tool-btn-capsule:hover,
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-model-combobox:hover,
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-model-combobox.is-open,
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-model-combobox:focus-within,
 html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-clear:hover,
 html[data-theme-mode="dark"] .workbench-window-shell .workbench-window-button:hover,
 html[data-theme-mode="dark"] .workbench-window-control-btn:hover {
@@ -1465,7 +1527,8 @@ html[data-theme-mode="dark"] .workbench-window-shell .tool-btn-capsule,
 html[data-theme-mode="dark"] .workbench-window-shell .manual-workbench-clear,
 html[data-theme-mode="dark"] .workbench-window-shell .workbench-window-button,
 html[data-theme-mode="dark"] .workbench-window-shell .workbench-prompt-icon-btn,
-html[data-theme-mode="dark"] .workbench-window-shell .workbench-prompt-reset-btn {
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-prompt-reset-btn,
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-model-combobox {
   border: 0;
   color: var(--text-secondary);
   background: rgba(58, 50, 43, 0.58);
@@ -1488,12 +1551,25 @@ html[data-theme-mode="dark"] .workbench-window-shell .dropdown-menu {
   box-shadow: 0 14px 34px rgba(11, 8, 6, 0.34);
 }
 
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-model-suggestion-menu {
+  border: 0;
+  background: #2d261f;
+  color: var(--text-primary);
+  box-shadow: 0 14px 34px rgba(11, 8, 6, 0.34);
+}
+
 html[data-theme-mode="dark"] .workbench-window-shell .dropdown-item {
   color: var(--text-primary);
 }
 
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-model-suggestion-option {
+  color: var(--text-primary);
+}
+
 html[data-theme-mode="dark"] .workbench-window-shell .dropdown-item:hover,
-html[data-theme-mode="dark"] .workbench-window-shell .dropdown-item.selected {
+html[data-theme-mode="dark"] .workbench-window-shell .dropdown-item.selected,
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-model-suggestion-option:hover,
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-model-suggestion-option.selected {
   background: var(--item-hover);
 }
 
@@ -1502,7 +1578,12 @@ html[data-theme-mode="dark"] .workbench-window-shell .workbench-setting-feedback
   background: transparent;
 }
 
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-field-feedback {
+  color: #a9c09a;
+}
+
 html[data-theme-mode="dark"] .workbench-window-shell .workbench-setting-feedback.error,
+html[data-theme-mode="dark"] .workbench-window-shell .workbench-field-feedback.error,
 html[data-theme-mode="dark"] .workbench-window-shell .workbench-window-error,
 html[data-theme-mode="dark"] .workbench-window-shell .markdown-mermaid-error {
   color: #e09b8d;
@@ -1714,7 +1795,7 @@ html[data-theme-mode="dark"] .workbench-window-control-btn.close:hover {
 .workbench-window-shell .context-map-expanded-content .tool-shell-scroll pre,
 .workbench-window-shell .context-map-expanded-content .tool-json-scroll pre,
 .workbench-window-shell .context-map-expanded-content .tool-shell-footer,
-.workbench-window-shell .workbench-model-picker-trigger + .dropdown-menu .dropdown-item-left small {
+.workbench-window-shell .workbench-model-suggestion-option .dropdown-item-left small {
   font-size: var(--ui-font-size-xs);
 }
 

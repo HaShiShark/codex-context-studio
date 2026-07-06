@@ -241,6 +241,65 @@ function providerTypeLabel(providerType: ResponseProviderType, uiLocale: UiLocal
   return uiText(uiLocale, item.label, item.zhLabel);
 }
 
+function providerGroupLabel(provider: ContextWorkbenchProvider | null, uiLocale: UiLocale) {
+  if (!provider) {
+    return '';
+  }
+  if (provider?.id === DEFAULT_CONTEXT_PROVIDER_ID) {
+    return uiText(uiLocale, 'Codex built-in', 'Codex 自带');
+  }
+  return uiText(uiLocale, 'Other provider', '其他服务商');
+}
+
+function providerDisplayName(provider: ContextWorkbenchProvider | null, uiLocale: UiLocale) {
+  if (!provider) return 'Codex';
+  if (provider.id === DEFAULT_CONTEXT_PROVIDER_ID) {
+    return 'Codex';
+  }
+  const providerName = (provider.name || provider.id || '').trim();
+  if (provider.provider_type === 'responses') {
+    return /responses/i.test(providerName) ? providerName : `${providerName || 'OpenAI'} Responses`;
+  }
+  if (provider.provider_type === 'chat_completion') {
+    return /chat completions?/i.test(providerName)
+      ? providerName
+      : `${providerName || 'OpenAI'} Chat Completions`;
+  }
+  if (provider.provider_type === 'claude') {
+    return uiText(uiLocale, 'Anthropic Messages', 'Anthropic Messages');
+  }
+  if (provider.provider_type === 'gemini') {
+    return 'Gemini';
+  }
+  return providerName || providerTypeLabel(provider.provider_type, uiLocale);
+}
+
+function readableProviderError(errorText: string) {
+  const cleaned = errorText.trim();
+  if (!cleaned.startsWith('{')) {
+    return cleaned;
+  }
+  try {
+    const parsed = JSON.parse(cleaned) as { message?: unknown; error?: unknown };
+    if (typeof parsed.message === 'string' && parsed.message.trim()) {
+      return parsed.message.trim();
+    }
+    if (typeof parsed.error === 'string' && parsed.error.trim()) {
+      return parsed.error.trim();
+    }
+  } catch {
+  }
+  return cleaned;
+}
+
+function providerErrorPlacement(errorText: string): 'base_url' | 'api_key' | 'model' {
+  const normalized = errorText.trim().toLowerCase();
+  if (!normalized) return 'model';
+  if (normalized.includes('base url')) return 'base_url';
+  if (normalized.includes('api key') || normalized.includes('key')) return 'api_key';
+  return 'model';
+}
+
 function providerMapFromList(providers: ContextWorkbenchProvider[]) {
   return providers.reduce<Record<string, ContextWorkbenchProvider>>((result, provider) => {
     if (provider.id) {
@@ -264,20 +323,6 @@ function defaultBaseUrlForProviderType(providerType: ResponseProviderType) {
     case 'responses':
     default:
       return 'https://api.openai.com/v1';
-  }
-}
-
-function defaultModelForProviderType(providerType: ResponseProviderType) {
-  switch (providerType) {
-    case 'gemini':
-      return 'gemini-2.5-pro';
-    case 'claude':
-      return 'claude-sonnet-4-5';
-    case 'chat_completion':
-      return 'gpt-4.1-mini';
-    case 'responses':
-    default:
-      return DEFAULT_WORKBENCH_MODELS[0];
   }
 }
 
@@ -319,11 +364,16 @@ export default function ContextWorkbench({
   const [workbenchProviders, setWorkbenchProviders] = useState<ContextWorkbenchProvider[]>([]);
   const [workbenchProviderDrafts, setWorkbenchProviderDrafts] = useState<Record<string, ContextWorkbenchProvider>>({});
   const [workbenchApiKeyDraft, setWorkbenchApiKeyDraft] = useState('');
+  const [workbenchSavedApiKeyDraft, setWorkbenchSavedApiKeyDraft] = useState('');
+  const [isWorkbenchApiKeyDirty, setIsWorkbenchApiKeyDirty] = useState(false);
+  const [isWorkbenchApiKeySaving, setIsWorkbenchApiKeySaving] = useState(false);
   const [workbenchModelDraft, setWorkbenchModelDraft] = useState(DEFAULT_WORKBENCH_MODELS[0]);
   const [uiLocaleDraft, setUiLocaleDraft] = useState<UiLocale>(uiLocale);
   const [themeModeDraft, setThemeModeDraft] = useState<'light' | 'dark'>(themeMode);
   const [isWorkbenchProviderOpen, setIsWorkbenchProviderOpen] = useState(false);
   const [isWorkbenchModelOpen, setIsWorkbenchModelOpen] = useState(false);
+  const [hasFetchedWorkbenchModels, setHasFetchedWorkbenchModels] = useState(false);
+  const [isWorkbenchModelFilterActive, setIsWorkbenchModelFilterActive] = useState(false);
   const [isWorkbenchModelsRefreshing, setIsWorkbenchModelsRefreshing] = useState(false);
   const [tokenWarningThresholdDraft, setTokenWarningThresholdDraft] = useState(
     String(DEFAULT_CONTEXT_TOKEN_THRESHOLDS.warningThreshold),
@@ -346,6 +396,7 @@ export default function ContextWorkbench({
   const manualActiveSessionIdRef = useRef('');
   const manualStopRequestedRef = useRef(false);
   const manualStopRequestRef = useRef<Promise<unknown> | null>(null);
+  const workbenchModelComboboxRef = useRef<HTMLDivElement>(null);
 
   const selectedNodeNumbers = useMemo(
     () => [...selectedNodeIndexes]
@@ -365,9 +416,22 @@ export default function ContextWorkbench({
       || null,
     [workbenchProviderDrafts, workbenchProviderIdDraft, workbenchProviders],
   );
-  const currentWorkbenchProviderLabel = selectedWorkbenchProvider?.name || workbenchProviderIdDraft || 'Codex';
+  const orderedWorkbenchProviders = useMemo(
+    () => [
+      ...workbenchProviders.filter((provider) => provider.id === DEFAULT_CONTEXT_PROVIDER_ID),
+      ...workbenchProviders.filter((provider) => provider.id !== DEFAULT_CONTEXT_PROVIDER_ID),
+    ],
+    [workbenchProviders],
+  );
+  const currentWorkbenchProviderLabel = providerDisplayName(selectedWorkbenchProvider, uiLocaleDraft);
+  const currentWorkbenchProviderGroup = providerGroupLabel(selectedWorkbenchProvider, uiLocaleDraft);
   const currentWorkbenchProviderType = selectedWorkbenchProvider?.provider_type || 'responses';
+  const showExternalProviderFields = Boolean(
+    selectedWorkbenchProvider && selectedWorkbenchProvider.id !== DEFAULT_CONTEXT_PROVIDER_ID,
+  );
   const selectedProviderModels = selectedWorkbenchProvider?.models || [];
+  const providerSyncErrorText = readableProviderError(selectedWorkbenchProvider?.last_sync_error || '');
+  const providerSyncErrorPlacement = providerErrorPlacement(providerSyncErrorText);
   const workbenchModelOptions = useMemo(
     () => buildWorkbenchModelOptions(
       workbenchModelDraft,
@@ -376,10 +440,20 @@ export default function ContextWorkbench({
     ),
     [availableWorkbenchModels, currentWorkbenchProviderLabel, selectedProviderModels, workbenchModelDraft],
   );
-  const currentWorkbenchModelLabel =
-    workbenchModelOptions.find((model) => (model.id || model.label || '').trim() === workbenchModelDraft)?.label
-    || workbenchModelDraft
-    || DEFAULT_WORKBENCH_MODELS[0];
+  const filteredWorkbenchModelOptions = useMemo(() => {
+    if (!hasFetchedWorkbenchModels) {
+      return [];
+    }
+    const prefix = isWorkbenchModelFilterActive ? workbenchModelDraft.trim().toLowerCase() : '';
+    if (!prefix) {
+      return workbenchModelOptions;
+    }
+    return workbenchModelOptions.filter((model) => {
+      const modelId = (model.id || '').trim().toLowerCase();
+      const modelLabel = (model.label || '').trim().toLowerCase();
+      return modelId.startsWith(prefix) || modelLabel.startsWith(prefix);
+    });
+  }, [hasFetchedWorkbenchModels, isWorkbenchModelFilterActive, workbenchModelDraft, workbenchModelOptions]);
   const criticalNodeIndexSet = useMemo(
     () => new Set(criticalNodeIndexes),
     [criticalNodeIndexes],
@@ -480,7 +554,10 @@ export default function ContextWorkbench({
     setPromptDefaults(promptDefaultsFromSettings(settings));
   }
 
-  function applyWorkbenchProviderSettings(response: ContextWorkbenchSettingsResponse) {
+  function applyWorkbenchProviderSettings(
+    response: ContextWorkbenchSettingsResponse,
+    options: { preserveAvailableModels?: boolean } = {},
+  ) {
     const nextProviders = response.providers || [];
     const nextProviderMap = providerMapFromList(nextProviders);
     const nextProviderId =
@@ -497,8 +574,9 @@ export default function ContextWorkbench({
     setWorkbenchProviderDrafts(nextProviderMap);
     setWorkbenchProviderIdDraft(nextProviderId);
     setWorkbenchModelDraft(nextModel);
-    setAvailableWorkbenchModels(response.models || []);
-    setWorkbenchApiKeyDraft('');
+    setAvailableWorkbenchModels((previous) => (
+      options.preserveAvailableModels ? previous : response.models || []
+    ));
   }
 
   useEffect(() => {
@@ -508,6 +586,24 @@ export default function ContextWorkbench({
   useEffect(() => {
     setThemeModeDraft(themeMode);
   }, [themeMode]);
+
+  useEffect(() => {
+    if (!isWorkbenchModelOpen) {
+      return;
+    }
+
+    function handleDocumentMouseDown(event: globalThis.MouseEvent) {
+      const target = event.target;
+      if (target instanceof Node && workbenchModelComboboxRef.current?.contains(target)) {
+        return;
+      }
+      setIsWorkbenchModelOpen(false);
+      setIsWorkbenchModelFilterActive(false);
+    }
+
+    document.addEventListener('mousedown', handleDocumentMouseDown);
+    return () => document.removeEventListener('mousedown', handleDocumentMouseDown);
+  }, [isWorkbenchModelOpen]);
 
   useEffect(() => {
     let cancelled = false;
@@ -631,17 +727,49 @@ export default function ContextWorkbench({
     });
   }
 
-  function handleWorkbenchModelSelect(event: MouseEvent<HTMLDivElement>, model: { id?: string; label?: string; group?: string }) {
-    event.preventDefault();
-    event.stopPropagation();
-    const nextModel = (model.id || model.label || '').trim();
+  function saveWorkbenchModelDraft(nextModel: string) {
     if (!nextModel) return;
     flushSync(() => {
       setWorkbenchModelDraft(nextModel);
       setIsWorkbenchModelOpen(false);
+      setIsWorkbenchModelFilterActive(false);
       setSettingsError('');
     });
     void handleSaveWorkbenchSettings({ model: nextModel });
+  }
+
+  function handleWorkbenchModelSelect(event: MouseEvent<HTMLButtonElement>, model: { id?: string; label?: string; group?: string }) {
+    event.preventDefault();
+    event.stopPropagation();
+    const nextModel = (model.id || model.label || '').trim();
+    saveWorkbenchModelDraft(nextModel);
+  }
+
+  function handleWorkbenchModelKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      setIsWorkbenchModelOpen(true);
+      return;
+    }
+
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      setIsWorkbenchModelOpen(false);
+      setIsWorkbenchModelFilterActive(false);
+      return;
+    }
+
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      const firstModel = filteredWorkbenchModelOptions[0];
+      if (isWorkbenchModelOpen && firstModel) {
+        saveWorkbenchModelDraft((firstModel.id || firstModel.label || '').trim());
+        return;
+      }
+      setIsWorkbenchModelOpen(false);
+      setIsWorkbenchModelFilterActive(false);
+      (event.target as HTMLInputElement).blur();
+    }
   }
 
   function updateWorkbenchProviderDraft(providerId: string, patch: Partial<ContextWorkbenchProvider>) {
@@ -661,6 +789,22 @@ export default function ContextWorkbench({
     setSettingsError('');
   }
 
+  function setWorkbenchProviderSyncError(providerId: string, errorText: string) {
+    setWorkbenchProviderDrafts((previous) => {
+      const current =
+        previous[providerId]
+        || workbenchProviders.find((provider) => provider.id === providerId);
+      if (!current) return previous;
+      return {
+        ...previous,
+        [providerId]: {
+          ...current,
+          last_sync_error: readableProviderError(errorText),
+        },
+      };
+    });
+  }
+
   function handleWorkbenchProviderSelect(event: MouseEvent<HTMLDivElement>, provider: ContextWorkbenchProvider) {
     event.preventDefault();
     event.stopPropagation();
@@ -672,35 +816,15 @@ export default function ContextWorkbench({
       setWorkbenchModelDraft(nextModel);
       setAvailableWorkbenchModels(provider.models || []);
       setWorkbenchApiKeyDraft('');
+      setWorkbenchSavedApiKeyDraft('');
+      setIsWorkbenchApiKeyDirty(false);
       setIsWorkbenchProviderOpen(false);
+      setIsWorkbenchModelOpen(false);
+      setHasFetchedWorkbenchModels(false);
+      setIsWorkbenchModelFilterActive(false);
       setSettingsError('');
     });
     void handleSaveWorkbenchSettings({ providerId: nextProviderId, model: nextModel });
-  }
-
-  function handleWorkbenchProviderTypeChange(providerType: ResponseProviderType) {
-    if (!selectedWorkbenchProvider || selectedWorkbenchProvider.id === DEFAULT_CONTEXT_PROVIDER_ID) {
-      return;
-    }
-    const nextBaseUrl = defaultBaseUrlForProviderType(providerType);
-    const nextModel = defaultModelForProviderType(providerType);
-    updateWorkbenchProviderDraft(selectedWorkbenchProvider.id, {
-      provider_type: providerType,
-      api_base_url: nextBaseUrl,
-      default_model: nextModel,
-      models: [],
-    });
-    setWorkbenchModelDraft(nextModel);
-    setAvailableWorkbenchModels([]);
-    void handleSaveWorkbenchSettings({
-      model: nextModel,
-      provider: {
-        provider_type: providerType,
-        api_base_url: nextBaseUrl,
-        default_model: nextModel,
-        models: [],
-      },
-    });
   }
 
   async function refreshProxyUsageSummary(targetSessionId = sessionId) {
@@ -726,9 +850,9 @@ export default function ContextWorkbench({
     refreshModels?: boolean;
     thresholds?: { warningThreshold: number; criticalThreshold: number };
     locale?: UiLocale;
-  }) {
+  }): Promise<boolean> {
     const nextModel = (updates?.model ?? workbenchModelDraft).trim();
-    if (!nextModel) return;
+    if (!nextModel) return false;
     const nextProviderId = (updates?.providerId ?? workbenchProviderIdDraft).trim() || DEFAULT_CONTEXT_PROVIDER_ID;
     const baseProvider =
       workbenchProviderDrafts[nextProviderId]
@@ -745,7 +869,7 @@ export default function ContextWorkbench({
     const thresholds = updates?.thresholds ?? nextTokenThresholds;
     if (!updates?.thresholds && tokenThresholdError) {
       setSettingsError(tokenThresholdError);
-      return;
+      return false;
     }
 
     setSettingsError('');
@@ -785,9 +909,25 @@ export default function ContextWorkbench({
               ...(providerPayload ? { response_providers: [providerPayload] } : {}),
             },
       );
-      applyWorkbenchProviderSettings(response);
+      applyWorkbenchProviderSettings(response, {
+        preserveAvailableModels: !updates?.refreshModels && hasFetchedWorkbenchModels,
+      });
+      if (updates?.refreshModels) {
+        const refreshedProvider = (response.providers || []).find((provider) => provider.id === nextProviderId);
+        const syncError = readableProviderError(refreshedProvider?.last_sync_error || '');
+        setHasFetchedWorkbenchModels(!syncError);
+        setIsWorkbenchModelOpen(!syncError);
+        setIsWorkbenchModelFilterActive(false);
+      }
+      return true;
     } catch (error) {
-      setSettingsError(getThrownMessage(error));
+      const errorMessage = readableProviderError(getThrownMessage(error));
+      if (updates?.refreshModels) {
+        setWorkbenchProviderSyncError(nextProviderId, errorMessage);
+      } else {
+        setSettingsError(errorMessage);
+      }
+      return false;
     }
   }
 
@@ -799,7 +939,6 @@ export default function ContextWorkbench({
       provider: {
         api_base_url: selectedWorkbenchProvider.api_base_url,
       },
-      refreshModels: true,
     });
   }
 
@@ -807,34 +946,68 @@ export default function ContextWorkbench({
     if (!selectedWorkbenchProvider || selectedWorkbenchProvider.id === DEFAULT_CONTEXT_PROVIDER_ID) {
       return;
     }
-    const nextApiKey = workbenchApiKeyDraft.trim();
-    if (!nextApiKey) return;
-    await handleSaveWorkbenchSettings({
-      provider: {
-        api_key: nextApiKey,
-      },
-      refreshModels: true,
-    });
-  }
-
-  async function handleClearWorkbenchApiKey() {
-    if (!selectedWorkbenchProvider || selectedWorkbenchProvider.id === DEFAULT_CONTEXT_PROVIDER_ID) {
+    if (!isWorkbenchApiKeyDirty) {
       return;
     }
-    setWorkbenchApiKeyDraft('');
-    await handleSaveWorkbenchSettings({
-      provider: {
-        clear_api_key: true,
-      },
-    });
+    const nextApiKey = workbenchApiKeyDraft.trim();
+    const savedApiKey = workbenchSavedApiKeyDraft.trim();
+    if (nextApiKey === savedApiKey) {
+      setIsWorkbenchApiKeyDirty(false);
+      return;
+    }
+    if (!nextApiKey && !selectedWorkbenchProvider.has_api_key && !savedApiKey) {
+      setIsWorkbenchApiKeyDirty(false);
+      return;
+    }
+
+    setIsWorkbenchApiKeySaving(true);
+    try {
+      const didSave = await handleSaveWorkbenchSettings({
+        provider: nextApiKey
+          ? { api_key: nextApiKey }
+          : { clear_api_key: true },
+      });
+      if (didSave) {
+        setWorkbenchSavedApiKeyDraft(nextApiKey);
+        setIsWorkbenchApiKeyDirty(false);
+      }
+    } finally {
+      setIsWorkbenchApiKeySaving(false);
+    }
   }
 
   async function handleRefreshWorkbenchModels() {
     if (isWorkbenchModelsRefreshing) return;
+    if (!selectedWorkbenchProvider) return;
+    setSettingsError('');
+
+    const providerId = selectedWorkbenchProvider.id;
+    const isCodexProvider = providerId === DEFAULT_CONTEXT_PROVIDER_ID;
+    const providerBaseUrl = (selectedWorkbenchProvider.api_base_url || '').trim();
+    const pendingApiKey = workbenchApiKeyDraft.trim();
+    const hasProviderApiKey = Boolean(pendingApiKey || (!isWorkbenchApiKeyDirty && selectedWorkbenchProvider.has_api_key));
+
+    if (!isCodexProvider && !providerBaseUrl) {
+      setWorkbenchProviderSyncError(providerId, uiText(uiLocaleDraft, 'Base URL is required before getting models.', '获取模型前需要填写 Base URL。'));
+      return;
+    }
+
+    if (!isCodexProvider && !hasProviderApiKey) {
+      setWorkbenchProviderSyncError(providerId, uiText(uiLocaleDraft, 'API Key is required before getting models.', '获取模型前需要填写 API Key。'));
+      return;
+    }
+
     setIsWorkbenchModelsRefreshing(true);
     setSettingsError('');
     try {
-      await handleSaveWorkbenchSettings({ refreshModels: true });
+      const didRefresh = await handleSaveWorkbenchSettings({
+        provider: pendingApiKey ? { api_key: pendingApiKey } : undefined,
+        refreshModels: true,
+      });
+      if (didRefresh && pendingApiKey) {
+        setWorkbenchSavedApiKeyDraft(pendingApiKey);
+        setIsWorkbenchApiKeyDirty(false);
+      }
     } finally {
       setIsWorkbenchModelsRefreshing(false);
     }
@@ -901,7 +1074,9 @@ export default function ContextWorkbench({
       }));
       setPromptDrafts((previous) => (previous[key] === nextValue ? { ...previous, [key]: savedValue } : previous));
       setPromptDefaults(promptDefaultsFromSettings(response.settings));
-      applyWorkbenchProviderSettings(response);
+      applyWorkbenchProviderSettings(response, {
+        preserveAvailableModels: hasFetchedWorkbenchModels,
+      });
     } catch (error) {
       setSettingsError(getThrownMessage(error));
     }
@@ -921,7 +1096,9 @@ export default function ContextWorkbench({
       }));
       setPromptDrafts((previous) => (previous[key] === nextValue ? { ...previous, [key]: savedValue } : previous));
       setPromptDefaults(promptDefaultsFromSettings(response.settings));
-      applyWorkbenchProviderSettings(response);
+      applyWorkbenchProviderSettings(response, {
+        preserveAvailableModels: hasFetchedWorkbenchModels,
+      });
     } catch (error) {
       setSettingsError(getThrownMessage(error));
     }
@@ -1497,8 +1674,8 @@ export default function ContextWorkbench({
 
                   <div className="workbench-settings-panel workbench-context-model-panel">
                     <SettingsRow
-                      meta={providerTypeLabel(currentWorkbenchProviderType, uiLocaleDraft)}
-                      title={uiText(uiLocaleDraft, 'Provider', '服务商')}
+                      meta={currentWorkbenchProviderGroup}
+                      title={uiText(uiLocaleDraft, 'Provider Type', '服务商类型')}
                     >
                       <div className="workbench-setting-control-row">
                         <Dropdown
@@ -1511,7 +1688,7 @@ export default function ContextWorkbench({
                               <i className="ph-light ph-caret-down" />
                             </>
                           )}
-                          disabled={isSettingsLoading || workbenchProviders.length === 0}
+                          disabled={isSettingsLoading || orderedWorkbenchProviders.length === 0}
                           isOpen={isWorkbenchProviderOpen}
                           onClose={() => setIsWorkbenchProviderOpen(false)}
                           onToggle={() => {
@@ -1519,15 +1696,15 @@ export default function ContextWorkbench({
                             setSettingsError('');
                           }}
                         >
-                          {workbenchProviders.map((provider) => (
+                          {orderedWorkbenchProviders.map((provider) => (
                             <div
                               className={`dropdown-item ${provider.id === workbenchProviderIdDraft ? 'selected' : ''}`}
                               key={provider.id}
                               onMouseDown={(event) => handleWorkbenchProviderSelect(event, provider)}
                             >
                               <div className="dropdown-item-left">
-                                <span>{provider.name || provider.id}</span>
-                                <small>{providerTypeLabel(provider.provider_type, uiLocaleDraft)}</small>
+                                <span>{providerDisplayName(provider, uiLocaleDraft)}</span>
+                                <small>{providerGroupLabel(provider, uiLocaleDraft)}</small>
                               </div>
                               {provider.id === workbenchProviderIdDraft ? <i className="ph-bold ph-check" /> : null}
                             </div>
@@ -1536,156 +1713,169 @@ export default function ContextWorkbench({
                       </div>
                     </SettingsRow>
 
-                    <SettingsRow title={uiText(uiLocaleDraft, 'Interface', '接口类型')}>
-                      <div className="workbench-provider-type-toggle" role="group" aria-label={uiText(uiLocaleDraft, 'Interface', '接口类型')}>
-                        {PROVIDER_TYPE_OPTIONS.map((option) => (
-                          <button
-                            aria-pressed={currentWorkbenchProviderType === option.value}
-                            className={`workbench-language-btn${currentWorkbenchProviderType === option.value ? ' is-active' : ''}`}
-                            disabled={isSettingsLoading || !selectedWorkbenchProvider || selectedWorkbenchProvider.id === DEFAULT_CONTEXT_PROVIDER_ID}
-                            key={option.value}
-                            type="button"
-                            onClick={() => handleWorkbenchProviderTypeChange(option.value)}
-                          >
-                            {providerTypeLabel(option.value, uiLocaleDraft)}
-                          </button>
-                        ))}
-                      </div>
-                    </SettingsRow>
+                        {showExternalProviderFields ? (
+                      <>
+                        <SettingsRow title={uiText(uiLocaleDraft, 'Base URL', 'Base URL')}>
+                          <div className="workbench-field-stack">
+                            <div className="workbench-setting-control-row">
+                              <input
+                                className="settings-input settings-input-url"
+                                disabled={isSettingsLoading || !selectedWorkbenchProvider}
+                                placeholder={defaultBaseUrlForProviderType(currentWorkbenchProviderType)}
+                                type="text"
+                                value={selectedWorkbenchProvider?.api_base_url || ''}
+                                onBlur={() => void handleSaveWorkbenchProviderUrl()}
+                                onChange={(event) => {
+                                  if (!selectedWorkbenchProvider) return;
+                                  updateWorkbenchProviderDraft(selectedWorkbenchProvider.id, {
+                                    api_base_url: event.target.value,
+                                    last_sync_error: '',
+                                  });
+                                }}
+                                onKeyDown={(event) => {
+                                  if (event.key === 'Enter') (event.target as HTMLInputElement).blur();
+                                }}
+                              />
+                            </div>
+                            {providerSyncErrorText && providerSyncErrorPlacement === 'base_url' ? (
+                              <div className="workbench-field-feedback error" role="alert">
+                                {providerSyncErrorText}
+                              </div>
+                            ) : null}
+                          </div>
+                        </SettingsRow>
 
-                    <SettingsRow title={uiText(uiLocaleDraft, 'Base URL', 'Base URL')}>
-                      <div className="workbench-setting-control-row">
-                        <input
-                          className="settings-input settings-input-url"
-                          disabled={isSettingsLoading || !selectedWorkbenchProvider || selectedWorkbenchProvider.id === DEFAULT_CONTEXT_PROVIDER_ID}
-                          placeholder={defaultBaseUrlForProviderType(currentWorkbenchProviderType)}
-                          type="text"
-                          value={selectedWorkbenchProvider?.api_base_url || ''}
-                          onBlur={() => void handleSaveWorkbenchProviderUrl()}
-                          onChange={(event) => {
-                            if (!selectedWorkbenchProvider) return;
-                            updateWorkbenchProviderDraft(selectedWorkbenchProvider.id, {
-                              api_base_url: event.target.value,
-                            });
-                          }}
-                          onKeyDown={(event) => {
-                            if (event.key === 'Enter') (event.target as HTMLInputElement).blur();
-                          }}
-                        />
-                      </div>
-                    </SettingsRow>
-
-                    <SettingsRow
-                      meta={selectedWorkbenchProvider?.has_api_key ? uiText(uiLocaleDraft, 'Saved', '已保存') : undefined}
-                      title={uiText(uiLocaleDraft, 'API Key', 'API Key')}
-                    >
-                      <div className="workbench-api-key-row">
-                        <input
-                          className="settings-input settings-input-key"
-                          disabled={isSettingsLoading || !selectedWorkbenchProvider || selectedWorkbenchProvider.id === DEFAULT_CONTEXT_PROVIDER_ID}
-                          placeholder={
-                            selectedWorkbenchProvider?.id === DEFAULT_CONTEXT_PROVIDER_ID
-                              ? uiText(uiLocaleDraft, 'Managed by Codex proxy', '由 Codex 代理管理')
-                              : selectedWorkbenchProvider?.has_api_key
-                                ? uiText(uiLocaleDraft, 'Enter a new key to replace', '输入新 Key 后替换')
-                                : 'sk-...'
+                        <SettingsRow
+                          meta={
+                            isWorkbenchApiKeySaving
+                              ? uiText(uiLocaleDraft, 'Saving...', '正在保存...')
+                              : selectedWorkbenchProvider?.has_api_key || workbenchSavedApiKeyDraft
+                                ? uiText(uiLocaleDraft, 'Saved', '已保存')
+                                : undefined
                           }
-                          type="password"
-                          value={workbenchApiKeyDraft}
-                          onBlur={() => void handleSaveWorkbenchApiKey()}
-                          onChange={(event) => {
-                            setWorkbenchApiKeyDraft(event.target.value);
-                            setSettingsError('');
-                          }}
-                          onKeyDown={(event) => {
-                            if (event.key === 'Enter') (event.target as HTMLInputElement).blur();
-                          }}
-                        />
-                        {selectedWorkbenchProvider?.has_api_key && selectedWorkbenchProvider.id !== DEFAULT_CONTEXT_PROVIDER_ID ? (
+                          title={uiText(uiLocaleDraft, 'API Key', 'API Key')}
+                        >
+                          <div className="workbench-field-stack">
+                            <div className="workbench-api-key-row">
+                              <input
+                                className="settings-input settings-input-key"
+                                disabled={isSettingsLoading || isWorkbenchApiKeySaving || !selectedWorkbenchProvider}
+                                placeholder={
+                                  selectedWorkbenchProvider?.has_api_key
+                                    ? uiText(uiLocaleDraft, 'Saved key; type to update', 'Key 已保存，输入后更新')
+                                    : 'sk-...'
+                                }
+                                type="password"
+                                value={workbenchApiKeyDraft}
+                                onBlur={() => void handleSaveWorkbenchApiKey()}
+                                onChange={(event) => {
+                                  setWorkbenchApiKeyDraft(event.target.value);
+                                  setIsWorkbenchApiKeyDirty(true);
+                                  if (selectedWorkbenchProvider) {
+                                    setWorkbenchProviderSyncError(selectedWorkbenchProvider.id, '');
+                                  }
+                                  setSettingsError('');
+                                }}
+                                onKeyDown={(event) => {
+                                  if (event.key === 'Enter') (event.target as HTMLInputElement).blur();
+                                }}
+                              />
+                            </div>
+                            {providerSyncErrorText && providerSyncErrorPlacement === 'api_key' ? (
+                              <div className="workbench-field-feedback error" role="alert">
+                                {providerSyncErrorText}
+                              </div>
+                            ) : null}
+                          </div>
+                        </SettingsRow>
+                      </>
+                    ) : null}
+
+                    <SettingsRow title={uiText(uiLocaleDraft, 'Model', '模型')}>
+                      <div className="workbench-field-stack">
+                        <div className="workbench-model-config-row">
+                          <div className={`workbench-model-combobox${isWorkbenchModelOpen ? ' is-open' : ''}`} ref={workbenchModelComboboxRef}>
+                            <input
+                              aria-autocomplete="list"
+                              aria-controls="context-workbench-model-options"
+                              aria-expanded={isWorkbenchModelOpen}
+                              className="settings-input settings-input-model"
+                              disabled={isSettingsLoading}
+                              placeholder={firstProviderModel(selectedWorkbenchProvider) || DEFAULT_WORKBENCH_MODELS[0]}
+                              role="combobox"
+                              type="text"
+                              value={workbenchModelDraft}
+                              onBlur={() => void handleSaveWorkbenchSettings()}
+                              onChange={(event) => {
+                                setWorkbenchModelDraft(event.target.value);
+                                setIsWorkbenchModelOpen(true);
+                                setIsWorkbenchModelFilterActive(true);
+                                setSettingsError('');
+                              }}
+                              onFocus={() => {
+                                setIsWorkbenchModelOpen(true);
+                                setIsWorkbenchModelFilterActive(false);
+                                setSettingsError('');
+                              }}
+                              onKeyDown={handleWorkbenchModelKeyDown}
+                            />
+                            <i className="ph-light ph-caret-down workbench-model-combobox-icon" />
+                            <div
+                              className={`dropdown-menu workbench-model-suggestion-menu ${isWorkbenchModelOpen ? 'show' : ''}`}
+                              id="context-workbench-model-options"
+                              role="listbox"
+                              onMouseDown={(event) => event.stopPropagation()}
+                            >
+                              {!hasFetchedWorkbenchModels ? (
+                                <div className="workbench-model-suggestion-empty">
+                                  {uiText(uiLocaleDraft, 'Click Get all models first', '先点击获取所有模型')}
+                                </div>
+                              ) : filteredWorkbenchModelOptions.length ? (
+                                filteredWorkbenchModelOptions.map((model) => {
+                                  const modelId = (model.id || model.label || '').trim();
+                                  return (
+                                    <button
+                                      aria-selected={modelId === workbenchModelDraft}
+                                      className={`dropdown-item workbench-model-suggestion-option ${modelId === workbenchModelDraft ? 'selected' : ''}`}
+                                      key={modelId}
+                                      role="option"
+                                      type="button"
+                                      onMouseDown={(event) => handleWorkbenchModelSelect(event, model)}
+                                    >
+                                      <div className="dropdown-item-left">
+                                        <span>{model.label || modelId}</span>
+                                        {model.group ? <small>{model.group}</small> : null}
+                                      </div>
+                                      {modelId === workbenchModelDraft ? <i className="ph-bold ph-check" /> : null}
+                                    </button>
+                                  );
+                                })
+                              ) : (
+                                <div className="workbench-model-suggestion-empty">
+                                  {uiText(uiLocaleDraft, 'No matching models', '没有匹配的模型')}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
                           <button
-                            className="workbench-inline-action"
-                            disabled={isSettingsLoading}
+                            aria-label={uiText(uiLocaleDraft, 'Get all models', '获取所有模型')}
+                            className="workbench-icon-action"
+                            disabled={isSettingsLoading || isWorkbenchModelsRefreshing}
+                            title={uiText(uiLocaleDraft, 'Get all models', '获取所有模型')}
                             type="button"
-                            onClick={() => void handleClearWorkbenchApiKey()}
+                            onClick={() => void handleRefreshWorkbenchModels()}
                           >
-                            {uiText(uiLocaleDraft, 'Clear', '清除')}
+                            <i className={`ph-light ph-circle-notch${isWorkbenchModelsRefreshing ? ' is-spinning' : ''}`} />
                           </button>
+                        </div>
+                        {providerSyncErrorText && providerSyncErrorPlacement === 'model' ? (
+                          <div className="workbench-field-feedback error" role="alert">
+                            {providerSyncErrorText}
+                          </div>
                         ) : null}
                       </div>
                     </SettingsRow>
-
-                    <SettingsRow title={uiText(uiLocaleDraft, 'Model', '模型')}>
-                      <div className="workbench-model-config-row">
-                        <input
-                          className="settings-input settings-input-model"
-                          disabled={isSettingsLoading}
-                          placeholder={firstProviderModel(selectedWorkbenchProvider) || DEFAULT_WORKBENCH_MODELS[0]}
-                          type="text"
-                          value={workbenchModelDraft}
-                          onBlur={() => void handleSaveWorkbenchSettings()}
-                          onChange={(event) => {
-                            setWorkbenchModelDraft(event.target.value);
-                            setSettingsError('');
-                          }}
-                          onKeyDown={(event) => {
-                            if (event.key === 'Enter') (event.target as HTMLInputElement).blur();
-                          }}
-                        />
-
-                        <Dropdown
-                          align="right"
-                          buttonClassName="tool-btn-capsule manual-workbench-reasoning workbench-model-picker-trigger"
-                          buttonChildren={(
-                            <>
-                              <i className="ph-light ph-cpu" />
-                              <span>{currentWorkbenchModelLabel}</span>
-                              <i className="ph-light ph-caret-down" />
-                            </>
-                          )}
-                          disabled={isSettingsLoading}
-                          isOpen={isWorkbenchModelOpen}
-                          onClose={() => setIsWorkbenchModelOpen(false)}
-                          onToggle={() => {
-                            setIsWorkbenchModelOpen((previous) => !previous);
-                            setSettingsError('');
-                          }}
-                        >
-                          {workbenchModelOptions.map((model) => {
-                            const modelId = (model.id || model.label || '').trim();
-                            return (
-                              <div
-                                className={`dropdown-item ${modelId === workbenchModelDraft ? 'selected' : ''}`}
-                                key={modelId}
-                                onMouseDown={(event) => handleWorkbenchModelSelect(event, model)}
-                              >
-                                <div className="dropdown-item-left">
-                                  <span>{model.label || modelId}</span>
-                                  {model.group ? <small>{model.group}</small> : null}
-                                </div>
-                                {modelId === workbenchModelDraft ? <i className="ph-bold ph-check" /> : null}
-                              </div>
-                            );
-                          })}
-                        </Dropdown>
-
-                        <button
-                          aria-label={uiText(uiLocaleDraft, 'Refresh models', '刷新模型')}
-                          className="workbench-icon-action"
-                          disabled={isSettingsLoading || isWorkbenchModelsRefreshing}
-                          title={uiText(uiLocaleDraft, 'Refresh models', '刷新模型')}
-                          type="button"
-                          onClick={() => void handleRefreshWorkbenchModels()}
-                        >
-                          <i className={`ph-light ph-circle-notch${isWorkbenchModelsRefreshing ? ' is-spinning' : ''}`} />
-                        </button>
-                      </div>
-                    </SettingsRow>
-
-                    {selectedWorkbenchProvider?.last_sync_error ? (
-                      <div className="workbench-setting-feedback error">
-                        {selectedWorkbenchProvider.last_sync_error}
-                      </div>
-                    ) : null}
                   </div>
 
                   <div className="workbench-panel-title workbench-settings-title">
