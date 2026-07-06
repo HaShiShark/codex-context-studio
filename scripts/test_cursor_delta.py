@@ -224,7 +224,7 @@ def test_response_item_projection_can_preserve_protocol_id() -> None:
         "id": "msg-stable",
         "type": "message",
         "role": "assistant",
-        "content": [{"id": "part-stable", "type": "output_text", "text": "hello"}],
+        "content": [{"type": "output_text", "text": "hello"}],
     }
 
 
@@ -321,6 +321,48 @@ def test_response_item_projection_matches_next_request_shape() -> None:
     assert diff.prefix_len == 1
     assert diff.pop == []
     assert diff.append == []
+
+
+def test_response_item_projection_adds_codex_turn_metadata() -> None:
+    raw_response_message = {
+        "id": "msg-dynamic",
+        "type": "message",
+        "status": "completed",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": "hello"}],
+        "phase": "final_answer",
+    }
+
+    projected = response_item_to_request_item(raw_response_message, turn_id="turn-1")
+
+    assert projected == {
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": "hello"}],
+        "phase": "final_answer",
+        "internal_chat_message_metadata_passthrough": {"turn_id": "turn-1"},
+    }
+
+
+def test_response_item_projection_omits_internal_metadata_when_request_path_does() -> None:
+    raw_response_message = {
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": "hello"}],
+        "internal_chat_message_metadata_passthrough": {"turn_id": "turn-1"},
+    }
+
+    projected = response_item_to_request_item(
+        raw_response_message,
+        include_internal_metadata=False,
+        turn_id="turn-1",
+    )
+
+    assert projected == {
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": "hello"}],
+    }
 
 
 def test_message_phase_difference_is_not_suppressed() -> None:
@@ -550,6 +592,8 @@ def main() -> None:
         test_response_item_projection_can_preserve_protocol_id,
         test_fingerprint_distinguishes_missing_schema_property_named_id,
         test_response_item_projection_matches_next_request_shape,
+        test_response_item_projection_adds_codex_turn_metadata,
+        test_response_item_projection_omits_internal_metadata_when_request_path_does,
         test_message_phase_difference_is_not_suppressed,
         test_reasoning_empty_content_matches_next_request_shape,
         test_reasoning_null_content_is_preserved_for_request_shape,

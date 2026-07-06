@@ -1,29 +1,24 @@
-# Codex Context Proxy v1.0.0
+# Codex Context Studio v1.1.0
 
-A visual, editable context layer for Codex. Let AI edit AI's context with surgical precision, giving you more control and freedom over what Codex sees.
+A visual, editable context layer for Codex. This release focuses on the Context Studio identity, clearer bilingual documentation, and safer transcript rebuilding for newer Codex request metadata.
 
-## What's Included
+## What's New
 
-- Fixes for Python environment setup and dependency installation
-- `npm run setup:python` for creating and updating the local `.venv`
-- Test scripts now prefer the project `.venv` when available
-- Added Brotli and zstandard runtime dependencies for compressed responses
-- Visual context map for Codex sessions
-- Token overview for current context usage
-- Manual context inspection and editing panel
-- AI-assisted context compression for noisy tool output
-- More reliable compact/override handling after Codex `/compact`
-- Safer whole-node compression for tool-heavy assistant turns
-- Codex CLI support through `codex ctx proxy on/off/status`
-- Experimental Codex Desktop support through `codex ctx desktop on/off/status`
-- Windows installer with bundled Electron app and Python backend
+- Renamed the user-facing project identity to Codex Context Studio
+- Reworked the English and Chinese READMEs with updated feature descriptions, architecture diagrams, and screenshots
+- Moved screenshots into language-specific folders for clearer documentation
+- Preserved Codex internal turn metadata and turn IDs when rebuilding request input
+- Added support for `custom_tool_call.namespace` during response-to-request projection
+- Improved compact request metadata detection across differently cased client metadata keys
+- Localized grouped tool-call labels in the context workbench
+- Expanded proxy core and cursor delta tests for metadata and request rebuild behavior
 
 ## Download
 
 Download and run:
 
 ```text
-Codex Context Proxy Setup 1.0.0.exe
+Codex Context Proxy Setup 1.1.0.exe
 ```
 
 After installation, open a new terminal and enable the proxy:

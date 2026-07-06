@@ -129,7 +129,7 @@ function ManualMessageItem({
         <div className="manual-workbench-bubble">
           {entry.role === 'assistant' ? (
             <>
-              <MessageContent record={manualEntryRecord(entry)} variant="context-map" />
+              <MessageContent record={manualEntryRecord(entry)} uiLocale={uiLocale} variant="context-map" />
               {entry.pending && entry.statusText ? (
                 <div className="thinking-inline-line" role="status">
                   <span className="thinking-inline-text">{entry.statusText}</span>

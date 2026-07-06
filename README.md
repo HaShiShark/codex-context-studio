@@ -1,199 +1,208 @@
-# Codex Context Proxy
+<p align="center">
+  <img src="electron/assets/hash-icon.ico" alt="Codex Context Studio icon" width="128" height="128">
+</p>
 
-A visual, editable context layer for Codex. Let AI edit AI's context with surgical precision, giving you more control and freedom over what Codex sees.
+<h1 align="center">Codex Context Studio</h1>
 
-## What We Built
+<p align="center">
+  <strong>🧠 Context Control Panel for Codex</strong>
+  <br>
+  <sub>Make Codex's context visible, locatable, and precisely manageable — like memory.</sub>
+</p>
 
-Codex Context Proxy gives the official Codex CLI a visual and editable context layer.
+<p align="center">
+  <a href="#-core-features">Features</a> ·
+  <a href="#-architecture">Architecture</a> ·
+  <a href="#-quick-start">Install</a> ·
+  <a href="#-faq">FAQ</a>
+</p>
 
-Codex is powerful in long coding sessions, but its context can become hard to inspect and harder to maintain. Tool logs, failed attempts, outdated assumptions, and repeated transcript fragments can keep accumulating. When that happens, you usually cannot see exactly what Codex is about to read or selectively remove noisy context before the next response.
+<p align="center">
+  <a href="README.md">English</a> ·
+  <a href="README.zh-CN.md">中文</a>
+</p>
 
-This project adds a local context editor in front of Codex. You keep using the normal Codex workflow, while the proxy captures Codex's live context and opens a workbench where you can visualize, edit, compress, and delete context before future responses.
+<p align="center">
+  <img alt="Electron" src="https://img.shields.io/badge/electron-37-2f7f8f?style=flat-square&logo=electron&logoColor=white">
+  <img alt="Python" src="https://img.shields.io/badge/python-3.10%2B-3776ab?style=flat-square&logo=python&logoColor=white">
+  <img alt="React" src="https://img.shields.io/badge/react-19-149eca?style=flat-square&logo=react&logoColor=white">
+  <img alt="TypeScript" src="https://img.shields.io/badge/typescript-5.9-3178c6?style=flat-square&logo=typescript&logoColor=white">
+  <img alt="License" src="https://img.shields.io/badge/license-GPL--3.0-555?style=flat-square">
+  <img alt="Status" src="https://img.shields.io/badge/status-alpha-ff7a1a?style=flat-square">
+</p>
 
-In short:
 
-```text
-Codex writes code.
-Codex Context Proxy helps maintain Codex's context.
+---
+
+## ⚡ In One Line
+
+This project lets you see Codex's context consumption, what's retained after compression, and edit it yourself. It also lets you replace Codex's system prompt to break through Codex's limitations, and replace Codex's compression prompt for better compressed output.
+
+---
+
+## 🎯 Core Features
+
+### 🔬 Context Visualization — See Inside Codex's Brain
+
+> View Codex's context by role, check token usage per turn, and see when prompts are injected.
+
+### ✂️ Context Management — Take Over Codex's Memory
+
+> Chat with a dedicated secondary model to analyze, edit, compress, and manage the main Codex's context. You can plug in a cheap secondary model.
+
+### 📈 Usage Panel — How Much Did This Session Cost?
+
+> View token consumption, cache hit rate, and estimated cost across your Codex session.
+
+### 🔀 Prompt Replacement — Rewrite Codex's Default Prompts
+
+> Replace Codex's system prompt and native compression prompt for jailbreaking and better compression quality.
+
+### 🔌 Local Proxy — Transparent, Non-Invasive
+
+> No Codex source code changes, no official tools replaced. Sits in the middle as a local proxy, compatible with all native features.
+
+---
+
+## 📸 Screenshots
+
+### Context Map & Secondary Model Chat
+
+![Context map and secondary model chat](docs/images/eng/1.png)
+
+### Context Compression Result
+
+![Context compression result](docs/images/eng/2.png)
+
+### Prompt Replacement
+
+![Prompt replacement](docs/images/eng/3.png)
+
+### Usage Panel
+
+![Usage panel](docs/images/eng/4.png)
+
+---
+
+## 🏗️ Architecture
+
+```mermaid
+flowchart LR
+    CD["Codex CLI / Desktop"]
+    PX["Responses Proxy\n:8787"]
+    WEB["Web Backend\n:8765"]
+    FE["React Workbench"]
+    OAI["OpenAI API / Upstream Model"]
+
+    CD -- "POST /v1/responses" --> PX
+    PX -- "Rebuilt request" --> OAI
+    OAI -- "SSE stream" --> PX
+    PX -- "SSE stream" --> CD
+
+    FE -- "HTTP edit/settings" --> WEB
+    WEB -- "HTTP proxy control" --> PX
+    PX -. "WebSocket realtime events" .-> FE
 ```
 
-## What Codex Gets
+**How It Works:**
 
-- Context visualization: see the conversation, tool history, and context nodes Codex is about to use.
-- Editable context: compress, delete, or rewrite selected context items.
-- AI context editing: use a second AI pass to maintain the main AI's context.
-- Precise compaction: replace blunt auto-compact with targeted context surgery.
-- CLI and Desktop support: use it with Codex CLI, with experimental support for Codex Desktop.
-- Normal workflow: continue using Codex from the terminal or desktop app.
+Every Codex request follows the same path — there is no "pass-through if unedited" branch:
 
-The context editing workbench is adapted from HashCode. The original project explains the broader "AI edits AI's context" idea in more detail:
-
-https://github.com/HaShiShark/context-editor-agent
-
-## Screenshots
-
-### Visualize Codex Context and Token Usage
-
-![Visualize Codex Context](docs/images/context-map.png)
-
-### Ask AI to Inspect the Current Context
-
-![Edit Context With AI](docs/images/context-workbench.png)
-
-### Compress Noisy Tool Context
-
-![Compress Context](docs/images/context-compress.png)
-
-## Features
-
-### Live Context Map
-
-Codex Context Proxy converts a Codex session into a structured context map. Instead of treating the transcript as one long wall of text, it shows user turns, assistant turns, tool calls, tool results, and edited context nodes as separate items.
-
-### AI-Assisted Context Editing
-
-You can select noisy or outdated context and ask an editor model to compress, rewrite, or clean it up. This makes it possible to preserve useful intent while removing bulk from logs, failed attempts, or repeated information.
-
-### Manual Context Control
-
-Not every context edit needs AI. You can also remove selected nodes or inspect raw content manually.
-
-### Codex CLI and Desktop
-
-Codex CLI support is the main path. Once enabled, the normal `codex` command starts the local proxy and context window before launching the real Codex CLI.
-
-Codex Desktop support is also included. It can point Codex Desktop's model provider configuration at the local proxy so desktop conversations can use the same editable context layer. Desktop support touches local Codex configuration, so it is controlled separately from the CLI switch.
-
-### Transparent Workflow
-
-When the proxy is off, `codex` passes through to the official Codex CLI. When the proxy is on, the same `codex` command starts the local proxy, opens the context window, and then launches the real Codex CLI.
-
-## How It Works
-
-Codex Context Proxy runs a local Responses API compatible proxy.
-
-When Codex sends a request, the proxy captures the request body and response stream, then builds a canonical transcript for the context workbench. If you do not edit anything, requests are forwarded transparently and Codex behaves like normal.
-
-When you edit the context, the proxy replaces that session's canonical transcript. On the next Codex turn, it diffs Codex's new raw `input` against the cursor, appends the new tail, and rebuilds the upstream Responses `input` from the edited transcript.
-
-High-level flow:
-
-```text
-codex
-  -> local shim
-  -> Codex Context Proxy
-  -> official Codex request
-  -> OpenAI / ChatGPT Codex backend
-
-context window
-  -> visualize transcript
-  -> edit selected nodes
-  -> save edited context
-  -> next Codex turn uses edited context
+```mermaid
+flowchart LR
+    A["Codex sends request"] --> B["cursor diff"] --> C["Update transcript"] --> D["Rebuild input"] --> E["Forward upstream"]
 ```
 
-## Quick Start
+- **Transcript** is the single source of truth: what users see in the workbench, edit, and what ultimately gets sent upstream
+- **Without edits**, the rebuilt input is naturally equivalent to the original Codex input
+- **With edits**, upstream receives the edited transcript + new content from the current turn
+- **During compression**, Codex's native compression prompt is replaced with a custom version, and the result is written back to the transcript
 
-Download and run the Windows installer:
+---
 
-```text
-Codex Context Proxy Setup 1.0.0.exe
-```
+## 🚀 Quick Start
 
-After installation, open a new terminal and enable the proxy:
+**1. Install**
+
+Download and run the latest Windows installer from [Releases](https://github.com/nicobailon/codex-context-studio/releases).
+
+**2. Enable CLI Proxy**
 
 ```powershell
-codex ctx proxy on
+codex ctx proxy on      # Enable proxy
+codex                   # Use Codex normally
+codex ctx proxy status  # Check status
+codex ctx proxy off     # Disable proxy
 ```
 
-Use Codex normally:
+**3. Desktop Support**
 
 ```powershell
-codex
+codex ctx desktop on      # Enable Desktop mode
+codex ctx desktop status  # Check status
+codex ctx desktop off     # Disable
 ```
 
-Disable the proxy anytime:
+> [!NOTE]
+> Desktop mode modifies local Codex provider configuration. CLI mode only adds a shim and does not affect any config files.
+
+---
+
+## 🛠️ Development
 
 ```powershell
-codex ctx proxy off
-```
-
-Check status:
-
-```powershell
-codex ctx proxy status
-```
-
-Remove the shim:
-
-```powershell
-codex ctx proxy uninstall
-```
-
-### Codex Desktop
-
-Desktop support is controlled separately:
-
-```powershell
-codex ctx desktop on
-```
-
-Check Desktop proxy status:
-
-```powershell
-codex ctx desktop status
-```
-
-Disable Desktop proxying:
-
-```powershell
-codex ctx desktop off
-```
-
-Desktop support is more experimental than CLI support because it modifies local Codex configuration instead of only adding a command shim.
-
-## Development
-
-Install dependencies:
-
-```powershell
+# Install dependencies
 npm install
 npm run setup:python
-```
 
-Run the local Codex flow:
-
-```powershell
+# Run the full local flow
 npm run codex
-```
 
-Run only the context window:
-
-```powershell
+# Run only the context window
 npm run window
-```
 
-Run type checks:
-
-```powershell
+# Run checks
 npm run typecheck
-```
+npm test
 
-Build the Windows installer:
-
-```powershell
+# Build Windows installer
 npm run dist:win
 ```
 
-The installer is generated at:
+---
 
-```text
-release/Codex Context Proxy Setup 1.0.0.exe
-```
+## ❓ FAQ
 
-## Notes
+<details>
+<summary><strong>Is this a Codex plugin?</strong></summary>
 
-- This project does not replace Codex.
-- It does not require modifying the official Codex CLI source code.
-- It works by adding a local editable context layer in front of Codex.
-- Codex Desktop support is more experimental than Codex CLI support.
+No. Codex Context Studio is a local context layer around Codex, implemented through proxy technology.
+
+</details>
+
+<details>
+<summary><strong>Will it break the cache?</strong></summary>
+
+Compression is not a frequent event. After compression, it only recalculates once, which is more cost-efficient than carrying useless context. In practice, cache hit rate only drops by 5–10%.
+
+</details>
+
+<details>
+<summary><strong>Why not just rely on auto-compaction?</strong></summary>
+
+Compatible with native compression. The project also helps replace compression prompts — we've built more precise, targeted compression features.
+
+</details>
+
+<details>
+<summary><strong>Who is this for?</strong></summary>
+
+People who want better control over context, have their own ideas about compression, or want to modify Codex's prompts.
+
+</details>
+
+---
+
+<p align="center">
+  <sub>GPL-3.0 · Made with ❤️ for Codex power users</sub>
+</p>

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,22 @@ def message(role: str, text: str, *, item_id: str | None = None) -> dict[str, An
     if item_id is not None:
         item["id"] = item_id
     return item
+
+
+def with_turn_id(item: dict[str, Any], turn_id: str) -> dict[str, Any]:
+    next_item = copy.deepcopy(item)
+    next_item["internal_chat_message_metadata_passthrough"] = {"turn_id": turn_id}
+    return next_item
+
+
+def request_body(input_items: list[Any], *, turn_id: str | None = None) -> dict[str, Any]:
+    body: dict[str, Any] = {"input": copy.deepcopy(input_items)}
+    if turn_id is not None:
+        body["client_metadata"] = {
+            "turn_id": turn_id,
+            "x-codex-turn-metadata": json.dumps({"request_kind": "turn", "turn_id": turn_id}),
+        }
+    return body
 
 
 def typed_message(role: str, text: str) -> dict[str, Any]:
@@ -156,7 +173,7 @@ def test_response_completed_preserves_ids_after_id_bearing_request() -> None:
         "id": "msg-stable",
         "type": "message",
         "role": "assistant",
-        "content": [{"id": "part-stable", "type": "output_text", "text": "hi"}],
+        "content": [{"type": "output_text", "text": "hi"}],
     }
     handle_request(state, {"input": [user]})
 
@@ -294,6 +311,53 @@ def test_workbench_compressed_transcript_surfaces_phase_delta_as_conflict() -> N
     assert state.tail_conflict is True
     assert forwarded["input"] == [summary, next_request_message, followup]
     assert transcript_items(state) == [summary, next_request_message, followup]
+    assert state.codex_input_cursor == [user, next_request_message, followup]
+
+
+def test_workbench_replaced_assistant_does_not_restore_old_assistant_when_cursor_matches_codex_shape() -> None:
+    state = ProxyState()
+    first_turn_id = "turn-1"
+    second_turn_id = "turn-2"
+    user = with_turn_id(message("user", "question"), first_turn_id)
+    raw_response_message = {
+        "id": "msg-dynamic",
+        "type": "message",
+        "status": "completed",
+        "role": "assistant",
+        "content": [
+            {
+                "type": "output_text",
+                "annotations": [],
+                "logprobs": [],
+                "text": "old answer",
+            }
+        ],
+        "phase": "final_answer",
+    }
+    next_request_message = with_turn_id(
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "old answer"}],
+            "phase": "final_answer",
+        },
+        first_turn_id,
+    )
+    edited_assistant = message("assistant", "1234")
+    followup = with_turn_id(message("user", "what did you say"), second_turn_id)
+
+    handle_request(state, request_body([user], turn_id=first_turn_id))
+    handle_response_completed(state, [raw_response_message])
+    state.transcript = input_items_to_transcript([copy.deepcopy(user), copy.deepcopy(edited_assistant)])
+
+    forwarded = handle_request(
+        state,
+        request_body([user, next_request_message, followup], turn_id=second_turn_id),
+    )
+
+    assert state.tail_conflict is False
+    assert forwarded["input"] == [user, edited_assistant, followup]
+    assert transcript_items(state) == [user, edited_assistant, followup]
     assert state.codex_input_cursor == [user, next_request_message, followup]
 
 
@@ -567,6 +631,7 @@ def main() -> None:
         test_pop_conflict_keeps_existing_tail_and_still_appends,
         test_workbench_compressed_transcript_does_not_restore_old_assistant_on_next_request,
         test_workbench_compressed_transcript_surfaces_phase_delta_as_conflict,
+        test_workbench_replaced_assistant_does_not_restore_old_assistant_when_cursor_matches_codex_shape,
         test_workbench_compressed_transcript_does_not_restore_reasoning_turn,
         test_reasoning_null_content_survives_request_rebuild,
         test_user_edited_transcript_survives_next_raw_codex_request,

@@ -8,7 +8,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from .codex_input_cursor import compute_diff, response_items_to_request_items
+from .codex_input_cursor import (
+    compute_diff,
+    response_items_to_request_items,
+)
 from .transcript_codec import transcript_to_input_items
 from .transcript_delta_applier import TranscriptDeltaApplier
 
@@ -27,6 +30,8 @@ class ProxyState:
     compact_kind: str = ""
     compact_error: str | None = None
     request_item_ids: bool = False
+    request_item_metadata: bool = False
+    request_turn_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -52,9 +57,12 @@ def handle_request(
         raise TypeError("handle_request expected body['input'] to be a list")
     new_input = copy.deepcopy(raw_new_input)
     state.request_item_ids = _input_has_top_level_ids(new_input)
+    turn_metadata = _codex_turn_metadata(forwarded_body)
+    state.request_item_metadata = _input_has_internal_metadata(new_input)
+    state.request_turn_id = _request_turn_id(forwarded_body, turn_metadata)
     cursor_after_request = copy.deepcopy(new_input)
 
-    compact_meta = _compact_metadata(forwarded_body)
+    compact_meta = _compact_metadata(turn_metadata)
     if compact_meta is not None:
         state.compact_pending = True
         state.compact_kind = _compact_kind(compact_meta)
@@ -90,7 +98,12 @@ def handle_response_completed(
 ) -> ResponseCompletedResult:
     """Absorb completed upstream response items into cursor/transcript."""
 
-    items = response_items_to_request_items(list(response_items), include_ids=state.request_item_ids)
+    items = response_items_to_request_items(
+        list(response_items),
+        include_ids=state.request_item_ids,
+        include_internal_metadata=state.request_item_metadata,
+        turn_id=state.request_turn_id,
+    )
 
     if state.compact_pending:
         controller = _resolve_compact_controller(compact_controller)
@@ -122,28 +135,29 @@ def handle_response_completed(
     )
 
 
-def _compact_metadata(body: Mapping[str, Any]) -> dict[str, Any] | None:
+def _codex_turn_metadata(body: Mapping[str, Any]) -> dict[str, Any]:
     client_metadata = body.get("client_metadata")
     if not isinstance(client_metadata, Mapping):
-        return None
+        return {}
 
-    raw_metadata = client_metadata.get("x-codex-turn-metadata")
+    raw_metadata = _client_metadata_value(client_metadata, "x-codex-turn-metadata")
     if isinstance(raw_metadata, Mapping):
-        turn_metadata = dict(raw_metadata)
-    elif isinstance(raw_metadata, str) and raw_metadata.strip():
+        return dict(raw_metadata)
+    if isinstance(raw_metadata, str) and raw_metadata.strip():
         try:
             parsed = json.loads(raw_metadata)
         except json.JSONDecodeError:
-            return None
+            return {}
         if not isinstance(parsed, dict):
-            return None
-        turn_metadata = parsed
-    else:
-        return None
+            return {}
+        return parsed
+    return {}
 
+
+def _compact_metadata(turn_metadata: Mapping[str, Any]) -> dict[str, Any] | None:
     if turn_metadata.get("request_kind") != "compaction":
         return None
-    return turn_metadata
+    return dict(turn_metadata)
 
 
 def _compact_kind(turn_metadata: Mapping[str, Any]) -> str:
@@ -155,6 +169,33 @@ def _compact_kind(turn_metadata: Mapping[str, Any]) -> str:
 
 def _input_has_top_level_ids(input_items: Sequence[Any]) -> bool:
     return any(isinstance(item, Mapping) and "id" in item for item in input_items)
+
+
+def _input_has_internal_metadata(input_items: Sequence[Any]) -> bool:
+    return any(
+        isinstance(item, Mapping)
+        and isinstance(item.get("internal_chat_message_metadata_passthrough"), Mapping)
+        for item in input_items
+    )
+
+
+def _request_turn_id(body: Mapping[str, Any], turn_metadata: Mapping[str, Any]) -> str:
+    metadata_turn_id = str(turn_metadata.get("turn_id") or "").strip()
+    if metadata_turn_id:
+        return metadata_turn_id
+
+    client_metadata = body.get("client_metadata")
+    if isinstance(client_metadata, Mapping):
+        return str(_client_metadata_value(client_metadata, "turn_id") or "").strip()
+    return ""
+
+
+def _client_metadata_value(metadata: Mapping[str, Any], desired_key: str) -> Any:
+    desired = desired_key.lower()
+    for key, value in metadata.items():
+        if str(key).lower() == desired:
+            return value
+    return None
 
 
 def _resolve_compact_controller(compact_controller: Any) -> Any | None:

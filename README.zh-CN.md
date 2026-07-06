@@ -1,199 +1,209 @@
-# Codex Context Proxy
+<p align="center">
+  <img src="electron/assets/hash-icon.ico" alt="Codex Context Studio icon" width="128" height="128">
+</p>
 
-Codex 的可视化、可编辑上下文层。让 AI 像手术刀一样精准地编辑 AI 的上下文，让你更自由地维护 Codex 正在看见的内容。
+<h1 align="center">Codex Context Studio</h1>
 
-## 我们做了什么
+<p align="center">
+  <strong>🧠 Codex 的上下文控制面板</strong>
+  <br>
+  <sub>让 Codex 上下文像内存一样被看见、定位、精准管理</sub>
+</p>
 
-Codex Context Proxy 给官方 Codex 加上了一层可视化、可编辑的上下文。
+<p align="center">
+  <a href="#-核心功能">功能</a> ·
+  <a href="#-架构">架构</a> ·
+  <a href="#-快速开始">安装</a> ·
+  <a href="#-路线图">路线图</a> ·
+  <a href="#-faq">FAQ</a>
+</p>
 
-Codex 很适合长时间的代码任务，但它的上下文会逐渐变得难以查看、也难以维护。工具日志、失败尝试、过期假设、重复的对话片段都会不断累积。到后面，你通常很难知道 Codex 下一次回答前到底会读到什么，也很难在下一轮之前精准移除噪声上下文。
+<p align="center">
+  <a href="README.md">English</a> ·
+  <a href="README.zh-CN.md">中文</a>
+</p>
 
-这个项目在 Codex 前面加了一个本地上下文编辑器。你仍然可以继续使用正常的 Codex 工作流，同时代理会捕获 Codex 的实时上下文，并打开一个工作台，让你在后续回复前可视化、编辑、压缩、删除上下文。
+<p align="center">
+  <img alt="Electron" src="https://img.shields.io/badge/electron-37-2f7f8f?style=flat-square&logo=electron&logoColor=white">
+  <img alt="Python" src="https://img.shields.io/badge/python-3.10%2B-3776ab?style=flat-square&logo=python&logoColor=white">
+  <img alt="React" src="https://img.shields.io/badge/react-19-149eca?style=flat-square&logo=react&logoColor=white">
+  <img alt="TypeScript" src="https://img.shields.io/badge/typescript-5.9-3178c6?style=flat-square&logo=typescript&logoColor=white">
+  <img alt="License" src="https://img.shields.io/badge/license-GPL--3.0-555?style=flat-square">
+  <img alt="Status" src="https://img.shields.io/badge/status-alpha-ff7a1a?style=flat-square">
+</p>
 
-简单说：
 
-```text
-Codex 负责写代码。
-Codex Context Proxy 负责维护 Codex 的上下文。
+---
+
+## ⚡ 一句话
+
+这个项目帮你看见codex的上下文消耗情况，压缩后保留的内容，你也可以自己来编辑。还能帮你替换codex系统提示词实现破除codex的限制，替换codex上下文压缩提示词，获得更好的压缩内容。
+
+---
+
+## 🎯 核心功能
+
+### 🔬 上下文可视化 — 看透 Codex 的脑子
+
+> 以角色区分codex上下文情况，查看每轮任务codex的token占用，和提示词注入时机。
+
+### ✂️ 上下文管理 — 接管 Codex 的记忆
+
+>可以和专门的副模型来一起分析编辑压缩管理主codex的上下文，你可以接入便宜的副模型
+
+### 📈 Usage 面板 — 这轮对话花了多少钱
+
+> 查看codex中token消耗情况，缓存命中率，成本。
+
+### 🔀 提示词替换 — 改写 Codex 默认提示词
+
+>替换codex系统提示词和codex原生压缩提示词，用于破限和更好的压缩质量。
+
+### 🔌 本地代理 — 不动 Codex，透明接入
+
+> 不改 Codex 源码，不替换任何官方工具。以本地代理方式插在中间，兼容所有原生功能。
+
+---
+
+## 📸 截图
+
+### 上下文地图 & 副模型对话
+
+![上下文地图和副模型对话](docs/images/cn/1.png)
+
+### 上下文压缩效果
+
+![上下文压缩效果](docs/images/cn/2.png)
+
+### 提示词替换
+
+![提示词替换](docs/images/cn/3.png)
+
+### Usage 用量面板
+
+![Usage 用量面板](docs/images/cn/4.png)
+
+---
+
+## 🏗️ 架构
+
+```mermaid
+flowchart LR
+    CD["Codex CLI / Desktop"]
+    PX["Responses Proxy\n:8787"]
+    WEB["Web Backend\n:8765"]
+    FE["React 工作台"]
+    OAI["OpenAI API / 上游模型"]
+
+    CD -- "POST /v1/responses" --> PX
+    PX -- "重组后的请求" --> OAI
+    OAI -- "SSE stream" --> PX
+    PX -- "SSE stream" --> CD
+
+    FE -- "HTTP 编辑/设置" --> WEB
+    WEB -- "HTTP 代理控制" --> PX
+    PX -. "WebSocket 实时事件" .-> FE
 ```
 
-## Codex 获得了什么能力
+**工作原理：**
 
-- 上下文可视化：查看 Codex 即将使用的对话、工具历史和上下文节点。
-- 上下文可编辑：压缩、删除或重写选中的上下文内容。
-- AI 编辑 AI 的上下文：用另一个 AI 编辑主 AI 的上下文。
-- 更精准的压缩：用定向上下文手术替代粗暴的自动压缩。
-- CLI 和桌面端支持：支持 Codex CLI，也实验性支持 Codex Desktop。
-- 保持原有工作流：继续从终端或桌面端使用 Codex。
+每轮 Codex 请求都走同一条路径，不存在"未编辑就透传"的分支：
 
-上下文编辑工作台适配自 HashCode。原项目更详细地解释了 “AI edits AI's context” 这个想法：
-
-https://github.com/HaShiShark/context-editor-agent
-
-## 截图
-
-### 可视化 Codex 上下文和 Token 使用情况
-
-![Visualize Codex Context](docs/images/context-map.png)
-
-### 让 AI 检查当前上下文
-
-![Edit Context With AI](docs/images/context-workbench.png)
-
-### 压缩噪声工具上下文
-
-![Compress Context](docs/images/context-compress.png)
-
-## 功能
-
-### 实时上下文图
-
-Codex Context Proxy 会把 Codex 会话转换成结构化的上下文图。它不会把 transcript 当成一整堵文本墙，而是把用户消息、assistant 回复、工具调用、工具结果、编辑后的上下文节点拆成独立项目展示。
-
-### AI 辅助上下文编辑
-
-你可以选中噪声较大或已经过期的上下文，让一个编辑模型压缩、重写或清理它。这样可以保留有用意图，同时移除日志、失败尝试和重复信息里的大量冗余。
-
-### 手动上下文控制
-
-不是所有上下文编辑都需要 AI。你也可以手动删除选中的节点，或者查看原始内容。
-
-### Codex CLI 和桌面端
-
-Codex CLI 是主要使用路径。启用后，普通的 `codex` 命令会先启动本地代理和上下文窗口，然后再启动真正的 Codex CLI。
-
-Codex Desktop 也包含适配支持。它可以把 Codex Desktop 的 model provider 配置指向本地代理，让桌面端对话也能使用同一层可编辑上下文。桌面端支持会修改本地 Codex 配置，所以它和 CLI 开关分开控制。
-
-### 透明工作流
-
-代理关闭时，`codex` 会直接透传到官方 Codex CLI。代理开启时，同一个 `codex` 命令会启动本地代理、打开上下文窗口，再进入真正的 Codex CLI。
-
-## 原理
-
-Codex Context Proxy 会运行一个本地的、兼容 Responses API 的代理。
-
-当 Codex 发送请求时，代理会捕获请求体和响应流，并为上下文工作台构建一份规范化 transcript。如果你没有编辑任何内容，请求会被透明转发，Codex 的行为应当和原生使用一致。
-
-当你编辑上下文后，代理会直接替换当前 session 的 canonical transcript。下一轮 Codex 请求时，它会用 Codex 新的 raw `input` 和 cursor 做 diff，追加新尾巴，再从编辑后的 transcript 重新构建上游 Responses `input`。
-
-整体流程：
-
-```text
-codex
-  -> 本地 shim
-  -> Codex Context Proxy
-  -> 官方 Codex 请求
-  -> OpenAI / ChatGPT Codex backend
-
-context window
-  -> 可视化 transcript
-  -> 编辑选中的节点
-  -> 保存编辑后的上下文
-  -> 下一轮 Codex 使用编辑后的上下文
+```mermaid
+flowchart LR
+    A["Codex 发送请求"] --> B["cursor diff"] --> C["更新 transcript"] --> D["重组 input"] --> E["转发上游"]
 ```
 
-## 快速开始
+- **Transcript** 是唯一的业务真相：用户在工作台里看的、编辑的、最终发给上游的，都是它
+- **没编辑时**，重组出的 input 自然等价于 Codex 原始 input
+- **编辑后**，上游收到的是编辑后的 transcript + 本轮新增内容
+- **压缩时**，替换 Codex 原生压缩提示词为自定义版本，压缩结果直接写回 transcript
 
-下载并运行 Windows 安装包：
+---
 
-```text
-Codex Context Proxy Setup 1.0.0.exe
-```
+## 🚀 快速开始
 
-安装完成后，重新打开一个终端，然后启用代理：
+**1. 安装**
+
+从 [Releases](https://github.com/nicobailon/codex-context-studio/releases) 下载最新的 Windows 安装包并运行。
+
+**2. 启用 CLI 代理**
 
 ```powershell
-codex ctx proxy on
+codex ctx proxy on      # 启用代理
+codex                   # 正常使用 Codex
+codex ctx proxy status  # 查看状态
+codex ctx proxy off     # 关闭代理
 ```
 
-正常使用 Codex：
+**3. Desktop 支持**
 
 ```powershell
-codex
+codex ctx desktop on      # 启用 Desktop 模式
+codex ctx desktop status  # 查看状态
+codex ctx desktop off     # 关闭
 ```
 
-随时关闭代理：
+> [!NOTE]
+> Desktop 模式会修改本地 Codex provider 配置，CLI 模式仅添加 shim，不影响任何配置文件。
+
+---
+
+## 🛠️ 开发
 
 ```powershell
-codex ctx proxy off
-```
-
-查看状态：
-
-```powershell
-codex ctx proxy status
-```
-
-移除 shim：
-
-```powershell
-codex ctx proxy uninstall
-```
-
-### Codex Desktop
-
-桌面端支持单独控制：
-
-```powershell
-codex ctx desktop on
-```
-
-查看桌面端代理状态：
-
-```powershell
-codex ctx desktop status
-```
-
-关闭桌面端代理：
-
-```powershell
-codex ctx desktop off
-```
-
-桌面端支持比 CLI 支持更实验一些，因为它修改的是本地 Codex 配置，而不只是添加一个命令 shim。
-
-## 开发
-
-安装依赖：
-
-```powershell
+# 安装依赖
 npm install
 npm run setup:python
-```
 
-运行本地 Codex 流程：
-
-```powershell
+# 运行完整本地流程
 npm run codex
-```
 
-只运行上下文窗口：
-
-```powershell
+# 只运行上下文窗口
 npm run window
-```
 
-运行类型检查：
-
-```powershell
+# 检查
 npm run typecheck
-```
+npm test
 
-构建 Windows 安装包：
-
-```powershell
+# 构建 Windows 安装包
 npm run dist:win
 ```
 
-安装包会生成在：
+---
 
-```text
-release/Codex Context Proxy Setup 1.0.0.exe
-```
+## ❓ FAQ
 
-## 说明
+<details>
+<summary><strong>它是codex插件吗</strong></summary>
 
-- 这个项目不是 Codex 的替代品。
-- 它不需要修改官方 Codex CLI 源码。
-- 它是在 Codex 前面加了一层本地、可编辑的上下文层。
-- Codex Desktop 支持比 Codex CLI 支持更实验一些。
+不是。Codex Context Studio 是围绕 Codex 的本地上下文层，通过代理技术实现
+
+</details>
+
+<details>
+<summary><strong>它会让缓存崩掉吗</strong></summary>
+
+压缩不是经常性事件，压缩后只重算一次，比带着无用上下文会更省成本。缓存命中率实测只降低5-10%。
+
+</details>
+
+<details>
+<summary><strong>为什么不直接依赖自动压缩？</strong></summary>
+
+兼容原有压缩，项目还能帮助替换压缩词，我们做了更精确的针对压缩功能。
+
+</details>
+
+<details>
+<summary><strong>谁适合用它？</strong></summary>
+
+想要更好的控制上下文，对压缩有自己的想法的人，或者想修改codex提示词的人。
+
+</details>
+
+---
+
+<p align="center">
+  <sub>GPL-3.0 · Made with ❤️ for Codex power users</sub>
+</p>

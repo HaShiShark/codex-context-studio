@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 
 import MarkdownRenderer from './MarkdownRenderer';
 import type { AttachmentRecord, MessageBlock, MessageRecord, ToolEvent } from '../types';
+import type { UiLocale } from '../i18n';
 import { formatBytes } from '../utils';
 
 export type MessageContentVariant = 'default' | 'context-map';
@@ -9,6 +10,7 @@ export type MessageContentVariant = 'default' | 'context-map';
 interface MessageContentProps {
   record: MessageRecord;
   variant?: MessageContentVariant;
+  uiLocale?: UiLocale;
 }
 
 interface ParsedToolOutput {
@@ -194,18 +196,27 @@ function webSearchActionJson(action: WebSearchAction | null, detail: string) {
   return detail || 'web_search_call';
 }
 
-function toolGroupLabel(events: ToolEvent[]) {
+function toolGroupLabel(events: ToolEvent[], uiLocale: UiLocale) {
   const allShellEvents = events.every(isShellToolEvent);
   const allWebSearchEvents = events.every((event) => isWebSearchEvent(event));
 
   if (allWebSearchEvents) {
+    if (uiLocale !== 'zh-CN') {
+      return `Web search ${events.length} time${events.length === 1 ? '' : 's'}`;
+    }
     return `网页搜索 ${events.length} 次`;
   }
 
   if (allShellEvents) {
+    if (uiLocale !== 'zh-CN') {
+      return `Ran ${events.length} command${events.length === 1 ? '' : 's'}`;
+    }
     return `已运行 ${events.length} 条命令`;
   }
 
+  if (uiLocale !== 'zh-CN') {
+    return `Used ${events.length} tool${events.length === 1 ? '' : 's'}`;
+  }
   return `调用了 ${events.length} 个工具`;
 }
 
@@ -457,9 +468,11 @@ function ToolInvocationItem({
 
 function ToolInvocationGroup({
   events,
+  uiLocale,
   variant = 'default',
 }: {
   events: ToolEvent[];
+  uiLocale: UiLocale;
   variant?: MessageContentVariant;
 }) {
   const [isGroupOpen, setIsGroupOpen] = useState(() => shouldOpenToolGroupInitially(events));
@@ -472,7 +485,7 @@ function ToolInvocationGroup({
         type="button"
         onClick={() => setIsGroupOpen((previous) => !previous)}
       >
-        <span>{toolGroupLabel(events)}</span>
+        <span>{toolGroupLabel(events, uiLocale)}</span>
         <i className="ph-light ph-caret-right inline-tool-group-chevron" />
       </button>
 
@@ -490,7 +503,7 @@ function ToolInvocationGroup({
   );
 }
 
-function renderAssistantBlocks(record: MessageRecord, variant: MessageContentVariant) {
+function renderAssistantBlocks(record: MessageRecord, variant: MessageContentVariant, uiLocale: UiLocale) {
   if (record.blocks.length > 0) {
     const renderedBlocks: ReactNode[] = [];
     let pendingToolEvents: ToolEvent[] = [];
@@ -505,6 +518,7 @@ function renderAssistantBlocks(record: MessageRecord, variant: MessageContentVar
         <ToolInvocationGroup
           events={pendingToolEvents}
           key={`tool-group-${pendingToolStartIndex}-${pendingToolEvents.length}`}
+          uiLocale={uiLocale}
           variant={variant}
         />,
       );
@@ -572,6 +586,7 @@ function renderUserBlocks(record: MessageRecord, variant: MessageContentVariant)
 
 export default function MessageContent({
   record,
+  uiLocale = 'en-US',
   variant = 'default',
 }: MessageContentProps) {
   const isAssistant = record.role === 'an';
@@ -580,7 +595,7 @@ export default function MessageContent({
     <>
       <ThinkingState record={record} />
       {renderAttachments(record.attachments)}
-      {isAssistant ? renderAssistantBlocks(record, variant) : renderUserBlocks(record, variant)}
+      {isAssistant ? renderAssistantBlocks(record, variant, uiLocale) : renderUserBlocks(record, variant)}
     </>
   );
 }
