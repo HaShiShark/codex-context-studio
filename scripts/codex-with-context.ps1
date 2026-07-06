@@ -58,7 +58,7 @@ function Get-CodexUpstreamInfo {
 
   if ($openaiBaseUrl) { $effectiveBaseUrl = $openaiBaseUrl }
 
-  if ($modelProvider -ne "openai") {
+  if (-not [string]::Equals($modelProvider, "openai", [System.StringComparison]::Ordinal)) {
     $escapedId = [regex]::Escape($modelProvider)
     $sectionPattern = "\[model_providers\.$escapedId\][\s\S]*?(?=\[\s*model_providers\.|\z)"
     $sectionMatch = [regex]::Match($content, $sectionPattern)
