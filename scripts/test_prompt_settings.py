@@ -143,6 +143,18 @@ def test_compact_prompt_uses_configured_manual_and_auto_defaults() -> None:
         assert is_local_compact_prompt_text("custom auto compact") is True
 
 
+def test_context_workbench_defaults_to_codex_55() -> None:
+    with isolated_settings():
+        settings = config_module.load_settings()
+        assert settings.context_workbench_provider_id == config_module.DEFAULT_CONTEXT_WORKBENCH_PROVIDER_ID
+        assert settings.context_workbench_model == config_module.DEFAULT_CONTEXT_WORKBENCH_MODEL
+
+        config_module.save_settings(codex_system_prompt="custom context prompt")
+        settings = config_module.load_settings()
+        assert settings.context_workbench_provider_id == config_module.DEFAULT_CONTEXT_WORKBENCH_PROVIDER_ID
+        assert settings.context_workbench_model == config_module.DEFAULT_CONTEXT_WORKBENCH_MODEL
+
+
 def main() -> None:
     tests = [
         test_first_codex_instructions_updates_default_and_current_on_next_proxy_start,
@@ -150,6 +162,7 @@ def main() -> None:
         test_first_codex_instructions_only_scans_top_level_instructions,
         test_codex_system_prompt_override_replaces_forwarded_instructions,
         test_compact_prompt_uses_configured_manual_and_auto_defaults,
+        test_context_workbench_defaults_to_codex_55,
     ]
     for test in tests:
         test()

@@ -28,7 +28,14 @@ from agent_runtime.core.stream_events import (
     ToolCallReadyEvent,
 )
 from simple_agent.agent import BridgedFunctionCall, SimpleAgent, ToolEvent, sanitize_text
-from simple_agent.config import CODEX_PROXY_BASE_URL, CODEX_PROXY_PROVIDER_ID, DEFAULT_CODEX_PROXY_MODELS, Settings
+from simple_agent.config import (
+    CODEX_PROXY_BASE_URL,
+    CODEX_PROXY_PROVIDER_ID,
+    DEFAULT_CODEX_PROXY_MODELS,
+    DEFAULT_CONTEXT_WORKBENCH_MODEL,
+    DEFAULT_CONTEXT_WORKBENCH_PROVIDER_ID,
+    Settings,
+)
 from simple_agent.codex_tool_registry import ToolExecution
 from simple_agent.provider_clients import ClaudeRESTClient, GeminiRESTClient
 try:
@@ -58,14 +65,13 @@ from backend.web_context import (
 )
 
 def context_workbench_settings_payload(settings: Settings) -> dict[str, object]:
-    default_context_model = sanitize_text(DEFAULT_CODEX_PROXY_MODELS[0].get("id") or "").strip() or "gpt-5.5"
     return {
         "context_workbench_model": sanitize_text(settings.context_workbench_model or "").strip()
-        or default_context_model,
+        or DEFAULT_CONTEXT_WORKBENCH_MODEL,
         "context_workbench_provider_id": sanitize_text(
             settings.context_workbench_provider_id or ""
         ).strip()
-        or CODEX_PROXY_PROVIDER_ID,
+        or DEFAULT_CONTEXT_WORKBENCH_PROVIDER_ID,
         "context_token_warning_threshold": int(settings.context_token_warning_threshold or 5000),
         "context_token_critical_threshold": int(settings.context_token_critical_threshold or 10000),
         "user_locale": sanitize_text(settings.user_locale or "").strip() or "en-US",
@@ -155,8 +161,7 @@ def build_context_chat_runtime(
         )
     )
 
-    default_context_model = sanitize_text(DEFAULT_CODEX_PROXY_MODELS[0].get("id") or "").strip() or "gpt-5.5"
-    request_model = sanitize_text(settings.context_workbench_model or "").strip() or default_context_model
+    request_model = sanitize_text(settings.context_workbench_model or "").strip() or DEFAULT_CONTEXT_WORKBENCH_MODEL
     instructions = "\n".join(
         [
             "You are a context-maintenance assistant for a Codex conversation.",
@@ -358,12 +363,11 @@ def context_workbench_provider(settings: Settings) -> dict[str, Any]:
         return provider
 
     return {
-        "id": CODEX_PROXY_PROVIDER_ID,
+        "id": DEFAULT_CONTEXT_WORKBENCH_PROVIDER_ID,
         "name": "Codex",
         "provider_type": "responses",
         "api_base_url": CODEX_PROXY_BASE_URL,
-        "default_model": sanitize_text(DEFAULT_CODEX_PROXY_MODELS[0].get("id") or "").strip()
-        or "gpt-5.5",
+        "default_model": DEFAULT_CONTEXT_WORKBENCH_MODEL,
     }
 
 
@@ -1313,8 +1317,7 @@ def context_workbench_provider_payloads(settings: Settings, *, refresh_models: b
                     "provider_type": "responses",
                     "enabled": True,
                     "api_base_url": CODEX_PROXY_BASE_URL,
-                    "default_model": sanitize_text(DEFAULT_CODEX_PROXY_MODELS[0].get("id") or "").strip()
-                    or "gpt-5.5",
+                    "default_model": DEFAULT_CONTEXT_WORKBENCH_MODEL,
                     "models": DEFAULT_CODEX_PROXY_MODELS,
                 },
                 settings,

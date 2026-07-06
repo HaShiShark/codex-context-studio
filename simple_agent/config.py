@@ -40,6 +40,8 @@ DEFAULT_CODEX_PROXY_MODELS: tuple[dict[str, str], ...] = (
     {"id": "gpt-5.4", "label": "gpt-5.4", "group": "Codex", "provider": "Codex"},
     {"id": "gpt-5.2", "label": "gpt-5.2", "group": "Codex", "provider": "Codex"},
 )
+DEFAULT_CONTEXT_WORKBENCH_PROVIDER_ID = CODEX_PROXY_PROVIDER_ID
+DEFAULT_CONTEXT_WORKBENCH_MODEL = "gpt-5.5"
 
 DEFAULT_RESPONSE_PROVIDERS: tuple[dict[str, object], ...] = (
     {
@@ -537,7 +539,7 @@ def load_settings() -> Settings:
         stored.get("context_workbench_provider_id")
         or os.getenv("HASH_CONTEXT_WORKBENCH_PROVIDER_ID"),
         response_providers,
-        fallback_provider_id=CODEX_PROXY_PROVIDER_ID,
+        fallback_provider_id=DEFAULT_CONTEXT_WORKBENCH_PROVIDER_ID,
     )
 
     active_provider = next(
@@ -562,7 +564,7 @@ def load_settings() -> Settings:
     context_workbench_model = (
         raw_context_workbench_model
         or _clean_string(context_provider.get("default_model"))
-        or _clean_string(DEFAULT_CODEX_PROXY_MODELS[0].get("id"))
+        or DEFAULT_CONTEXT_WORKBENCH_MODEL
         or model
     )
     tool_settings = normalize_tool_settings(stored.get("tool_settings"))
@@ -841,7 +843,7 @@ def save_settings(
         or current.get("context_workbench_provider_id")
         or loaded.context_workbench_provider_id,
         ordered_records,
-        fallback_provider_id=CODEX_PROXY_PROVIDER_ID,
+        fallback_provider_id=DEFAULT_CONTEXT_WORKBENCH_PROVIDER_ID,
     )
     context_provider = current_by_id.get(next_context_workbench_provider_id) or active_provider
     current["context_workbench_provider_id"] = next_context_workbench_provider_id
@@ -854,6 +856,7 @@ def save_settings(
         else:
             next_context_workbench_model = (
                 _clean_string(context_provider.get("default_model"))
+                or DEFAULT_CONTEXT_WORKBENCH_MODEL
                 or _clean_string(current.get("model"))
                 or loaded.model
             )
@@ -863,6 +866,7 @@ def save_settings(
     ):
         next_context_workbench_model = (
             _clean_string(context_provider.get("default_model"))
+            or DEFAULT_CONTEXT_WORKBENCH_MODEL
             or _clean_string(current.get("model"))
             or loaded.model
         )
