@@ -201,6 +201,7 @@ function Write-Shims {
   New-Item -ItemType Directory -Force -Path $shimDir | Out-Null
   $managerScript = (Join-Path $projectRoot.Path "scripts\codex-ctx-proxy.ps1")
   $escapedManagerScript = $managerScript.Replace("'", "''")
+  Set-Content -Path (Join-Path $shimDir "current-project-root.txt") -Value $projectRoot.Path -Encoding UTF8
 
   $psShim = @"
 `$ErrorActionPreference = "Stop"
@@ -216,6 +217,73 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$managerScript" __dispatch 
 exit /b %ERRORLEVEL%
 "@
   Set-Content -Path (Join-Path $shimDir "codex.cmd") -Value $cmdShim -Encoding ASCII
+
+  $hookPsShim = @'
+$ErrorActionPreference = "Stop"
+$rootFile = Join-Path $PSScriptRoot "current-project-root.txt"
+$statePath = if ($env:HASH_CONTEXT_PROXY_SWITCH_STATE) { $env:HASH_CONTEXT_PROXY_SWITCH_STATE } else { Join-Path $env:USERPROFILE ".hash-context-codex\codex-ctx-proxy.json" }
+$projectRoot = ""
+if (Test-Path -LiteralPath $rootFile) {
+  $projectRoot = (Get-Content -Raw -LiteralPath $rootFile).Trim()
+}
+if (-not $projectRoot -and (Test-Path -LiteralPath $statePath)) {
+  try {
+    $state = Get-Content -Raw -LiteralPath $statePath | ConvertFrom-Json
+    $projectRoot = ([string] $state.project_root).Trim()
+  } catch {
+  }
+}
+if (-not $projectRoot) {
+  throw "Hash Context project root was not found. Reinstall the codex ctx proxy shim."
+}
+$target = Join-Path $projectRoot "scripts\codex-context-hook.ps1"
+& $target
+exit $LASTEXITCODE
+'@
+  Set-Content -Path (Join-Path $shimDir "codex-context-hook.ps1") -Value $hookPsShim -Encoding UTF8
+
+  $hookCmdShim = @'
+@echo off
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0codex-context-hook.ps1"
+exit /b %ERRORLEVEL%
+'@
+  Set-Content -Path (Join-Path $shimDir "codex-context-hook.cmd") -Value $hookCmdShim -Encoding ASCII
+
+  $notifyPsShim = @'
+param(
+  [Parameter(ValueFromRemainingArguments = $true)]
+  [string[]] $ForwardArgs
+)
+
+$ErrorActionPreference = "Stop"
+$rootFile = Join-Path $PSScriptRoot "current-project-root.txt"
+$statePath = if ($env:HASH_CONTEXT_PROXY_SWITCH_STATE) { $env:HASH_CONTEXT_PROXY_SWITCH_STATE } else { Join-Path $env:USERPROFILE ".hash-context-codex\codex-ctx-proxy.json" }
+$projectRoot = ""
+if (Test-Path -LiteralPath $rootFile) {
+  $projectRoot = (Get-Content -Raw -LiteralPath $rootFile).Trim()
+}
+if (-not $projectRoot -and (Test-Path -LiteralPath $statePath)) {
+  try {
+    $state = Get-Content -Raw -LiteralPath $statePath | ConvertFrom-Json
+    $projectRoot = ([string] $state.project_root).Trim()
+  } catch {
+  }
+}
+if (-not $projectRoot) {
+  throw "Hash Context project root was not found. Reinstall the codex ctx proxy shim."
+}
+$target = Join-Path $projectRoot "scripts\codex-turn-ended-notify.ps1"
+& $target @ForwardArgs
+exit $LASTEXITCODE
+'@
+  Set-Content -Path (Join-Path $shimDir "codex-turn-ended-notify.ps1") -Value $notifyPsShim -Encoding UTF8
+
+  $notifyCmdShim = @'
+@echo off
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0codex-turn-ended-notify.ps1" %*
+exit /b %ERRORLEVEL%
+'@
+  Set-Content -Path (Join-Path $shimDir "codex-turn-ended-notify.cmd") -Value $notifyCmdShim -Encoding ASCII
 }
 
 function Ensure-Installed {
@@ -501,9 +569,10 @@ function Get-HashContextCodexArgs {
     $requiresAuth = "false"
   }
 
-  $hookCommand = (Join-Path $projectRoot.Path "scripts\codex-context-hook.cmd").Replace("\", "/")
+  Write-Shims
+  $hookCommand = (Join-Path $shimDir "codex-context-hook.cmd").Replace("\", "/")
   $hookConfig = "hooks.UserPromptSubmit=[{matcher='*',hooks=[{type='command',command='$hookCommand',timeout=10,statusMessage='HashContext'}]}]"
-  $notifyCommand = (Join-Path $projectRoot.Path "scripts\codex-turn-ended-notify.cmd").Replace("\", "/")
+  $notifyCommand = (Join-Path $shimDir "codex-turn-ended-notify.cmd").Replace("\", "/")
   $notifyConfig = "notify=['$notifyCommand']"
 
   $configArgs = @(

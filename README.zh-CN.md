@@ -167,7 +167,7 @@ npm run typecheck
 npm test
 
 # 构建 Windows 安装包
-npm run dist:win
+npm run package:win
 ```
 
 ---

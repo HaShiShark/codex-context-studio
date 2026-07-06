@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -108,9 +107,6 @@ def _resolve_registry_path() -> Path:
         Path(__file__).resolve().parents[1] / REGISTRY_RELATIVE_PATH,
         Path.cwd() / REGISTRY_RELATIVE_PATH,
     ]
-    pyinstaller_root = getattr(sys, "_MEIPASS", None)
-    if pyinstaller_root:
-        candidates.insert(0, Path(pyinstaller_root) / REGISTRY_RELATIVE_PATH)
 
     for candidate in candidates:
         if candidate.is_file():

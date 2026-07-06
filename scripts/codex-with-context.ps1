@@ -162,9 +162,7 @@ function Stop-ProjectProcessOnPort {
         $commandLine -like "*proxy_fastapi.py*" -or
         $commandLine -like "*web_server.py*" -or
         $commandLine -like "*backend.proxy_fastapi*" -or
-        $commandLine -like "*backend.web_server*" -or
-        $commandLine -like "*hash-proxy-server*" -or
-        $commandLine -like "*hash-web-server*") {
+        $commandLine -like "*backend.web_server*") {
       Write-Host "[hash-context] stopping stale local service on port $Port pid=$($process.ProcessId)" -ForegroundColor DarkYellow
       & taskkill /pid $process.ProcessId /t /f | Out-Null
     }
@@ -186,9 +184,17 @@ function Get-PackagedWindowExe {
 }
 
 function Start-ContextWindow {
+  $packagedLogDir = Join-Path $env:USERPROFILE ".hash-context-codex\logs"
   $packagedExe = Get-PackagedWindowExe
   if ($packagedExe) {
-    return Start-Process -FilePath $packagedExe -WindowStyle Hidden -PassThru
+    New-Item -ItemType Directory -Force -Path $packagedLogDir | Out-Null
+    return Start-Process `
+      -FilePath $packagedExe `
+      -WorkingDirectory (Split-Path -Parent $packagedExe) `
+      -WindowStyle Hidden `
+      -RedirectStandardOutput (Join-Path $packagedLogDir "electron-window.stdout.log") `
+      -RedirectStandardError (Join-Path $packagedLogDir "electron-window.stderr.log") `
+      -PassThru
   }
 
   $logDir = Join-Path $root.Path "logs"

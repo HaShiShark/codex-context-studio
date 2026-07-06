@@ -166,7 +166,7 @@ npm run typecheck
 npm test
 
 # Build Windows installer
-npm run dist:win
+npm run package:win
 ```
 
 ---

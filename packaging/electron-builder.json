@@ -1,0 +1,52 @@
+{
+  "appId": "dev.codex-context.proxy",
+  "productName": "Codex Context Proxy",
+  "asar": false,
+  "directories": {
+    "output": "release"
+  },
+  "files": [
+    "electron/**/*",
+    "backend/**/*",
+    "agent_runtime/**/*",
+    "simple_agent/**/*",
+    "shared/**/*",
+    "scripts/**/*",
+    "static/**/*",
+    "react_app/dist/**/*",
+    "codex_context.py",
+    "requirements.txt",
+    "RELEASE.md",
+    ".env.example",
+    "package.json",
+    {
+      "from": "packaging/dist/python",
+      "to": "python-runtime",
+      "filter": [
+        "**/*"
+      ]
+    }
+  ],
+  "win": {
+    "icon": "electron/assets/hash-icon.ico",
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      }
+    ],
+    "signAndEditExecutable": false,
+    "forceCodeSigning": false
+  },
+  "afterPack": "packaging/after-pack.cjs",
+  "nsis": {
+    "oneClick": false,
+    "perMachine": false,
+    "allowToChangeInstallationDirectory": true,
+    "installerIcon": "electron/assets/hash-icon.ico",
+    "uninstallerIcon": "electron/assets/hash-icon.ico",
+    "include": "packaging/windows/installer.nsh"
+  }
+}

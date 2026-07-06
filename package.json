@@ -1,6 +1,6 @@
 {
   "name": "hash-context-codex-lab",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "private": true,
   "description": "Local context proxy and workbench companion for Codex.",
   "author": "",
@@ -32,12 +32,9 @@
     "test:frontend-contract": "node scripts/run-frontend-contract-tests.mjs",
     "build": "npm run build:react",
     "build:react": "vite build --config react_app/vite.config.ts",
-    "build:python": "node scripts/build-python.mjs",
     "preview:react": "vite preview --config react_app/vite.config.ts",
-    "pack:win": "npm run build:react && npm run build:python && electron-builder --win --dir",
-    "dist:win": "npm run build:react && npm run build:python && electron-builder --win nsis --publish never",
-    "pack:mac": "npm run build:react && npm run build:python && electron-builder --mac --dir",
-    "dist:mac": "npm run build:react && npm run build:python && electron-builder --mac --publish never"
+    "package:win": "node packaging/build.mjs --target installer",
+    "package:win:dir": "node packaging/build.mjs --target dir"
   },
   "dependencies": {
     "@phosphor-icons/web": "^2.1.2",
@@ -61,55 +58,5 @@
     "electron-builder": "^26.8.1",
     "typescript": "^5.9.3",
     "vite": "^7.1.12"
-  },
-  "build": {
-    "appId": "dev.codex-context.proxy",
-    "productName": "Codex Context Proxy",
-    "asar": false,
-    "directories": {
-      "output": "release"
-    },
-    "files": [
-      "electron/**/*",
-      "codex_context.py",
-      "backend/**/*",
-      "requirements.txt",
-      "RELEASE.md",
-      ".env.example",
-      "static/**/*",
-      "react_app/dist/**/*",
-      "python_dist/*",
-      "python_dist/**/*",
-      "shared/**/*",
-      "scripts/**/*",
-      "simple_agent/**/*",
-      "agent_runtime/**/*",
-      "package.json"
-    ],
-    "win": {
-      "icon": "electron/assets/hash-icon.ico",
-      "target": "nsis",
-      "signAndEditExecutable": false,
-      "forceCodeSigning": false
-    },
-    "mac": {
-      "icon": "electron/assets/hash-icon.icns",
-      "target": [
-        "dmg",
-        "zip"
-      ],
-      "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
-      "category": "public.app-category.developer-tools",
-      "hardenedRuntime": false,
-      "gatekeeperAssess": false,
-      "identity": null
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "installerIcon": "electron/assets/hash-icon.ico",
-      "uninstallerIcon": "electron/assets/hash-icon.ico",
-      "include": "build/installer.nsh"
-    }
   }
 }

@@ -9,6 +9,7 @@ $projectRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $codexHome = Join-Path $env:USERPROFILE ".codex"
 $configPath = if ($env:HASH_CONTEXT_DESKTOP_CONFIG) { $env:HASH_CONTEXT_DESKTOP_CONFIG } else { Join-Path $codexHome "config.toml" }
 $stateDir = if ($env:HASH_CONTEXT_DESKTOP_STATE_DIR) { $env:HASH_CONTEXT_DESKTOP_STATE_DIR } else { Join-Path $env:USERPROFILE ".hash-context-codex" }
+$shimDir = if ($env:HASH_CONTEXT_SHIM_DIR) { $env:HASH_CONTEXT_SHIM_DIR } else { Join-Path $stateDir "bin" }
 $statePath = Join-Path $stateDir "codex-desktop-proxy.json"
 $proxyPort = if ($env:HASH_CONTEXT_PROXY_PORT) { $env:HASH_CONTEXT_PROXY_PORT } else { "8787" }
 $controlPort = if ($env:HASH_CONTEXT_CONTROL_PORT) { $env:HASH_CONTEXT_CONTROL_PORT } else { "8790" }
@@ -31,6 +32,83 @@ function Save-DesktopState {
   param([hashtable] $State)
   New-Item -ItemType Directory -Force -Path $stateDir | Out-Null
   $State | ConvertTo-Json -Depth 6 | Set-Content -Path $statePath -Encoding UTF8
+}
+
+function Write-DesktopCommandShims {
+  New-Item -ItemType Directory -Force -Path $shimDir | Out-Null
+  Set-Content -Path (Join-Path $shimDir "current-project-root.txt") -Value $projectRoot.Path -Encoding UTF8
+
+  $hookPsShim = @'
+$ErrorActionPreference = "Stop"
+$rootFile = Join-Path $PSScriptRoot "current-project-root.txt"
+$statePath = if ($env:HASH_CONTEXT_PROXY_SWITCH_STATE) { $env:HASH_CONTEXT_PROXY_SWITCH_STATE } else { Join-Path $env:USERPROFILE ".hash-context-codex\codex-ctx-proxy.json" }
+$projectRoot = ""
+if (Test-Path -LiteralPath $rootFile) {
+  $projectRoot = (Get-Content -Raw -LiteralPath $rootFile).Trim()
+}
+if (-not $projectRoot -and (Test-Path -LiteralPath $statePath)) {
+  try {
+    $state = Get-Content -Raw -LiteralPath $statePath | ConvertFrom-Json
+    $projectRoot = ([string] $state.project_root).Trim()
+  } catch {
+  }
+}
+if (-not $projectRoot) {
+  throw "Hash Context project root was not found. Reinstall the codex ctx proxy shim."
+}
+$target = Join-Path $projectRoot "scripts\codex-context-hook.ps1"
+& $target
+exit $LASTEXITCODE
+'@
+  Set-Content -Path (Join-Path $shimDir "codex-context-hook.ps1") -Value $hookPsShim -Encoding UTF8
+
+  $hookCmdShim = @'
+@echo off
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0codex-context-hook.ps1"
+exit /b %ERRORLEVEL%
+'@
+  Set-Content -Path (Join-Path $shimDir "codex-context-hook.cmd") -Value $hookCmdShim -Encoding ASCII
+
+  $notifyPsShim = @'
+param(
+  [Parameter(ValueFromRemainingArguments = $true)]
+  [string[]] $ForwardArgs
+)
+
+$ErrorActionPreference = "Stop"
+$rootFile = Join-Path $PSScriptRoot "current-project-root.txt"
+$statePath = if ($env:HASH_CONTEXT_PROXY_SWITCH_STATE) { $env:HASH_CONTEXT_PROXY_SWITCH_STATE } else { Join-Path $env:USERPROFILE ".hash-context-codex\codex-ctx-proxy.json" }
+$projectRoot = ""
+if (Test-Path -LiteralPath $rootFile) {
+  $projectRoot = (Get-Content -Raw -LiteralPath $rootFile).Trim()
+}
+if (-not $projectRoot -and (Test-Path -LiteralPath $statePath)) {
+  try {
+    $state = Get-Content -Raw -LiteralPath $statePath | ConvertFrom-Json
+    $projectRoot = ([string] $state.project_root).Trim()
+  } catch {
+  }
+}
+if (-not $projectRoot) {
+  throw "Hash Context project root was not found. Reinstall the codex ctx proxy shim."
+}
+$target = Join-Path $projectRoot "scripts\codex-turn-ended-notify.ps1"
+& $target @ForwardArgs
+exit $LASTEXITCODE
+'@
+  Set-Content -Path (Join-Path $shimDir "codex-turn-ended-notify.ps1") -Value $notifyPsShim -Encoding UTF8
+
+  $notifyCmdShim = @'
+@echo off
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0codex-turn-ended-notify.ps1" %*
+exit /b %ERRORLEVEL%
+'@
+  Set-Content -Path (Join-Path $shimDir "codex-turn-ended-notify.cmd") -Value $notifyCmdShim -Encoding ASCII
+
+  return @{
+    hook_cmd = Join-Path $shimDir "codex-context-hook.cmd"
+    notify_cmd = Join-Path $shimDir "codex-turn-ended-notify.cmd"
+  }
 }
 
 function Get-ProxySnapshot {
@@ -162,18 +240,47 @@ function ConvertTo-TomlInlineStringArray {
   return "[ " + ($quoted -join ", ") + " ]"
 }
 
+function Test-HashContextNotifyCommand {
+  param([string] $Value)
+  if (-not $Value) {
+    return $false
+  }
+  return (
+    [string] $Value -like "*codex-turn-ended-notify.cmd" -or
+    [string] $Value -like "*codex-turn-ended-notify.ps1"
+  )
+}
+
 function Normalize-OriginalNotifyArgs {
   param([string[]] $NotifyArgs)
-  if (-not $NotifyArgs -or $NotifyArgs.Count -eq 0) {
+  $args = @($NotifyArgs | Where-Object { $null -ne $_ -and ([string] $_).Trim() })
+  if (-not $args -or $args.Count -eq 0) {
     return @()
   }
-  if ([string] $NotifyArgs[0] -like "*codex-turn-ended-notify.cmd") {
-    if ($NotifyArgs.Count -gt 1) {
-      return @($NotifyArgs[1..($NotifyArgs.Count - 1)])
+
+  while ($args.Count -gt 0 -and (Test-HashContextNotifyCommand -Value ([string] $args[0]))) {
+    if ($args.Count -le 1) {
+      return @()
     }
-    return @()
+    $args = @($args[1..($args.Count - 1)])
   }
-  return @($NotifyArgs)
+
+  $clean = @()
+  for ($i = 0; $i -lt $args.Count; $i++) {
+    $arg = [string] $args[$i]
+    if ($arg -eq "--previous-notify") {
+      if (($i + 1) -lt $args.Count) {
+        $i += 1
+      }
+      continue
+    }
+    if (Test-HashContextNotifyCommand -Value $arg) {
+      continue
+    }
+    $clean += $arg
+  }
+
+  return @($clean)
 }
 
 function Remove-DesktopManagedConfig {
@@ -414,9 +521,10 @@ function Set-DesktopConfigEnabled {
   $text = Remove-DesktopManagedConfig -Text $text -RemoveContextWindow:(-not $RequiresOpenAiAuth)
   $text = $text -replace '(?m)^\s*model_provider\s*=\s*"[^"]*"\s*\r?\n?', ''
 
-  $hookPath = (Join-Path $projectRoot.Path "scripts\codex-context-hook.cmd").Replace("\", "/")
+  $commandShims = Write-DesktopCommandShims
+  $hookPath = ([string] $commandShims.hook_cmd).Replace("\", "/")
   $hookCommand = ConvertTo-TomlBasicString $hookPath
-  $notifyPath = (Join-Path $projectRoot.Path "scripts\codex-turn-ended-notify.cmd").Replace("\", "/")
+  $notifyPath = ([string] $commandShims.notify_cmd).Replace("\", "/")
   $notifyArgs = @($notifyPath) + @($originalNotifyArgs)
   $notifyConfig = ConvertTo-TomlInlineStringArray -Values $notifyArgs
 
@@ -482,6 +590,7 @@ function Restore-DesktopConfig {
   $state = Read-DesktopState
   if (-not $state) {
     Write-Host "[hash-context] no proxy state to restore" -ForegroundColor DarkYellow
+    Repair-DesktopConfig
     return
   }
 
@@ -530,10 +639,16 @@ function Repair-DesktopConfig {
 
   $originalText = Get-Content -Raw -Path $configPath
   $repairedText = Repair-ProjectTables -Text $originalText
+  $notifyArgs = Normalize-OriginalNotifyArgs -NotifyArgs (ConvertFrom-TomlInlineStringArray -Text $repairedText -Key "notify")
+  $repairedText = [regex]::Replace($repairedText, '(?m)^\s*notify\s*=\s*\[[^\r\n]*\]\s*\r?\n?', '')
+  if ($notifyArgs.Count -gt 0) {
+    $notifyConfig = ConvertTo-TomlInlineStringArray -Values @($notifyArgs)
+    $repairedText = "notify = $notifyConfig`r`n" + $repairedText.TrimStart()
+  }
   $normalizedOriginal = $originalText.TrimEnd() + "`r`n"
 
   if ($repairedText -eq $normalizedOriginal) {
-    Write-Host "[hash-context] config repair: no malformed projects tables found"
+    Write-Host "[hash-context] config repair: no changes needed"
     return
   }
 
@@ -587,8 +702,6 @@ function Get-ProjectPortOwners {
           $commandLine -like "*web_server.py*" -or
           $commandLine -like "*backend.proxy_fastapi*" -or
           $commandLine -like "*backend.web_server*" -or
-          $commandLine -like "*hash-proxy-server*" -or
-          $commandLine -like "*hash-web-server*" -or
           $commandLine -like "*electron/context-window.cjs*" -or
           $commandLine -like "*react_app\vite.config.ts*"
         )) {
@@ -637,8 +750,6 @@ function Get-ProjectServiceProcesses {
           $commandLine -like "*web_server.py*" -or
           $commandLine -like "*backend.proxy_fastapi*" -or
           $commandLine -like "*backend.web_server*" -or
-          $commandLine -like "*hash-proxy-server*" -or
-          $commandLine -like "*hash-web-server*" -or
           $commandLine -like "*electron/context-window.cjs*" -or
           $commandLine -like "*electron\context-window.cjs*" -or
           $commandLine -like "*Codex Context Proxy.exe*" -or
@@ -700,13 +811,20 @@ function Get-PackagedWindowExe {
 }
 
 function Start-ContextWindow {
+  $logDir = Join-Path $stateDir "logs"
+  New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+
   $packagedExe = Get-PackagedWindowExe
   if ($packagedExe) {
-    return Start-Process -FilePath $packagedExe -WindowStyle Hidden -PassThru
+    return Start-Process `
+      -FilePath $packagedExe `
+      -WorkingDirectory (Split-Path -Parent $packagedExe) `
+      -WindowStyle Hidden `
+      -RedirectStandardOutput (Join-Path $logDir "electron-window.stdout.log") `
+      -RedirectStandardError (Join-Path $logDir "electron-window.stderr.log") `
+      -PassThru
   }
 
-  $logDir = Join-Path $projectRoot.Path "logs"
-  New-Item -ItemType Directory -Force -Path $logDir | Out-Null
   return Start-Process `
     -FilePath "npm.cmd" `
     -ArgumentList @("run", "window") `
@@ -875,6 +993,10 @@ function Update-ServicePid {
   if (-not $state) {
     return
   }
+  $originalNotifyArgs = @()
+  if ($state.PSObject.Properties.Name -contains "original_notify_args") {
+    $originalNotifyArgs = @($state.original_notify_args)
+  }
   Save-DesktopState @{
     version = 2
     enabled = [bool] $state.enabled
@@ -894,6 +1016,7 @@ function Update-ServicePid {
     upstream_base_url = if ($state.upstream_base_url) { [string] $state.upstream_base_url } else { "" }
     upstream_api_key = if ($state.upstream_api_key) { [string] $state.upstream_api_key } else { "" }
     upstream_provider_id = if ($state.upstream_provider_id) { [string] $state.upstream_provider_id } else { "" }
+    original_notify_args = @($originalNotifyArgs)
   }
 }
 

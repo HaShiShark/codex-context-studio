@@ -13,4 +13,6 @@ logs/
 data/
 data-gym-cache/
 react_app/dist/
+packaging/.cache/
+packaging/dist/
 tmp*/

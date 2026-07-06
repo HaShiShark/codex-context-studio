@@ -250,10 +250,10 @@ function sourcePythonCandidates(root) {
   return candidates;
 }
 
-function pythonScriptCommand(root, scriptName) {
+function pythonModuleCommand(root, moduleName) {
   for (const candidate of sourcePythonCandidates(root)) {
     if (pythonCandidateWorks(candidate)) {
-      return { command: candidate.command, args: [...candidate.args, scriptName] };
+      return { command: candidate.command, args: [...candidate.args, '-m', moduleName] };
     }
   }
 
@@ -267,31 +267,35 @@ function pythonScriptCommand(root, scriptName) {
   throw new Error('No usable Python runtime found. Run npm run setup:python or set HASH_CONTEXT_PYTHON to a Python with the project dependencies installed.');
 }
 
-function pythonServerCommand(root, scriptName, exeName) {
+function bundledPythonCommand(root, moduleName) {
+  const candidates = process.platform === 'win32'
+    ? [
+        path.join(root, 'python-runtime', 'python.exe'),
+        path.join(process.resourcesPath || root, 'app', 'python-runtime', 'python.exe'),
+      ]
+    : [
+        path.join(root, 'python-runtime', 'bin', 'python3'),
+        path.join(root, 'python-runtime', 'bin', 'python'),
+      ];
+
+  for (const bundledPython of candidates) {
+    if (fs.existsSync(bundledPython)) {
+      return { command: bundledPython, args: ['-m', moduleName] };
+    }
+  }
+
+  return null;
+}
+
+function pythonServerCommand(root, moduleName) {
   const preferSource =
     process.env.HASH_CONTEXT_PREFER_SOURCE_SERVERS === '1' ||
     (!app.isPackaged && process.env.HASH_CONTEXT_USE_BUNDLED_PYTHON !== '1');
   if (preferSource) {
-    return pythonScriptCommand(root, scriptName);
+    return pythonModuleCommand(root, moduleName);
   }
 
-  const candidates = process.platform === 'win32'
-    ? [
-        path.join(root, 'python_dist', exeName, `${exeName}.exe`),
-        path.join(root, 'python_dist', `${exeName}.exe`),
-      ]
-    : [
-        path.join(root, 'python_dist', exeName),
-        path.join(root, 'python_dist', exeName, exeName),
-      ];
-
-  for (const bundledExecutable of candidates) {
-    if (fs.existsSync(bundledExecutable)) {
-      return { command: bundledExecutable, args: [] };
-    }
-  }
-
-  return pythonScriptCommand(root, scriptName);
+  return bundledPythonCommand(root, moduleName) || pythonModuleCommand(root, moduleName);
 }
 
 function pythonPathForRoot(root) {
@@ -315,13 +319,15 @@ function cleanEnv(extra = {}) {
 function pipeChildLogs(child, label) {
   child.stdout.on('data', (chunk) => {
     const text = chunk.toString().trim();
-    console.log(`[${label}] ${text}`);
-    writeLog(`[${label}] ${text}`);
+    if (text) {
+      writeLog(`[${label}] ${text}`);
+    }
   });
   child.stderr.on('data', (chunk) => {
     const text = chunk.toString().trim();
-    console.error(`[${label}] ${text}`);
-    writeLog(`[${label}:error] ${text}`);
+    if (text) {
+      writeLog(`[${label}:error] ${text}`);
+    }
   });
 }
 
@@ -333,7 +339,7 @@ async function startBackend(root) {
   }
 
   writeLog('starting backend');
-  const serverCommand = pythonServerCommand(root, path.join('backend', 'web_server.py'), 'hash-web-server');
+  const serverCommand = pythonServerCommand(root, 'backend.web_server');
   backendProcess = spawn(serverCommand.command, serverCommand.args, {
     cwd: root,
     env: cleanEnv({
@@ -361,7 +367,7 @@ async function startProxy(root) {
   }
 
   writeLog('starting proxy');
-  const serverCommand = pythonServerCommand(root, path.join('backend', 'proxy_fastapi.py'), 'hash-proxy-server');
+  const serverCommand = pythonServerCommand(root, 'backend.proxy_fastapi');
   proxyProcess = spawn(serverCommand.command, serverCommand.args, {
     cwd: root,
     env: cleanEnv({

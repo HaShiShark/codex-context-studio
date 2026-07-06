@@ -1,24 +1,24 @@
-# Codex Context Studio v1.1.0
+# Codex Context Studio v1.1.1
 
-A visual, editable context layer for Codex. This release focuses on the Context Studio identity, clearer bilingual documentation, and safer transcript rebuilding for newer Codex request metadata.
+This release updates the Windows packaging pipeline and makes the installed app use a bundled embedded Python runtime instead of the previous PyInstaller server executables.
 
 ## What's New
 
-- Renamed the user-facing project identity to Codex Context Studio
-- Reworked the English and Chinese READMEs with updated feature descriptions, architecture diagrams, and screenshots
-- Moved screenshots into language-specific folders for clearer documentation
-- Preserved Codex internal turn metadata and turn IDs when rebuilding request input
-- Added support for `custom_tool_call.namespace` during response-to-request projection
-- Improved compact request metadata detection across differently cased client metadata keys
-- Localized grouped tool-call labels in the context workbench
-- Expanded proxy core and cursor delta tests for metadata and request rebuild behavior
+- Replaced the old PyInstaller packaging path with a dedicated `packaging/` build pipeline
+- Bundled an embedded Python runtime into the Electron app package
+- Updated Electron startup to run backend services through `python -m backend.web_server` and `python -m backend.proxy_fastapi`
+- Moved NSIS installer customization into `packaging/windows/installer.nsh`
+- Updated CLI and Desktop shims so hooks and notifications resolve through the installed shim directory
+- Improved Desktop config repair for managed notify commands
+- Redirected packaged Electron window logs to the user state log directory
+- Updated documentation to use `npm run package:win`
 
 ## Download
 
 Download and run:
 
 ```text
-Codex Context Proxy Setup 1.1.0.exe
+Codex Context Proxy Setup 1.1.1.exe
 ```
 
 After installation, open a new terminal and enable the proxy:
@@ -42,6 +42,5 @@ codex ctx proxy off
 ## Notes
 
 - This project does not replace Codex.
-- It does not modify the official Codex CLI source code.
 - CLI support is the primary path.
 - Codex Desktop support is experimental because it modifies local Codex configuration.
