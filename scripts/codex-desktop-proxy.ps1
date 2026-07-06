@@ -824,7 +824,9 @@ function Start-DesktopServices {
   $env:HASH_CONTEXT_START_HIDDEN = "1"
   $env:HASH_CONTEXT_CONTROL_PORT = $controlPort
   $env:HASH_CONTEXT_HOST = $loopbackHost
-  if ($null -eq $previousPreferSource -and $env:HASH_CONTEXT_USE_BUNDLED_PYTHON -ne "1") {
+  if ($null -eq $previousPreferSource -and
+      $env:HASH_CONTEXT_USE_BUNDLED_PYTHON -ne "1" -and
+      -not (Get-PackagedWindowExe)) {
     $env:HASH_CONTEXT_PREFER_SOURCE_SERVERS = "1"
   }
   $process = Start-ContextWindow
