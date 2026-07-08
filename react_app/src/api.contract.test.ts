@@ -1,4 +1,4 @@
-import { apiFetch, extractErrorMessage, streamContextChatRequest } from './api';
+import { apiFetch, extractErrorMessage, proxyRealtimeUrl, resetProxyUsageRequest, streamContextChatRequest } from './api';
 
 function assertEqual<T>(actual: T, expected: T, message: string): void {
   if (actual !== expected) {
@@ -105,11 +105,63 @@ async function testApiFetchUsesStatusFallbackForNonJsonError(): Promise<void> {
   }
 }
 
+async function testResetProxyUsageUsesBackendFacade(): Promise<void> {
+  const originalFetch = globalThis.fetch;
+  let seenPath = '';
+  let seenMethod = '';
+  let seenBody = '';
+  globalThis.fetch = async (input, init) => {
+    seenPath = String(input);
+    seenMethod = String(init?.method || 'GET');
+    seenBody = String(init?.body || '');
+    return jsonResponse({ cleared_count: 1, summary: {} }, { status: 200, statusText: 'OK' });
+  };
+
+  try {
+    const result = await resetProxyUsageRequest('session-1');
+    assertEqual(seenPath, '/api/proxy-session-usage-reset', 'reset usage goes through backend facade');
+    assertEqual(seenMethod, 'POST', 'reset usage uses POST');
+    assertEqual(seenBody, JSON.stringify({ session_id: 'session-1' }), 'reset usage sends session id body');
+    assertEqual(result.cleared_count, 1, 'reset usage returns proxy payload');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+function testProxyRealtimeUrlUsesRuntimePort(): void {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      location: {
+        protocol: 'http:',
+        hostname: '127.0.0.1',
+      },
+    },
+  });
+
+  try {
+    assertEqual(
+      proxyRealtimeUrl({ proxy_port: 9876, proxy_realtime_path: '/api/proxy/ws' }),
+      'ws://127.0.0.1:9876/api/proxy/ws',
+      'realtime url uses runtime proxy port',
+    );
+  } finally {
+    if (originalWindow) {
+      Object.defineProperty(globalThis, 'window', originalWindow);
+    } else {
+      delete (globalThis as { window?: Window }).window;
+    }
+  }
+}
+
 async function main(): Promise<void> {
   testExtractErrorMessage();
   await testApiFetchUsesStructuredErrorMessage();
   await testStreamRequestUsesStructuredErrorMessage();
   await testApiFetchUsesStatusFallbackForNonJsonError();
+  await testResetProxyUsageUsesBackendFacade();
+  testProxyRealtimeUrlUsesRuntimePort();
   console.log('ok - api error contract tests passed');
 }
 

@@ -16,14 +16,10 @@ try {
 $loopbackHost = if ($env:HASH_CONTEXT_HOST) { $env:HASH_CONTEXT_HOST } else { "localhost" }
 $serviceProbeHost = if ($loopbackHost -eq "localhost") { "127.0.0.1" } else { $loopbackHost }
 $proxyPort = if ($env:HASH_CONTEXT_PROXY_PORT) { $env:HASH_CONTEXT_PROXY_PORT } else { "8787" }
-
-function Get-ProjectRoot {
-  return (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-}
+$hashContextHome = Join-Path $env:USERPROFILE ".hash-context-codex"
 
 function Get-LogDir {
-  $root = Get-ProjectRoot
-  $logDir = Join-Path $root "logs"
+  $logDir = Join-Path $hashContextHome "logs"
   New-Item -ItemType Directory -Force -Path $logDir | Out-Null
   return $logDir
 }

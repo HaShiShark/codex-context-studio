@@ -181,10 +181,16 @@ export type ProxyRealtimeEvent = {
   code?: string;
 };
 
-export function proxyRealtimeUrl(): string {
+type ProxyRealtimeRuntime = NonNullable<InitPayload['runtime']>;
+
+export function proxyRealtimeUrl(runtime: ProxyRealtimeRuntime = {}): string {
   const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
   const hostname = window.location.hostname || 'localhost';
-  return `${protocol}://${hostname}:8787/api/proxy/ws`;
+  const proxyPort = Number(runtime.proxy_port || 8787);
+  const safeProxyPort = Number.isInteger(proxyPort) && proxyPort > 0 && proxyPort < 65536 ? proxyPort : 8787;
+  const realtimePath = runtime.proxy_realtime_path || '/api/proxy/ws';
+  const safeRealtimePath = realtimePath.startsWith('/') ? realtimePath : `/${realtimePath}`;
+  return `${protocol}://${hostname}:${safeProxyPort}${safeRealtimePath}`;
 }
 
 export function fetchProxySessionsRequest(): Promise<ProxySessionsResponse> {
@@ -214,7 +220,10 @@ export function updateProxySessionNodeLockRequest(payload: {
 export function resetProxyUsageRequest(
   sessionId: string,
 ): Promise<{ cleared_count: number; summary: ProxyUsageSummary }> {
-  return apiFetch('/api/proxy/sessions/' + encodeURIComponent(sessionId) + '/usage/reset', { method: 'POST' });
+  return apiFetch<{ cleared_count: number; summary: ProxyUsageSummary }>('/api/proxy-session-usage-reset', {
+    method: 'POST',
+    body: JSON.stringify({ session_id: sessionId }),
+  });
 }
 
 export function clearContextWorkbenchChatRequest(

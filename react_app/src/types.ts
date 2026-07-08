@@ -162,6 +162,10 @@ export interface InitPayload {
     ui_font_size?: number;
     user_locale?: string;
   };
+  runtime?: {
+    proxy_port?: number;
+    proxy_realtime_path?: string;
+  };
   active_session_id?: string;
   sessions?: Array<{ id: string; title: string; status: string; is_running?: boolean }>;
   conversations?: Record<string, TranscriptEntry[]>;

@@ -15,6 +15,7 @@ import ContextMapSidebar from './components/ContextMapSidebar';
 import { normalizeSupportedLocale, type UiLocale } from './i18n';
 import type {
   ContextWorkbenchChatMessage,
+  InitPayload,
   MessageRecord,
   ProxyUsageSummary,
   ReasoningOption,
@@ -213,6 +214,7 @@ export default function WorkbenchWindow() {
   const [contextWorkbenchChats, setContextWorkbenchChats] = useState<Record<string, ContextWorkbenchChatMessage[]>>({});
   const [reasoningOptions] = useState<ReasoningOption[]>(normalizeReasoningOptions());
   const [proxyUsageSummary, setProxyUsageSummary] = useState<ProxyUsageSummary | null>(null);
+  const [runtimeConfig, setRuntimeConfig] = useState<InitPayload['runtime']>({});
   const [realtimeError, setRealtimeError] = useState('');
   const loadRequestIdRef = useRef(0);
   const visibleLoadInFlightRef = useRef(false);
@@ -327,6 +329,7 @@ export default function WorkbenchWindow() {
           setUiLocale(normalizeSupportedLocale(initPayload.settings.user_locale));
           setThemeMode(initPayload.settings.theme_mode === 'dark' ? 'dark' : 'light');
         }
+        setRuntimeConfig(initPayload.runtime || {});
         setContextWorkbenchChats((prev) => ({
           ...prev,
           [session.id]: initPayload.context_workbench_histories?.[session.id] || prev[session.id] || [],
@@ -461,7 +464,7 @@ export default function WorkbenchWindow() {
 
     const connect = () => {
       if (disposed) return;
-      socket = new WebSocket(proxyRealtimeUrl());
+      socket = new WebSocket(proxyRealtimeUrl(runtimeConfig));
 
       socket.onopen = () => {
         attempt = 0;
@@ -501,7 +504,7 @@ export default function WorkbenchWindow() {
       if (reconnectTimer) window.clearTimeout(reconnectTimer);
       socket?.close();
     };
-  }, [applyRealtimeEvent, proxySessionId, uiLocale]);
+  }, [applyRealtimeEvent, proxySessionId, runtimeConfig, uiLocale]);
 
   const currentContextWorkbenchChat = useMemo(
     () => (proxySessionId ? contextWorkbenchChats[proxySessionId] || [] : []),

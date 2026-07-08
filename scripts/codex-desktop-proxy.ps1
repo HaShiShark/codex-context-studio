@@ -13,9 +13,11 @@ $shimDir = if ($env:HASH_CONTEXT_SHIM_DIR) { $env:HASH_CONTEXT_SHIM_DIR } else {
 $statePath = Join-Path $stateDir "codex-desktop-proxy.json"
 $proxyPort = if ($env:HASH_CONTEXT_PROXY_PORT) { $env:HASH_CONTEXT_PROXY_PORT } else { "8787" }
 $controlPort = if ($env:HASH_CONTEXT_CONTROL_PORT) { $env:HASH_CONTEXT_CONTROL_PORT } else { "8790" }
+$backendPort = if ($env:HASH_WEB_PORT) { $env:HASH_WEB_PORT } else { "8765" }
+$frontendPort = if ($env:HASH_CONTEXT_FRONTEND_PORT) { $env:HASH_CONTEXT_FRONTEND_PORT } else { "5174" }
 $loopbackHost = if ($env:HASH_CONTEXT_HOST) { $env:HASH_CONTEXT_HOST } else { "localhost" }
 $serviceProbeHost = if ($loopbackHost -eq "localhost") { "127.0.0.1" } else { $loopbackHost }
-$desktopDataDir = if ($env:HASH_CONTEXT_DESKTOP_DATA_DIR) { $env:HASH_CONTEXT_DESKTOP_DATA_DIR } else { Join-Path $env:APPDATA "hash-context-codex-lab\data" }
+$runtimeDataDir = if ($env:HASH_CONTEXT_DESKTOP_DATA_DIR) { $env:HASH_CONTEXT_DESKTOP_DATA_DIR } else { $stateDir }
 
 function Read-DesktopState {
   if (-not (Test-Path $statePath)) {
@@ -114,38 +116,41 @@ exit /b %ERRORLEVEL%
 function Get-ProxySnapshot {
   $sessionCount = 0
   $activeSessionId = ""
-  $dataDir = $desktopDataDir
-  if (-not (Test-Path $dataDir)) {
-    $dataDir = Join-Path $projectRoot.Path "data"
+  $dataDir = $runtimeDataDir
+
+  $indexPath = Join-Path $dataDir "index.json"
+  if (Test-Path $indexPath) {
+    try {
+      $index = Get-Content -Raw -Path $indexPath -Encoding UTF8 | ConvertFrom-Json
+      if ($index.active_session_id) {
+        $activeSessionId = [string] $index.active_session_id
+      }
+      if ($index.sessions) {
+        $sessionCount = @($index.sessions).Count
+      }
+    } catch {
+    }
   }
+
   $logPath = Join-Path $dataDir "proxy.log"
   $logLength = 0
   if (Test-Path $logPath) {
     $logLength = (Get-Item $logPath).Length
     try {
       $sessionIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+      $logActiveSessionId = ""
       foreach ($line in Get-Content -Path $logPath -ErrorAction Stop) {
         $match = [regex]::Match($line, "request session=([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})")
         if ($match.Success) {
-          $activeSessionId = $match.Groups[1].Value.ToLowerInvariant()
-          [void] $sessionIds.Add($activeSessionId)
+          $logActiveSessionId = $match.Groups[1].Value.ToLowerInvariant()
+          [void] $sessionIds.Add($logActiveSessionId)
         }
       }
-      $sessionCount = $sessionIds.Count
-    } catch {
-    }
-  }
-
-  $proxyStatePath = Join-Path $dataDir "proxy_state.json"
-  if (-not $activeSessionId -and (Test-Path $proxyStatePath)) {
-    try {
-      $head = Get-Content -Path $proxyStatePath -TotalCount 5 -ErrorAction Stop
-      foreach ($line in $head) {
-        $match = [regex]::Match($line, '^\s*"active_session_id"\s*:\s*"([^"]*)"')
-        if ($match.Success) {
-          $activeSessionId = [string] $match.Groups[1].Value
-          break
-        }
+      if (-not $activeSessionId) {
+        $activeSessionId = $logActiveSessionId
+      }
+      if ($sessionCount -eq 0) {
+        $sessionCount = $sessionIds.Count
       }
     } catch {
     }
@@ -720,7 +725,7 @@ function Get-ProjectPortOwners {
 function Stop-ProjectServicePorts {
   param([string] $Reason)
 
-  $ports = @([int] $proxyPort, 8765, [int] $controlPort, 5174)
+  $ports = @([int] $proxyPort, [int] $backendPort, [int] $controlPort, [int] $frontendPort)
   $owners = Get-ProjectPortOwners -Ports $ports | Sort-Object Pid -Unique
   foreach ($owner in $owners) {
     try {
@@ -927,7 +932,7 @@ function Start-DesktopServices {
   }
 
   if ((Test-HttpOk "http://${serviceProbeHost}:$proxyPort/api/proxy/health") -and
-      (Test-HttpOk "http://${serviceProbeHost}:8765/api/health") -and
+      (Test-HttpOk "http://${serviceProbeHost}:$backendPort/api/health") -and
       (Test-HttpOk "http://${loopbackHost}:$controlPort/health")) {
     Write-Host "[hash-context] desktop services already running"
     return 0
@@ -970,7 +975,7 @@ function Start-DesktopServices {
   }
 
   Wait-HttpOk -Name "proxy" -Url "http://${serviceProbeHost}:$proxyPort/api/proxy/health" -TimeoutSeconds 30
-  Wait-HttpOk -Name "backend" -Url "http://${serviceProbeHost}:8765/api/health" -TimeoutSeconds 30
+  Wait-HttpOk -Name "backend" -Url "http://${serviceProbeHost}:$backendPort/api/health" -TimeoutSeconds 30
   Wait-HttpOk -Name "window-control" -Url "http://${loopbackHost}:$controlPort/health" -TimeoutSeconds 90
   return $process.Id
 }
@@ -1007,7 +1012,7 @@ function Update-ServicePid {
     project_root = [string] $state.project_root
     proxy_port = [string] $state.proxy_port
     control_port = [string] $state.control_port
-    data_dir = if ($state.data_dir) { [string] $state.data_dir } else { $desktopDataDir }
+    data_dir = if ($state.data_dir) { [string] $state.data_dir } else { $runtimeDataDir }
     session_count_before = [int] $state.session_count_before
     proxy_log_length_before = [int64] $state.proxy_log_length_before
     updated_at = (Get-Date).ToUniversalTime().ToString("o")
@@ -1021,7 +1026,7 @@ function Update-ServicePid {
 }
 
 function Get-ResidualServicePorts {
-  $ports = @([int] $proxyPort, 8765, [int] $controlPort, 5174)
+  $ports = @([int] $proxyPort, [int] $backendPort, [int] $controlPort, [int] $frontendPort)
   $open = @()
   foreach ($port in $ports) {
     if (Test-TcpPortOpen -Port $port) {
@@ -1102,7 +1107,7 @@ function Show-DesktopStatus {
     }
   }
   Write-Host "[hash-context] services proxy: $(if (Test-HttpOk "http://${serviceProbeHost}:$proxyPort/api/proxy/health") { 'ready' } else { 'not ready' })"
-  Write-Host "[hash-context] services backend: $(if (Test-HttpOk "http://${serviceProbeHost}:8765/api/health") { 'ready' } else { 'not ready' })"
+  Write-Host "[hash-context] services backend: $(if (Test-HttpOk "http://${serviceProbeHost}:$backendPort/api/health") { 'ready' } else { 'not ready' })"
   Write-Host "[hash-context] services control: $(if (Test-HttpOk "http://${loopbackHost}:$controlPort/health") { 'ready' } else { 'not ready' })"
   Write-Host "[hash-context] data dir: $($snapshot.data_dir)"
   Write-Host "[hash-context] sessions before/current: $beforeSessions/$($snapshot.session_count)"

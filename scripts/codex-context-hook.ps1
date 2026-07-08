@@ -11,6 +11,14 @@ try {
 $loopbackHost = if ($env:HASH_CONTEXT_HOST) { $env:HASH_CONTEXT_HOST } else { "localhost" }
 $serviceProbeHost = if ($loopbackHost -eq "localhost") { "127.0.0.1" } else { $loopbackHost }
 $proxyPort = if ($env:HASH_CONTEXT_PROXY_PORT) { $env:HASH_CONTEXT_PROXY_PORT } else { "8787" }
+$backendPort = if ($env:HASH_WEB_PORT) { $env:HASH_WEB_PORT } else { "8765" }
+$hashContextHome = Join-Path $env:USERPROFILE ".hash-context-codex"
+
+function Get-HashContextLogDir {
+  $logDir = Join-Path $hashContextHome "logs"
+  New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+  return $logDir
+}
 
 function Write-HookJson {
   param(
@@ -24,9 +32,7 @@ function Write-HookLog {
     [string] $Message
   )
   try {
-    $root = Resolve-Path (Join-Path $PSScriptRoot "..")
-    $logDir = Join-Path $root "logs"
-    New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+    $logDir = Get-HashContextLogDir
     Add-Content -Path (Join-Path $logDir "codex-context-hook.log") -Value "$((Get-Date).ToUniversalTime().ToString("o")) $Message" -Encoding UTF8
   } catch {
   }
@@ -34,9 +40,7 @@ function Write-HookLog {
 
 function Get-MainTurnStatePath {
   try {
-    $root = Resolve-Path (Join-Path $PSScriptRoot "..")
-    $logDir = Join-Path $root "logs"
-    New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+    $logDir = Get-HashContextLogDir
     return (Join-Path $logDir "codex-main-turn.json")
   } catch {
     return ""
@@ -294,7 +298,7 @@ function Test-ProxySessionExists {
 
   try {
     $encodedSessionId = [uri]::EscapeDataString($SessionId)
-    Invoke-WebRequest -Uri "http://${serviceProbeHost}:8765/api/proxy/sessions/$encodedSessionId" -Method Get -UseBasicParsing -TimeoutSec 2 | Out-Null
+    Invoke-WebRequest -Uri "http://${serviceProbeHost}:$backendPort/api/proxy/sessions/$encodedSessionId" -Method Get -UseBasicParsing -TimeoutSec 2 | Out-Null
     return $true
   } catch {
     return $false
@@ -317,7 +321,7 @@ function Sync-LocalCodexSession {
 
   try {
     $payload = @{ session_id = $SessionId } | ConvertTo-Json -Compress
-    Invoke-WebRequest -Uri "http://${serviceProbeHost}:8765/api/codex-local-session-sync" -Method Post -Body $payload -ContentType "application/json" -UseBasicParsing -TimeoutSec 8 | Out-Null
+    Invoke-WebRequest -Uri "http://${serviceProbeHost}:$backendPort/api/codex-local-session-sync" -Method Post -Body $payload -ContentType "application/json" -UseBasicParsing -TimeoutSec 8 | Out-Null
     Write-HookLog "local-session-sync ok session_id=$SessionId"
   } catch {
     Write-HookLog "local-session-sync failed session_id=$SessionId error=$($_.Exception.Message)"
@@ -339,9 +343,7 @@ function Start-LocalCodexSessionSync {
   }
 
   try {
-    $root = Resolve-Path (Join-Path $PSScriptRoot "..")
-    $logDir = Join-Path $root "logs"
-    New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+    $logDir = Get-HashContextLogDir
     $logPath = Join-Path $logDir "codex-context-hook.log"
     $escapedSessionId = $SessionId.Replace("'", "''")
     $escapedLogPath = $logPath.Replace("'", "''")
@@ -357,7 +359,7 @@ function Write-BackgroundLog {
 `$sessionId = '$escapedSessionId'
 try {
   `$payload = @{ session_id = `$sessionId } | ConvertTo-Json -Compress
-  Invoke-WebRequest -Uri "http://${serviceProbeHost}:8765/api/codex-local-session-sync" -Method Post -Body `$payload -ContentType "application/json" -UseBasicParsing -TimeoutSec 20 | Out-Null
+  Invoke-WebRequest -Uri "http://${serviceProbeHost}:$backendPort/api/codex-local-session-sync" -Method Post -Body `$payload -ContentType "application/json" -UseBasicParsing -TimeoutSec 20 | Out-Null
   Write-BackgroundLog "local-session-sync ok session_id=`$sessionId"
 } catch {
   Write-BackgroundLog "local-session-sync failed session_id=`$sessionId error=`$(`$_.Exception.Message)"
@@ -382,7 +384,7 @@ function Consume-ContextEditMarker {
 
   try {
     $payload = @{ session_id = $SessionId } | ConvertTo-Json -Compress
-    $response = Invoke-WebRequest -Uri "http://${serviceProbeHost}:8765/api/context-edit-marker-consume" -Method Post -Body $payload -ContentType "application/json; charset=utf-8" -UseBasicParsing -TimeoutSec 2
+    $response = Invoke-WebRequest -Uri "http://${serviceProbeHost}:$backendPort/api/context-edit-marker-consume" -Method Post -Body $payload -ContentType "application/json; charset=utf-8" -UseBasicParsing -TimeoutSec 2
     $body = $response.Content | ConvertFrom-Json
     if ($body -and $body.marker) {
       Write-HookLog "context-edit-marker consumed session_id=$SessionId marker=$($response.Content)"

@@ -153,7 +153,7 @@ async function preparePythonRuntime() {
   ]);
   run(pythonExe, [
     '-c',
-    'import dotenv, zstandard, fastapi, uvicorn, httpx, openai, tiktoken',
+    'import dotenv, zstandard, brotli, fastapi, uvicorn, httpx, openai, tiktoken',
   ]);
 }
 

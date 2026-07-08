@@ -75,6 +75,24 @@ def main() -> None:
         bootstrap = app_state.bootstrap_payload("legacy-project-session")
         legacy_session = app_state.get_session("legacy-project-session")
 
+        previous_proxy_port = os.environ.get("HASH_CONTEXT_PROXY_PORT")
+        os.environ["HASH_CONTEXT_PROXY_PORT"] = "9876"
+        try:
+            runtime_bootstrap = app_state.bootstrap_payload(
+                "legacy-project-session",
+                include_conversation=False,
+            )
+        finally:
+            if previous_proxy_port is None:
+                os.environ.pop("HASH_CONTEXT_PROXY_PORT", None)
+            else:
+                os.environ["HASH_CONTEXT_PROXY_PORT"] = previous_proxy_port
+        runtime = runtime_bootstrap.get("runtime")
+        if not isinstance(runtime, dict) or runtime.get("proxy_port") != 9876:
+            raise AssertionError("bootstrap runtime should expose the current proxy port")
+        if runtime.get("proxy_realtime_path") != "/api/proxy/ws":
+            raise AssertionError("bootstrap runtime should expose the proxy realtime path")
+
         if legacy_session.title != "Legacy project session":
             raise AssertionError("legacy session metadata was not loaded")
         for forbidden_key in ("projects", "chat_session_ids", "sessions"):

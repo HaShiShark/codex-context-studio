@@ -11,13 +11,28 @@ $controlPort = $env:HASH_CONTEXT_CONTROL_PORT
 if (-not $controlPort) {
   $controlPort = "8790"
 }
+$backendPort = $env:HASH_WEB_PORT
+if (-not $backendPort) {
+  $backendPort = "8765"
+}
+$frontendPort = $env:HASH_CONTEXT_FRONTEND_PORT
+if (-not $frontendPort) {
+  $frontendPort = "5174"
+}
 $loopbackHost = if ($env:HASH_CONTEXT_HOST) { $env:HASH_CONTEXT_HOST } else { "localhost" }
 $serviceProbeHost = if ($loopbackHost -eq "localhost") { "127.0.0.1" } else { $loopbackHost }
+$hashContextHome = Join-Path $env:USERPROFILE ".hash-context-codex"
 
 $topBeginManaged = "# BEGIN HASH_CONTEXT_DESKTOP_TOP"
 $topEndManaged = "# END HASH_CONTEXT_DESKTOP_TOP"
 $providerBeginManaged = "# BEGIN HASH_CONTEXT_DESKTOP_PROVIDER"
 $providerEndManaged = "# END HASH_CONTEXT_DESKTOP_PROVIDER"
+
+function Get-HashContextLogDir {
+  $logDir = Join-Path $hashContextHome "logs"
+  New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+  return $logDir
+}
 
 function Get-CodexUpstreamInfo {
   $configPath = if ($env:HASH_CONTEXT_DESKTOP_CONFIG) { $env:HASH_CONTEXT_DESKTOP_CONFIG } else { Join-Path $env:USERPROFILE ".codex\config.toml" }
@@ -184,21 +199,18 @@ function Get-PackagedWindowExe {
 }
 
 function Start-ContextWindow {
-  $packagedLogDir = Join-Path $env:USERPROFILE ".hash-context-codex\logs"
+  $logDir = Get-HashContextLogDir
   $packagedExe = Get-PackagedWindowExe
   if ($packagedExe) {
-    New-Item -ItemType Directory -Force -Path $packagedLogDir | Out-Null
     return Start-Process `
       -FilePath $packagedExe `
       -WorkingDirectory (Split-Path -Parent $packagedExe) `
       -WindowStyle Hidden `
-      -RedirectStandardOutput (Join-Path $packagedLogDir "electron-window.stdout.log") `
-      -RedirectStandardError (Join-Path $packagedLogDir "electron-window.stderr.log") `
+      -RedirectStandardOutput (Join-Path $logDir "electron-window.stdout.log") `
+      -RedirectStandardError (Join-Path $logDir "electron-window.stderr.log") `
       -PassThru
   }
 
-  $logDir = Join-Path $root.Path "logs"
-  New-Item -ItemType Directory -Force -Path $logDir | Out-Null
   return Start-Process `
     -FilePath "npm.cmd" `
     -ArgumentList @("run", "window") `
@@ -376,8 +388,8 @@ $env:NO_PROXY = if ($env:NO_PROXY) { "$localNoProxy,$env:NO_PROXY" } else { $loc
 $env:no_proxy = if ($env:no_proxy) { "$localNoProxy,$env:no_proxy" } else { $localNoProxy }
 
 Stop-ProjectProcessOnPort -Port ([int] $proxyPort)
-Stop-ProjectProcessOnPort -Port 8765
-Stop-ProjectProcessOnPort -Port 5174
+Stop-ProjectProcessOnPort -Port ([int] $backendPort)
+Stop-ProjectProcessOnPort -Port ([int] $frontendPort)
 Stop-ProjectProcessOnPort -Port ([int] $controlPort)
 
 Write-Host "[hash-context] starting local services and hidden context window..." -ForegroundColor Cyan
@@ -406,11 +418,11 @@ if ($null -eq $previousControlPort) {
 Write-Host "[hash-context] launcher pid: $($windowProcess.Id)"
 
 Wait-HttpOk -Name "proxy" -Url "http://${serviceProbeHost}:$proxyPort/api/proxy/health" -TimeoutSeconds 30
-Wait-HttpOk -Name "backend" -Url "http://${serviceProbeHost}:8765/api/health" -TimeoutSeconds 30
+Wait-HttpOk -Name "backend" -Url "http://${serviceProbeHost}:$backendPort/api/health" -TimeoutSeconds 30
 if ($usesPackagedWindow) {
-  Wait-HttpOk -Name "frontend" -Url "http://${loopbackHost}:8765/react/"
+  Wait-HttpOk -Name "frontend" -Url "http://${loopbackHost}:$backendPort/react/"
 } else {
-  Wait-HttpOk -Name "frontend" -Url "http://${loopbackHost}:5174/"
+  Wait-HttpOk -Name "frontend" -Url "http://${loopbackHost}:$frontendPort/"
 }
 Wait-HttpOk -Name "window-control" -Url "http://${loopbackHost}:$controlPort/health" -TimeoutSeconds 90
 
@@ -421,7 +433,8 @@ if ($upstreamInfo.kind -eq "third_party") {
 }
 Write-Host "[hash-context] type context or ctx inside Codex to open the workbench"
 Write-Host "[hash-context] if Codex says hooks need review, run /hooks and approve HashContext once"
-Write-Host "[hash-context] logs: $($root.Path)\logs\electron-window.log"
+$electronLogPath = Join-Path (Get-HashContextLogDir) "electron-window.log"
+Write-Host "[hash-context] logs: $electronLogPath"
 Write-Host ""
 
 $codexExitCode = 0

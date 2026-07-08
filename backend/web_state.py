@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import re
 import threading
 import uuid
@@ -54,6 +55,14 @@ def resolve_attachment_file_path(relative_path: str) -> Path | None:
     repo_root = REPO_ROOT.resolve()
     candidate = (REPO_ROOT / safe_relative_path).resolve()
     return candidate if is_relative_to_path(candidate, repo_root) else None
+
+
+def read_runtime_port(name: str, fallback: int) -> int:
+    try:
+        value = int(os.environ.get(name, "") or fallback)
+    except ValueError:
+        return fallback
+    return value if 0 < value < 65536 else fallback
 
 
 class AppState:
@@ -329,6 +338,10 @@ class AppState:
                 },
                 "conversations": conversations,
                 "context_workbench_histories": context_workbench_histories,
+                "runtime": {
+                    "proxy_port": read_runtime_port("HASH_CONTEXT_PROXY_PORT", 8787),
+                    "proxy_realtime_path": "/api/proxy/ws",
+                },
             }
 
     def _safe_session_path_part(self, session_id: str) -> str:

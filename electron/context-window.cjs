@@ -217,7 +217,7 @@ async function waitFor(port, pathname, label, timeoutMs = 30000, hostname = HOST
 function pythonCandidateWorks(candidate) {
   const result = spawnSync(
     candidate.command,
-    [...candidate.args, '-c', 'import dotenv, zstandard, fastapi, uvicorn, httpx'],
+    [...candidate.args, '-c', 'import dotenv, zstandard, brotli, fastapi, uvicorn, httpx, openai, tiktoken'],
     { encoding: 'utf8', timeout: 5000, windowsHide: true },
   );
   return result.status === 0;
@@ -260,7 +260,7 @@ function pythonModuleCommand(root, moduleName) {
   const localPython = localVenvPython(root);
   if (fs.existsSync(localPython)) {
     throw new Error(
-      `Project .venv at ${localPython} is missing required dependencies (dotenv, zstandard, fastapi, uvicorn, httpx). ` +
+      `Project .venv at ${localPython} is missing required dependencies. ` +
         'Run npm run setup:python to repair it, then try again.',
     );
   }
@@ -343,6 +343,10 @@ async function startBackend(root) {
   backendProcess = spawn(serverCommand.command, serverCommand.args, {
     cwd: root,
     env: cleanEnv({
+      HASH_CONTEXT_HOST: HOST,
+      HASH_CONTEXT_PROXY_HOST: HOST,
+      HASH_CONTEXT_PROXY_PORT: String(PROXY_PORT),
+      HASH_CONTEXT_CONTROL_PORT: String(CONTROL_PORT),
       HASH_WEB_HOST: HOST,
       HASH_WEB_PORT: String(BACKEND_PORT),
       HASH_DATA_DIR: HASH_CONTEXT_DATA_DIR,
@@ -371,8 +375,10 @@ async function startProxy(root) {
   proxyProcess = spawn(serverCommand.command, serverCommand.args, {
     cwd: root,
     env: cleanEnv({
+      HASH_CONTEXT_HOST: HOST,
       HASH_CONTEXT_PROXY_HOST: HOST,
       HASH_CONTEXT_PROXY_PORT: String(PROXY_PORT),
+      HASH_CONTEXT_CONTROL_PORT: String(CONTROL_PORT),
       HASH_CONTEXT_PROXY_DATA_DIR: HASH_CONTEXT_DATA_DIR,
       PYTHONIOENCODING: 'utf-8',
       PYTHONPATH: pythonPathForRoot(root),
