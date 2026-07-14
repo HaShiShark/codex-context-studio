@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import time
@@ -52,6 +52,7 @@ from backend.web_context import (
     ContextWorkbenchDraft,
     ContextWorkbenchToolRegistry,
     build_context_workspace_snapshot,
+    context_review_transcript_stats,
     editable_context_node_count,
     extract_text_from_provider_message_content,
     model_options,
@@ -72,6 +73,8 @@ def context_workbench_settings_payload(settings: Settings) -> dict[str, object]:
             settings.context_workbench_provider_id or ""
         ).strip()
         or DEFAULT_CONTEXT_WORKBENCH_PROVIDER_ID,
+        "context_review_auto_enabled": bool(settings.context_review_auto_enabled),
+        "context_review_interval_minutes": int(settings.context_review_interval_minutes or 10),
         "context_token_warning_threshold": int(settings.context_token_warning_threshold or 5000),
         "context_token_critical_threshold": int(settings.context_token_critical_threshold or 10000),
         "user_locale": sanitize_text(settings.user_locale or "").strip() or "en-US",
@@ -179,6 +182,76 @@ def build_context_chat_runtime(
         ]
     )
     return instructions, request_model, draft, tool_registry, context_input
+
+
+CONTEXT_REVIEW_PROPOSAL_INSTRUCTIONS = """
+You are preparing a context-compression proposal for human review in a Codex conversation.
+You are preparing a draft for human review; never continue the user's task and never edit the live transcript.
+
+Analyze the complete transcript conservatively and decide whether selective compression is genuinely useful.
+- A clean, coherent conversation with no meaningful pollution should remain unchanged. In that case, do not call tools.
+- Preserve the current topic and recent working set exactly unless there is overwhelming evidence that a recent node is obsolete.
+- Preserve requirements, constraints, decisions, file paths, verified facts, unresolved work, and evidence needed for future implementation.
+- Good compression targets include completed older phases, duplicated tool output, corrected mistakes, abandoned approaches, superseded plans, and stale exploration.
+- Topic change alone is not sufficient. Compress an older phase only when its detailed discussion is unlikely to affect the current phase.
+- When confidence is low, leave the nodes untouched.
+- Never collapse the whole transcript into one summary by default. Compress only the specific ranges that benefit from it.
+- Locked records are visible for context but have no node_number and must remain untouched.
+
+When compression is useful, call write_nodes exactly once with the complete edit plan.
+- Delete only the selected source nodes and insert one or more replacement summary nodes at appropriate anchors.
+- The replacement content must retain all useful information from the removed range.
+- Summary-node length must scale with useful source material. Long source ranges often require long summaries; brevity is not the objective.
+- Put the detailed retained context inside inserted node content, not in review_rationale.
+
+review_rationale is product copy shown directly to the user before anything is applied.
+- Write it in the user's language.
+- Describe a proposal, not a completed operation. Use wording like "建议整理", "建议合并", or "将保留". Never say "已压缩", "已删除", "已完成", "compressed", "deleted", or "completed" as an accomplished action.
+- Explain what older topic or low-value material is proposed for consolidation and why it no longer belongs to the current working set.
+- Identify the current task and explain concretely why the proposal should not affect it.
+- State which important requirements, decisions, constraints, and unresolved work will remain available.
+- Mention material uncertainty or risk when present. Do not claim zero impact without evidence.
+- Never mention node numbers, token counts, write_nodes, tools, transcript internals, or implementation mechanics.
+- Keep this rationale focused and readable; the inserted replacement node, not the rationale, carries the detailed retained context.
+""".strip()
+
+
+def build_context_review_proposal_runtime(
+    settings: Settings,
+    session: SessionState,
+) -> tuple[str, str, ContextWorkbenchDraft, ContextWorkbenchToolRegistry, list[dict[str, Any]]]:
+    draft = ContextWorkbenchDraft(
+        session.transcript,
+        [],
+        getattr(session, "node_locks", {}),
+        int(getattr(session, "node_lock_revision", 0) or 0),
+    )
+    tool_registry = ContextWorkbenchToolRegistry(
+        draft,
+        session_title=sanitize_text(session.title or ""),
+        review_mode=True,
+    )
+    complete_transcript = [
+        {
+            "node_number": node.source_node_number,
+            "locked": not node.editable,
+            "record": sanitize_value(node.record),
+        }
+        for node in sorted(draft.nodes, key=lambda item: item.order)
+    ]
+    context_input = [
+        SimpleAgent._message(
+            "developer",
+            "Complete transcript with stable editable node numbers:\n"
+            + json.dumps(complete_transcript, ensure_ascii=False, indent=2),
+        ),
+        SimpleAgent._message(
+            "user",
+            "Perform one conservative automatic context review now. Submit one complete selective edit only when it is clearly beneficial.",
+        ),
+    ]
+    request_model = sanitize_text(settings.context_workbench_model or "").strip() or DEFAULT_CONTEXT_WORKBENCH_MODEL
+    return CONTEXT_REVIEW_PROPOSAL_INSTRUCTIONS, request_model, draft, tool_registry, context_input
 
 def model_supports_minimal_reasoning(model_id: str) -> bool:
     cleaned_model_id = sanitize_text(model_id).strip().lower()
@@ -349,8 +422,8 @@ def context_workbench_prompt_cache_key(session_id: str) -> str:
         for ch in sanitize_text(session_id).strip()
     ).strip("-_.")
     if not safe_session_id:
-        return "hash-context-workbench"
-    return f"hash-context:{safe_session_id[:48]}"
+        return "codex-context-studio-workbench"
+    return f"codex-context-studio:{safe_session_id[:48]}"
 
 
 def context_workbench_provider(settings: Settings) -> dict[str, Any]:
@@ -517,8 +590,8 @@ def context_provider_config(
         config["prompt_cache_key"] = context_workbench_prompt_cache_key(session_id)
         if provider_id == CODEX_PROXY_PROVIDER_ID:
             config["extra_headers"] = {
-                "x-hash-context-internal": "context-workbench",
-                "x-hash-context-session-id": session_id,
+                "x-codex-context-studio-internal": "context-workbench",
+                "x-codex-context-studio-session-id": session_id,
             }
 
     return config
@@ -713,7 +786,8 @@ def stream_context_codex_proxy_response(
             if check_cancelled is not None:
                 check_cancelled()
 
-            chunk = response.read(4096)
+            read_available = getattr(response, "read1", response.read)
+            chunk = read_available(4096)
             if not chunk:
                 break
 
@@ -812,13 +886,20 @@ def run_context_chat_turn(
     on_round_reset: Callable[[], None] | None = None,
     on_tool_event: Callable[[ToolEvent], None] | None = None,
     check_cancelled: Callable[[], None] | None = None,
+    context_review: bool = False,
 ) -> tuple[str, str, ContextWorkbenchDraft, list[ToolEvent]]:
-    instructions, request_model, draft, tool_registry, context_input = build_context_chat_runtime(
-        settings,
-        session,
-        message=message,
-        selected_indexes=selected_indexes,
-    )
+    if context_review:
+        instructions, request_model, draft, tool_registry, context_input = build_context_review_proposal_runtime(
+            settings,
+            session,
+        )
+    else:
+        instructions, request_model, draft, tool_registry, context_input = build_context_chat_runtime(
+            settings,
+            session,
+            message=message,
+            selected_indexes=selected_indexes,
+        )
     request_reasoning_effort = resolve_context_reasoning_effort(
         settings,
         model_id=request_model,
@@ -847,8 +928,8 @@ def run_context_chat_turn(
                 "store": False,
                 "prompt_cache_key": context_workbench_prompt_cache_key(session.session_id),
                 "extra_headers": {
-                    "x-hash-context-internal": "context-workbench",
-                    "x-hash-context-session-id": session.session_id,
+                    "x-codex-context-studio-internal": "context-workbench",
+                    "x-codex-context-studio-session-id": session.session_id,
                 },
             }
             if request_reasoning_effort:
@@ -1009,6 +1090,16 @@ def run_context_chat_turn(
             if on_tool_event is not None:
                 on_tool_event(tool_event)
 
+            if context_review and safe_call_name == "write_nodes" and draft.has_changes:
+                if check_cancelled is not None:
+                    check_cancelled()
+                return (
+                    tool_registry.review_rationale or context_workbench_fallback_answer_for_changes(draft, tool_events),
+                    request_model,
+                    draft,
+                    tool_events,
+                )
+
             context_input.append(
                 {
                     "type": "function_call",
@@ -1072,6 +1163,198 @@ def build_context_chat_response_payload(
     if proxy_transcript_sync is not None:
         payload["proxy_transcript_sync"] = proxy_transcript_sync
     return payload
+
+def build_context_review_payload(
+    *,
+    session: SessionState,
+    base_transcript_version: int,
+    base_context_review_cancel_revision: int,
+    proposed_transcript: list[dict[str, object]],
+    summary: str,
+    model: str,
+    source: str,
+) -> dict[str, object]:
+    current_transcript = normalize_transcript(session.transcript)
+    proposal_transcript = normalize_transcript(proposed_transcript)
+    return {
+        "review_schema_version": 2,
+        "id": uuid.uuid4().hex,
+        "session_id": sanitize_text(session.session_id).strip(),
+        "status": "pending",
+        "source": sanitize_text(source).strip() or "manual",
+        "base_transcript_version": max(0, int(base_transcript_version or 0)),
+        "base_context_review_cancel_revision": max(0, int(base_context_review_cancel_revision or 0)),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "summary": sanitize_text(summary).strip() or "Context compression proposal generated.",
+        "model": sanitize_text(model).strip(),
+        "before": context_review_transcript_stats(current_transcript),
+        "after": context_review_transcript_stats(proposal_transcript),
+        "proposed_transcript": proposal_transcript,
+    }
+
+
+def run_context_review_generation(
+    settings: Settings,
+    session: SessionState,
+    *,
+    base_transcript_version: int,
+    base_context_review_cancel_revision: int,
+    source: str = "manual",
+    check_cancelled: Callable[[], None] | None = None,
+) -> dict[str, object] | None:
+    current_transcript = normalize_transcript(session.transcript)
+    if not current_transcript:
+        return None
+
+    answer, used_model, draft, _tool_events = run_context_chat_turn(
+        settings,
+        session,
+        message="",
+        selected_indexes=[],
+        reasoning_effort="default",
+        check_cancelled=check_cancelled,
+        context_review=True,
+    )
+    if not draft.has_changes:
+        return None
+
+    proposed_transcript = draft.committed_transcript()
+    if proposed_transcript == current_transcript:
+        return None
+
+    return build_context_review_payload(
+        session=session,
+        base_transcript_version=base_transcript_version,
+        base_context_review_cancel_revision=base_context_review_cancel_revision,
+        proposed_transcript=proposed_transcript,
+        summary=answer,
+        model=used_model,
+        source=source,
+    )
+
+
+def refresh_session_from_proxy_for_review(
+    app_state: AppState,
+    session_id: str,
+) -> tuple[SessionState, dict[str, Any]]:
+    safe_session_id = sanitize_text(session_id or "").strip()
+    if not safe_session_id:
+        raise ValueError("session_id is required")
+    proxy_payload = get_codex_proxy_control_json(
+        f"/api/proxy/sessions/{quote(safe_session_id, safe='')}",
+        timeout_seconds=3,
+    )
+    if not proxy_payload:
+        raise ValueError("session not found")
+
+    session = app_state.upsert_proxy_session(
+        session_id=safe_session_id,
+        title=sanitize_text(proxy_payload.get("title") or "").strip() or "Codex Context",
+        transcript=normalize_transcript(proxy_payload.get("transcript")),
+        is_main_turn_running=bool(proxy_payload.get("is_main_turn_running")),
+        main_turn_id=sanitize_text(proxy_payload.get("main_turn_id") or "").strip(),
+        main_turn_started_at=sanitize_text(proxy_payload.get("main_turn_started_at") or "").strip(),
+        main_turn_updated_at=sanitize_text(proxy_payload.get("main_turn_updated_at") or "").strip(),
+        node_locks=proxy_payload.get("node_locks") if isinstance(proxy_payload.get("node_locks"), dict) else {},
+        node_lock_revision=int(proxy_payload.get("node_lock_revision") or 0),
+    )
+    return session, proxy_payload
+
+
+def store_proxy_context_review(session_id: str, review: dict[str, object]) -> dict[str, Any]:
+    return post_codex_proxy_control_json(
+        f"/api/proxy/sessions/{quote(sanitize_text(session_id).strip(), safe='')}/context-review",
+        {"review": review},
+        timeout_seconds=8,
+    )
+
+
+def apply_proxy_context_review(session_id: str, review_id: str) -> dict[str, Any]:
+    return post_codex_proxy_control_json(
+        f"/api/proxy/sessions/{quote(sanitize_text(session_id).strip(), safe='')}/context-review/apply",
+        {"review_id": sanitize_text(review_id).strip()},
+        timeout_seconds=8,
+    )
+
+
+def discard_proxy_context_review(session_id: str, review_id: str = "") -> dict[str, Any]:
+    return post_codex_proxy_control_json(
+        f"/api/proxy/sessions/{quote(sanitize_text(session_id).strip(), safe='')}/context-review/discard",
+        {"review_id": sanitize_text(review_id).strip()},
+        timeout_seconds=8,
+    )
+
+
+def generate_and_store_context_review(
+    app_state: AppState,
+    session_id: str,
+    *,
+    source: str = "manual",
+    expected_cancel_revision: int | None = None,
+    check_cancelled: Callable[[], None] | None = None,
+) -> dict[str, Any]:
+    safe_source = sanitize_text(source or "manual").strip() or "manual"
+    session, proxy_payload = refresh_session_from_proxy_for_review(app_state, session_id)
+    pending_review = proxy_payload.get("pending_context_review")
+    if isinstance(pending_review, dict):
+        return {
+            "pending_review": pending_review,
+            "status": "pending",
+            "session": proxy_payload,
+        }
+    if bool(proxy_payload.get("is_main_turn_running")):
+        return {
+            "error": "main Codex turn is still running",
+            "status": "blocked",
+            "reason": "main_turn_running",
+        }
+    if bool(proxy_payload.get("is_context_running")):
+        return {
+            "error": "context model is still running",
+            "status": "blocked",
+            "reason": "context_model_running",
+        }
+    current_cancel_revision = int(proxy_payload.get("context_review_cancel_revision") or 0)
+    if expected_cancel_revision is not None and current_cancel_revision != int(expected_cancel_revision):
+        raise RuntimeError("context_review_cancelled")
+
+    request_id = app_state.acquire_session_request(session, "context")
+    safe_set_proxy_context_run_state(session.session_id, request_id, True)
+
+    def raise_if_cancelled() -> None:
+        if check_cancelled is not None:
+            check_cancelled()
+        if app_state.is_session_request_cancelled(session, request_id):
+            raise RuntimeError("context_review_cancelled")
+
+    try:
+        raise_if_cancelled()
+        review = run_context_review_generation(
+            app_state.settings,
+            session,
+            base_transcript_version=int(proxy_payload.get("transcript_version") or 0),
+            base_context_review_cancel_revision=current_cancel_revision,
+            source=safe_source,
+            check_cancelled=raise_if_cancelled,
+        )
+        if review is None:
+            return {
+                "pending_review": None,
+                "status": "skipped",
+                "reason": "no_compression_proposal",
+            }
+        raise_if_cancelled()
+        proxy_session = store_proxy_context_review(session.session_id, review)
+        return {
+            "pending_review": proxy_session.get("pending_context_review")
+            if isinstance(proxy_session.get("pending_context_review"), dict)
+            else None,
+            "status": "pending",
+            "session": proxy_session,
+        }
+    finally:
+        safe_set_proxy_context_run_state(session.session_id, request_id, False)
+        app_state.release_session_request(session, "context", request_id)
 
 
 def normalize_provider_type(raw_type: Any, provider_id: str = "") -> str:
@@ -1185,7 +1468,7 @@ def fetch_models_from_provider(
 
     headers = {
         "Accept": "application/json",
-        "User-Agent": "hash-code/0.2",
+        "User-Agent": "codex-context-studio/0.2",
     }
     safe_api_key = sanitize_text(api_key or "").strip()
     if safe_provider_type == "gemini" and safe_api_key:

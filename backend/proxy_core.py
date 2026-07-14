@@ -161,7 +161,10 @@ def _compact_metadata(turn_metadata: Mapping[str, Any]) -> dict[str, Any] | None
 
 
 def _compact_kind(turn_metadata: Mapping[str, Any]) -> str:
-    trigger = turn_metadata.get("trigger")
+    compaction = turn_metadata.get("compaction")
+    if not isinstance(compaction, Mapping):
+        return ""
+    trigger = compaction.get("trigger")
     if trigger in {"auto", "manual"}:
         return str(trigger)
     return ""

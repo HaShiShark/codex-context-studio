@@ -7,12 +7,12 @@ and points Codex at a Responses-compatible proxy:
 
 ```powershell
 codex `
-  -c "model_providers.hash-context.name=Hash Context" `
-  -c "model_providers.hash-context.base_url=http://127.0.0.1:8787/v1" `
-  -c "model_providers.hash-context.requires_openai_auth=true" `
-  -c "model_providers.hash-context.wire_api=responses" `
-  -c "model_providers.hash-context.supports_websockets=false" `
-  -c "model_provider=hash-context"
+  -c "model_providers.codex-context-studio.name=Codex Context Studio" `
+  -c "model_providers.codex-context-studio.base_url=http://127.0.0.1:8787/v1" `
+  -c "model_providers.codex-context-studio.requires_openai_auth=true" `
+  -c "model_providers.codex-context-studio.wire_api=responses" `
+  -c "model_providers.codex-context-studio.supports_websockets=false" `
+  -c "model_provider=codex-context-studio"
 ```
 
 The wrapper also installs a `UserPromptSubmit` hook. When the user enters
@@ -23,7 +23,7 @@ cases where the hook does not run.
 ## Local Services
 
 - `backend/proxy_fastapi.py`: Codex-compatible Responses proxy on port `8787`.
-- `backend/web_server.py`: Hash Context web backend on port `8765`.
+- `backend/web_server.py`: Codex Context Studio web backend on port `8765`.
 - Vite dev server: React frontend on port `5174`.
 - `electron/context-window.cjs`: Electron shell and local service supervisor.
 - Electron control server: show/hide window API on port `8790`.

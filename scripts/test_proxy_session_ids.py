@@ -12,7 +12,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from backend.proxy_routes_support import codex_existing_thread_ids, codex_passthrough_reason, session_id_for_request  # noqa: E402
+from backend.proxy_routes_support import (  # noqa: E402
+    codex_active_thread_ids,
+    codex_existing_thread_ids,
+    codex_passthrough_reason,
+    session_id_for_request,
+)
 
 
 def fallback_session_id(body: dict[str, Any]) -> str:
@@ -132,10 +137,13 @@ def test_codex_existing_thread_ids_scans_active_and_archived_rollouts() -> None:
         (archived_path / f"rollout-2026-06-30T00-00-00-{archived_thread_id}.jsonl").write_text("", encoding="utf-8")
 
         thread_ids, scan_info = codex_existing_thread_ids(codex_home)
+        assert thread_ids == {active_thread_id, archived_thread_id}
+        assert scan_info["scanned_files"] == 2
+        assert scan_info["unreadable_files"] == 0
 
-    assert thread_ids == {active_thread_id, archived_thread_id}
-    assert scan_info["scanned_files"] == 2
-    assert scan_info["unreadable_files"] == 0
+        active_ids, active_scan_info = codex_active_thread_ids(codex_home)
+        assert active_ids == {active_thread_id}
+        assert active_scan_info["scanned_files"] == 1
 
 
 def main() -> None:

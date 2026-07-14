@@ -103,7 +103,12 @@ def test_models_serves_local_fallback_when_chatgpt_auth_upstream_fails() -> None
     payload = response.json()
     assert response.status_code == HTTPStatus.OK
     assert payload["object"] == "list"
-    assert [model["id"] for model in payload["data"]][:2] == ["gpt-5.5", "gpt-5.4"]
+    assert [model["id"] for model in payload["data"]][:4] == [
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5",
+    ]
     assert all(model["object"] == "model" for model in payload["data"])
 
 

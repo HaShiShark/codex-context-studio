@@ -228,6 +228,128 @@ def test_context_chat_turn_returns_fallback_after_changed_draft_empty_final_resp
     ]
 
 
+def test_context_review_uses_private_rationale_field_and_one_model_round() -> None:
+    core_transcript = input_items_to_transcript(
+        [
+            {"type": "message", "role": "user", "content": "long completed frontend analysis"},
+            {"type": "message", "role": "user", "content": "current backend work"},
+        ]
+    )
+    session = SessionState(
+        session_id="session-auto-review",
+        title="Automatic Review",
+        transcript=core_transcript,
+        context_workbench_history=[{"role": "user", "content": "manual history must not leak"}],
+    )
+    manual_registry = ContextWorkbenchToolRegistry(ContextWorkbenchDraft(core_transcript, []))
+    review_registry = ContextWorkbenchToolRegistry(
+        ContextWorkbenchDraft(core_transcript, []),
+        review_mode=True,
+    )
+    manual_write_schema = next(schema for schema in manual_registry.schemas if schema["name"] == "write_nodes")
+    review_write_schema = review_registry.schemas[0]
+    assert "review_rationale" not in manual_write_schema["parameters"]["properties"]
+    assert review_write_schema["parameters"]["required"] == ["review_rationale"]
+    rationale_description = review_write_schema["parameters"]["properties"]["review_rationale"]["description"]
+    assert "Never mention node numbers" in rationale_description
+
+    calls = 0
+    seen_request: dict[str, object] = {}
+    original_stream = web_runtime.stream_context_codex_proxy_response_with_retry
+
+    def fake_stream(request, **_kwargs):
+        nonlocal calls, seen_request
+        calls += 1
+        seen_request = request
+        return _FakeContextResponse(
+            function_calls=[
+                web_runtime.BridgedFunctionCall(
+                    name="write_nodes",
+                    call_id="call-auto-write",
+                    arguments=json.dumps(
+                        {
+                            "delete": [1],
+                            "inserts": [
+                                {
+                                    "after": 0,
+                                    "role": "user",
+                                    "content": "Detailed retained frontend decisions and constraints.",
+                                }
+                            ],
+                            "review_rationale": "建议合并已经结束的前端探索；当前后端工作及其约束将保持不变，因此预计不会影响当前任务。",
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            ],
+        )
+
+    web_runtime.stream_context_codex_proxy_response_with_retry = fake_stream
+    try:
+        answer, _used_model, draft, _tool_events = web_runtime.run_context_chat_turn(
+            _context_settings(),
+            session,
+            message="ignored for automatic review",
+            context_review=True,
+        )
+    finally:
+        web_runtime.stream_context_codex_proxy_response_with_retry = original_stream
+
+    assert calls == 1
+    assert "manual history must not leak" not in json.dumps(seen_request, ensure_ascii=False)
+    assert "long completed frontend analysis" in json.dumps(seen_request, ensure_ascii=False)
+    assert answer == "建议合并已经结束的前端探索；当前后端工作及其约束将保持不变，因此预计不会影响当前任务。"
+    assert draft.has_changes
+
+
+def test_analyze_now_uses_proposal_runtime_instead_of_manual_chat_runtime() -> None:
+    core_transcript = input_items_to_transcript(
+        [
+            {"type": "message", "role": "user", "content": "completed exploration"},
+            {"type": "message", "role": "user", "content": "current implementation"},
+        ]
+    )
+    session = SessionState(
+        session_id="session-analyze-now",
+        title="Analyze Now",
+        transcript=core_transcript,
+        context_workbench_history=[{"role": "user", "content": "manual chat history"}],
+    )
+    seen_kwargs: dict[str, object] = {}
+    original_turn = web_runtime.run_context_chat_turn
+
+    def fake_turn(_settings, target_session, **kwargs):
+        seen_kwargs.update(kwargs)
+        draft = ContextWorkbenchDraft(target_session.transcript, [])
+        draft.apply_write_nodes(
+            [1],
+            [{"after": 0, "role": "user", "content": "Retained completed exploration decisions."}],
+        )
+        return (
+            "建议整理已经结束的探索；当前实现目标与约束将保持不变。",
+            "gpt-5.5",
+            draft,
+            [],
+        )
+
+    web_runtime.run_context_chat_turn = fake_turn
+    try:
+        review = web_runtime.run_context_review_generation(
+            _context_settings(),
+            session,
+            base_transcript_version=2,
+            base_context_review_cancel_revision=1,
+            source="manual",
+        )
+    finally:
+        web_runtime.run_context_chat_turn = original_turn
+
+    assert seen_kwargs["context_review"] is True
+    assert seen_kwargs["message"] == ""
+    assert review is not None
+    assert review["summary"].startswith("建议整理")
+
+
 def test_context_chat_turn_uses_selected_non_codex_provider_adapter_path() -> None:
     from simple_agent.config import CODEX_PROXY_PROVIDER_ID  # noqa: WPS433
 
@@ -410,6 +532,8 @@ def main() -> None:
         test_unlocked_developer_is_visible_and_tool_accessible,
         test_context_workbench_draft_reports_changes_after_write,
         test_context_chat_turn_returns_fallback_after_changed_draft_empty_final_response,
+        test_context_review_uses_private_rationale_field_and_one_model_round,
+        test_analyze_now_uses_proposal_runtime_instead_of_manual_chat_runtime,
         test_context_chat_turn_uses_selected_non_codex_provider_adapter_path,
         test_context_chat_response_payload_commits_changed_draft,
         test_context_workbench_history_keeps_tool_blocks_but_model_history_stays_light,

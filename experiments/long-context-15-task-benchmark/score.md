@@ -7,11 +7,11 @@
 | Group | Passed | Failed | Pass Rate | Total Cost | Tasks Per Dollar |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Native Codex | TODO/15 | TODO | TODO | $TODO | TODO |
-| Hash Context | TODO/15 | TODO | TODO | $TODO | TODO |
+| Codex Context Studio | TODO/15 | TODO | TODO | $TODO | TODO |
 
 ## Task Results
 
-| Task | Native Codex | Hash Context | Notes |
+| Task | Native Codex | Codex Context Studio | Notes |
 | --- | --- | --- | --- |
 | T01 | TODO | TODO | TODO |
 | T02 | TODO | TODO | TODO |
@@ -31,7 +31,7 @@
 
 ## Compression Notes
 
-Hash Context group:
+Codex Context Studio group:
 
 | Checkpoint | Action | Notes |
 | --- | --- | --- |

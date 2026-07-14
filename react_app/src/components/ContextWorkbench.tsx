@@ -17,6 +17,7 @@ import {
   type ContextTokenThresholds,
 } from '../contextTokenWeight';
 import type {
+  ContextReview,
   ContextWorkbenchProvider,
   ContextWorkbenchChatMessage,
   ContextWorkbenchSettingsResponse,
@@ -37,7 +38,6 @@ import {
   createManualMessage,
   DEFAULT_WORKBENCH_MODELS,
   formatNodeReferenceSegments,
-  formatSuggestionRoleLabel,
   formatTokenCount,
   getThrownMessage,
   isAbortError,
@@ -58,12 +58,13 @@ import UsageSummaryCard from './UsageSummaryCard';
 interface ContextWorkbenchProps {
   messageTokenStats: ContextMessageTokenStat[];
   selectedNodeIndexes: number[];
-  criticalNodeIndexes: number[];
   tokenThresholds: ContextTokenThresholds;
   sessionId: string;
   isMainChatBusy: boolean;
+  isContextPreviewActive: boolean;
   contextWorkbenchChat: ContextWorkbenchChatMessage[];
   reasoningOptions: ReasoningOption[];
+  pendingContextReview: ContextReview | null;
   proxyUsageSummary: ProxyUsageSummary | null;
   uiLocale: UiLocale;
   themeMode: 'light' | 'dark';
@@ -75,6 +76,11 @@ interface ContextWorkbenchProps {
   ) => void | Promise<void>;
   onProxyUsageSummaryChange: (summary: ProxyUsageSummary | null) => void;
   onEnsureSession: () => Promise<string>;
+  onContextReviewGenerate: () => Promise<ContextReview | null>;
+  onContextReviewPreview: (review: ContextReview) => Promise<void>;
+  onContextReviewPreviewClose: () => void;
+  onContextReviewApply: (reviewId: string) => Promise<ContextReview | null>;
+  onContextReviewDiscard: (reviewId: string) => Promise<ContextReview | null>;
   onTokenThresholdsChange: (thresholds: ContextTokenThresholds) => void;
   onUiLocaleChange?: (locale: UiLocale) => void;
   onUiFontChange?: (font: string, fontSize: number) => void;
@@ -202,6 +208,7 @@ type PromptSettingItem = {
   key: PromptSettingKey;
   title: string;
   placeholder: string;
+  description?: string;
 };
 
 const DEFAULT_CONTEXT_PROVIDER_ID = 'codex-proxy';
@@ -218,6 +225,34 @@ const EMPTY_PROMPT_DRAFTS: PromptDrafts = {
   manual_local_compact_prompt: '',
   auto_local_compact_prompt: '',
 };
+
+type ContextReviewAction = 'generate' | 'preview' | 'apply' | 'discard' | null;
+
+function formatContextReviewDate(value: string, locale: UiLocale) {
+  const createdAt = new Date(value);
+  if (Number.isNaN(createdAt.getTime())) {
+    return '';
+  }
+  return createdAt.toLocaleString(locale === 'zh-CN' ? 'zh-CN' : 'en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function contextReviewReductionPercent(review: ContextReview | null) {
+  const beforeTokens = Number(review?.before?.token_count || 0);
+  const afterTokens = Number(review?.after?.token_count || 0);
+  if (beforeTokens <= 0 || afterTokens <= 0 || afterTokens >= beforeTokens) {
+    return '';
+  }
+  return `${Math.round(((beforeTokens - afterTokens) / beforeTokens) * 100)}%`;
+}
+
+function contextReviewStatValue(value: number | undefined) {
+  return formatTokenCount(Number(value || 0));
+}
 
 function promptDraftsFromSettings(settings: ContextWorkbenchSettingsResponse['settings']): PromptDrafts {
   return {
@@ -329,12 +364,13 @@ function defaultBaseUrlForProviderType(providerType: ResponseProviderType) {
 export default function ContextWorkbench({
   messageTokenStats,
   selectedNodeIndexes,
-  criticalNodeIndexes,
   tokenThresholds,
   sessionId,
   isMainChatBusy,
+  isContextPreviewActive,
   contextWorkbenchChat,
   reasoningOptions,
+  pendingContextReview,
   proxyUsageSummary,
   uiLocale,
   themeMode,
@@ -342,6 +378,11 @@ export default function ContextWorkbench({
   onConversationChange,
   onProxyUsageSummaryChange,
   onEnsureSession,
+  onContextReviewGenerate,
+  onContextReviewPreview,
+  onContextReviewPreviewClose,
+  onContextReviewApply,
+  onContextReviewDiscard,
   onTokenThresholdsChange,
   onUiLocaleChange,
   onUiFontChange,
@@ -360,6 +401,9 @@ export default function ContextWorkbench({
   const [usageFeedbackError, setUsageFeedbackError] = useState(false);
   const [manualFeedback, setManualFeedback] = useState('');
   const [manualFeedbackError, setManualFeedbackError] = useState(false);
+  const [contextReviewAction, setContextReviewAction] = useState<ContextReviewAction>(null);
+  const [contextReviewFeedback, setContextReviewFeedback] = useState('');
+  const [contextReviewFeedbackError, setContextReviewFeedbackError] = useState(false);
   const [workbenchProviderIdDraft, setWorkbenchProviderIdDraft] = useState(DEFAULT_CONTEXT_PROVIDER_ID);
   const [workbenchProviders, setWorkbenchProviders] = useState<ContextWorkbenchProvider[]>([]);
   const [workbenchProviderDrafts, setWorkbenchProviderDrafts] = useState<Record<string, ContextWorkbenchProvider>>({});
@@ -368,6 +412,9 @@ export default function ContextWorkbench({
   const [isWorkbenchApiKeyDirty, setIsWorkbenchApiKeyDirty] = useState(false);
   const [isWorkbenchApiKeySaving, setIsWorkbenchApiKeySaving] = useState(false);
   const [workbenchModelDraft, setWorkbenchModelDraft] = useState(DEFAULT_WORKBENCH_MODELS[0]);
+  const [contextReviewAutoEnabled, setContextReviewAutoEnabled] = useState(true);
+  const [contextReviewIntervalDraft, setContextReviewIntervalDraft] = useState('10');
+  const [isContextReviewSettingsSaving, setIsContextReviewSettingsSaving] = useState(false);
   const [uiLocaleDraft, setUiLocaleDraft] = useState<UiLocale>(uiLocale);
   const [themeModeDraft, setThemeModeDraft] = useState<'light' | 'dark'>(themeMode);
   const [isWorkbenchProviderOpen, setIsWorkbenchProviderOpen] = useState(false);
@@ -454,36 +501,6 @@ export default function ContextWorkbench({
       return modelId.startsWith(prefix) || modelLabel.startsWith(prefix);
     });
   }, [hasFetchedWorkbenchModels, isWorkbenchModelFilterActive, workbenchModelDraft, workbenchModelOptions]);
-  const criticalNodeIndexSet = useMemo(
-    () => new Set(criticalNodeIndexes),
-    [criticalNodeIndexes],
-  );
-  const localSuggestionStats = useMemo(
-    () => ({
-      total_token_count: messageTokenStats.reduce((total, stat) => total + stat.tokens, 0),
-      tool_token_count: messageTokenStats.reduce((total, stat) => total + stat.toolTokens, 0),
-    }),
-    [messageTokenStats],
-  );
-  const localSuggestionNodes = useMemo(
-    () =>
-      messageTokenStats
-        .filter((stat) => stat.editable)
-        .map((stat): { node_index: number; node_number: number; role: string; token_count: number; tool_token_count: number; preview: string } => ({
-          node_index: stat.nodeIndex,
-          node_number: stat.nodeNumber,
-          role: stat.role,
-          token_count: stat.tokens,
-          tool_token_count: stat.toolTokens,
-          preview: '',
-        }))
-        .sort((left, right) => right.token_count - left.token_count || left.node_number - right.node_number),
-    [messageTokenStats],
-  );
-  const criticalSuggestionNodes = useMemo(
-    () => localSuggestionNodes.filter((node) => criticalNodeIndexSet.has(node.node_index)),
-    [localSuggestionNodes, criticalNodeIndexSet],
-  );
   const manualChatKey = useMemo(() => JSON.stringify(contextWorkbenchChat || []), [contextWorkbenchChat]);
   const isWorkbenchBusy = isManualSending;
   const isManualComposerLocked = isMainChatBusy || isWorkbenchBusy;
@@ -494,6 +511,13 @@ export default function ContextWorkbench({
     getReasoningLabel(manualReasoning, reasoningOptions),
     uiLocaleDraft,
   );
+  const isContextReviewBusy = contextReviewAction !== null;
+  const pendingReviewCreatedAt = formatContextReviewDate(pendingContextReview?.created_at || '', uiLocaleDraft);
+  const pendingReviewReduction = contextReviewReductionPercent(pendingContextReview);
+  const pendingReviewBeforeNodes = Number(pendingContextReview?.before?.node_count || 0);
+  const pendingReviewAfterNodes = Number(pendingContextReview?.after?.node_count || 0);
+  const pendingReviewBeforeTokens = contextReviewStatValue(pendingContextReview?.before?.token_count);
+  const pendingReviewAfterTokens = contextReviewStatValue(pendingContextReview?.after?.token_count);
   const mainUsageSummary = proxyUsageSummary?.by_kind?.main || null;
   const contextWorkbenchUsageSummary = proxyUsageSummary?.by_kind?.context_workbench || null;
   const nextTokenThresholds = useMemo(() => {
@@ -520,7 +544,12 @@ export default function ContextWorkbench({
       {
         key: 'codex_system_prompt',
         title: uiText(uiLocaleDraft, 'Codex System Prompt', 'Codex 系统提示词'),
-        placeholder: uiText(uiLocaleDraft, 'Waiting for the first Codex request instructions...', '等待读取第一条 Codex 请求的 instructions...'),
+        placeholder: uiText(uiLocaleDraft, 'Waiting for the first Codex base instructions...', '等待读取第一条 Codex 基础提示词...'),
+        description: uiText(
+          uiLocaleDraft,
+          'For GPT-5.6, the system prompt is carried by a developer item.',
+          'GPT-5.6 的系统提示词以 developer 节点传递。',
+        ),
       },
       {
         key: 'manual_local_compact_prompt',
@@ -616,6 +645,8 @@ export default function ContextWorkbench({
         if (cancelled) return;
         const settings = response.settings;
         applyWorkbenchProviderSettings(response);
+        setContextReviewAutoEnabled(settings.context_review_auto_enabled !== false);
+        setContextReviewIntervalDraft(String(settings.context_review_interval_minutes || 10));
         const loadedThresholds = normalizeContextTokenThresholds({
           warningThreshold: settings.context_token_warning_threshold,
           criticalThreshold: settings.context_token_critical_threshold,
@@ -657,6 +688,12 @@ export default function ContextWorkbench({
     setManualFeedback('');
     setManualFeedbackError(false);
   }, [sessionId]);
+
+  useEffect(() => {
+    if (!isMainChatBusy) return;
+    setContextReviewFeedback('');
+    setContextReviewFeedbackError(false);
+  }, [isMainChatBusy]);
 
   useEffect(() => {
     if (!reasoningOptions.some((option) => option.value === manualReasoning)) {
@@ -1013,6 +1050,49 @@ export default function ContextWorkbench({
     }
   }
 
+  async function handleSaveContextReviewAutoEnabled(nextEnabled: boolean) {
+    const previous = contextReviewAutoEnabled;
+    setContextReviewAutoEnabled(nextEnabled);
+    setIsContextReviewSettingsSaving(true);
+    setSettingsError('');
+    try {
+      const response = await saveContextWorkbenchSettingsRequest({
+        context_review_auto_enabled: nextEnabled,
+      });
+      setContextReviewAutoEnabled(response.settings.context_review_auto_enabled !== false);
+      setContextReviewIntervalDraft(String(response.settings.context_review_interval_minutes || 10));
+    } catch (error) {
+      setContextReviewAutoEnabled(previous);
+      setSettingsError(readableProviderError(getThrownMessage(error)));
+    } finally {
+      setIsContextReviewSettingsSaving(false);
+    }
+  }
+
+  async function handleSaveContextReviewInterval() {
+    const parsed = Number.parseInt(contextReviewIntervalDraft, 10);
+    if (!Number.isFinite(parsed) || parsed < 1 || parsed > 1440) {
+      setSettingsError(uiText(
+        uiLocaleDraft,
+        'Suggestion interval must be between 1 and 1440 minutes.',
+        '建议触发间隔必须在 1 到 1440 分钟之间。',
+      ));
+      return;
+    }
+    setSettingsError('');
+    setIsContextReviewSettingsSaving(true);
+    try {
+      const response = await saveContextWorkbenchSettingsRequest({
+        context_review_interval_minutes: parsed,
+      });
+      setContextReviewIntervalDraft(String(response.settings.context_review_interval_minutes || parsed));
+    } catch (error) {
+      setSettingsError(readableProviderError(getThrownMessage(error)));
+    } finally {
+      setIsContextReviewSettingsSaving(false);
+    }
+  }
+
   async function handleSaveUiLocale(nextLocale: UiLocale) {
     if (nextLocale === uiLocaleDraft) return;
     const previousLocale = uiLocaleDraft;
@@ -1160,6 +1240,9 @@ export default function ContextWorkbench({
             {expanded ? closeButton : resetButton}
           </div>
         </div>
+        {item.description ? (
+          <div className="workbench-prompt-editor-description">{item.description}</div>
+        ) : null}
         <textarea
           className="settings-input workbench-prompt-textarea"
           disabled={isSettingsLoading}
@@ -1364,6 +1447,78 @@ export default function ContextWorkbench({
     }
   }
 
+  async function handleGenerateContextReview() {
+    if (!sessionId || isContextReviewBusy || isMainChatBusy || pendingContextReview) return;
+    setContextReviewAction('generate');
+    setContextReviewFeedback('');
+    setContextReviewFeedbackError(false);
+    try {
+      const review = await onContextReviewGenerate();
+      if (!review) {
+        setContextReviewFeedback(uiText(uiLocaleDraft, 'No compression proposal was needed for the current context.', '当前上下文暂时不需要生成压缩建议。'));
+      }
+    } catch (error) {
+      setContextReviewFeedback(getThrownMessage(error));
+      setContextReviewFeedbackError(true);
+    } finally {
+      setContextReviewAction(null);
+    }
+  }
+
+  async function handlePreviewContextReview() {
+    if (!pendingContextReview || isContextReviewBusy) return;
+    setContextReviewAction('preview');
+    setContextReviewFeedback('');
+    setContextReviewFeedbackError(false);
+    try {
+      await onContextReviewPreview(pendingContextReview);
+    } catch (error) {
+      setContextReviewFeedback(getThrownMessage(error));
+      setContextReviewFeedbackError(true);
+    } finally {
+      setContextReviewAction(null);
+    }
+  }
+
+  async function handleApplyContextReview() {
+    if (!pendingContextReview || isContextReviewBusy || isMainChatBusy) return;
+    const confirmed = window.confirm(
+      uiText(
+        uiLocaleDraft,
+        'Apply this proposal and replace the live context?',
+        '确定应用这个建议并覆盖当前正式上下文吗？',
+      ),
+    );
+    if (!confirmed) return;
+
+    setContextReviewAction('apply');
+    setContextReviewFeedback('');
+    setContextReviewFeedbackError(false);
+    try {
+      await onContextReviewApply(pendingContextReview.id);
+    } catch (error) {
+      setContextReviewFeedback(getThrownMessage(error));
+      setContextReviewFeedbackError(true);
+    } finally {
+      setContextReviewAction(null);
+    }
+  }
+
+  async function handleDiscardContextReview() {
+    if (!pendingContextReview || isContextReviewBusy) return;
+    setContextReviewAction('discard');
+    setContextReviewFeedback('');
+    setContextReviewFeedbackError(false);
+    try {
+      await onContextReviewDiscard(pendingContextReview.id);
+    } catch (error) {
+      setContextReviewFeedback(getThrownMessage(error));
+      setContextReviewFeedbackError(true);
+    } finally {
+      setContextReviewAction(null);
+    }
+  }
+
   async function handleClearManualChat() {
     if (!sessionId || isManualComposerLocked || !hasClearableManualChat) return;
     try {
@@ -1423,64 +1578,122 @@ export default function ContextWorkbench({
         >
           <section className="extended-page" data-page="suggestions">
             <div className="extended-page-scroll">
-              <div className="workbench-panel-title">{uiText(uiLocaleDraft, 'Token Overview', 'Token 概览')}</div>
+              <div className="workbench-panel-title">{uiText(uiLocaleDraft, 'Context Suggestions', '上下文建议')}</div>
               <div className="workbench-panel-desc">
-                {uiText(uiLocaleDraft, 'Review the current context token usage before deciding whether to edit it manually.', '查看当前上下文的 token 使用情况，再决定是否手动处理。')}
+                {uiText(uiLocaleDraft, 'Review the compressed transcript proposal before it replaces the live context.', '审核压缩后的 transcript 草稿，再决定是否覆盖当前正式上下文。')}
               </div>
 
-              <div className="suggestion-card-grid">
-                <div className="suggestion-card">
-                  <div className="suggestion-card-label">{uiText(uiLocaleDraft, 'Total Tokens', '总 Token 数')}</div>
-                  <div className="suggestion-card-value">{formatTokenCount(localSuggestionStats.total_token_count)}</div>
-                  <div className="suggestion-card-note">{uiText(uiLocaleDraft, 'Counts the content currently shown in the context map.', '统计当前上下文地图中的节点内容。')}</div>
+              {contextReviewFeedback ? (
+                <div className={`workbench-setting-feedback${contextReviewFeedbackError ? ' error' : ''}`}>
+                  {contextReviewFeedback}
                 </div>
-                <div className="suggestion-card">
-                  <div className="suggestion-card-label">{uiText(uiLocaleDraft, 'Tool Call Tokens', '工具调用 Token')}</div>
-                  <div className="suggestion-card-value">{formatTokenCount(localSuggestionStats.tool_token_count)}</div>
-                  <div className="suggestion-card-note">{uiText(uiLocaleDraft, 'Counts tool display content and tool outputs.', '统计工具展示内容和工具输出。')}</div>
-                </div>
-                <div className="suggestion-card">
-                  <div className="suggestion-card-label">{uiText(uiLocaleDraft, 'Current Focus', '当前聚焦')}</div>
-                  <div className="suggestion-card-value">{selectedNodeNumbers.length || uiText(uiLocaleDraft, 'All', '全部')}</div>
-                  <div className="suggestion-card-note">
-                    {selectedNodeReferenceSegments.length
-                      ? uiText(uiLocaleDraft, `The manual page will prioritize nodes #${selectedNodeReferenceSegments.join(' / ')}.`, `手动页会优先围绕节点 #${selectedNodeReferenceSegments.join(' / ')}。`)
-                      : uiText(uiLocaleDraft, 'No nodes are selected, so the manual page will use the full context.', '当前没有单独选中节点，所以手动页会基于完整上下文处理。')}
+              ) : null}
+
+              {pendingContextReview ? (
+                <div className="context-review-card workbench-setting-card">
+                  <div className="context-review-card-header">
+                    <div>
+                      <div className="workbench-setting-title">{uiText(uiLocaleDraft, 'Pending Compression Review', '待审核压缩建议')}</div>
+                      <div className="workbench-setting-desc">
+                        {pendingReviewCreatedAt
+                          ? uiText(uiLocaleDraft, `Generated ${pendingReviewCreatedAt}`, `生成时间：${pendingReviewCreatedAt}`)
+                          : uiText(uiLocaleDraft, 'Generated by the context model.', '由上下文模型生成。')}
+                      </div>
+                    </div>
+                    <span className="context-review-status">
+                      {uiText(uiLocaleDraft, pendingContextReview.source === 'auto_idle' ? 'Auto' : 'Manual', pendingContextReview.source === 'auto_idle' ? '自动' : '手动')}
+                    </span>
+                  </div>
+
+                  <div className="context-review-summary">
+                    {pendingContextReview.summary || uiText(uiLocaleDraft, 'The model prepared a compressed transcript proposal.', '模型已准备压缩后的 transcript 草稿。')}
+                  </div>
+
+                  <div className="context-review-stats" aria-label={uiText(uiLocaleDraft, 'Review statistics', '审核统计')}>
+                    <div className="context-review-stat">
+                      <div className="suggestion-card-label">{uiText(uiLocaleDraft, 'Before', '压缩前')}</div>
+                      <div className="suggestion-card-value">{pendingReviewBeforeNodes}</div>
+                      <div className="suggestion-card-note">{pendingReviewBeforeTokens} Tokens</div>
+                    </div>
+                    <div className="context-review-stat">
+                      <div className="suggestion-card-label">{uiText(uiLocaleDraft, 'After', '压缩后')}</div>
+                      <div className="suggestion-card-value">{pendingReviewAfterNodes}</div>
+                      <div className="suggestion-card-note">{pendingReviewAfterTokens} Tokens</div>
+                    </div>
+                    <div className="context-review-stat">
+                      <div className="suggestion-card-label">{uiText(uiLocaleDraft, 'Reduced', '减少')}</div>
+                      <div className="suggestion-card-value">{pendingReviewReduction || '-'}</div>
+                      <div className="suggestion-card-note">{uiText(uiLocaleDraft, 'Estimated token change', '估算 token 变化')}</div>
+                    </div>
+                  </div>
+
+                  <div className="context-review-actions">
+                    <button
+                      className="tool-btn-capsule"
+                      disabled={isContextReviewBusy}
+                      type="button"
+                      onClick={() => void handlePreviewContextReview()}
+                    >
+                      {contextReviewAction === 'preview'
+                        ? uiText(uiLocaleDraft, 'Loading preview...', '正在加载预览...')
+                        : uiText(uiLocaleDraft, 'Preview', '预览')}
+                    </button>
+                    {isContextPreviewActive ? (
+                      <button
+                        className="tool-btn-capsule"
+                        disabled={isContextReviewBusy}
+                        type="button"
+                        onClick={onContextReviewPreviewClose}
+                      >
+                        {uiText(uiLocaleDraft, 'Close Preview', '关闭预览')}
+                      </button>
+                    ) : null}
+                    <button
+                      className="tool-btn-capsule context-review-apply"
+                      disabled={isContextReviewBusy || isMainChatBusy}
+                      type="button"
+                      onClick={() => void handleApplyContextReview()}
+                    >
+                      {contextReviewAction === 'apply'
+                        ? uiText(uiLocaleDraft, 'Applying...', '正在应用...')
+                        : uiText(uiLocaleDraft, 'Apply', '应用')}
+                    </button>
+                    <button
+                      className="tool-btn-capsule"
+                      disabled={isContextReviewBusy}
+                      type="button"
+                      onClick={() => void handleDiscardContextReview()}
+                    >
+                      {contextReviewAction === 'discard'
+                        ? uiText(uiLocaleDraft, 'Discarding...', '正在丢弃...')
+                        : uiText(uiLocaleDraft, 'Discard', '丢弃')}
+                    </button>
                   </div>
                 </div>
-              </div>
-
-              <div className="suggestion-stack">
-                <div className="workbench-setting-card">
-                  <div className="workbench-setting-title">{uiText(uiLocaleDraft, 'Node Token Details', '节点 Token 明细')}</div>
-                  <div className="workbench-setting-desc">{uiText(uiLocaleDraft, 'Only red nodes from the minimap are shown here.', '这里仅显示 minimap 里的红色节点。')}</div>
-
-                  {criticalSuggestionNodes.length ? (
-                    criticalSuggestionNodes.map((node) => (
-                      <div className="suggestion-row" key={node.node_index}>
-                        <div className="suggestion-row-copy">
-                          <div className="suggestion-row-title">{uiText(uiLocaleDraft, 'Node', '节点')} #{node.node_number}</div>
-                          <div className="suggestion-row-meta">
-                            {formatSuggestionRoleLabel(node.role, uiLocaleDraft)} - {formatTokenCount(node.token_count)} Token
-                            {node.tool_token_count > 0
-                              ? ` - ${uiText(uiLocaleDraft, 'Tool call', '工具调用')} ${formatTokenCount(node.tool_token_count)} Token`
-                              : ''}
-                          </div>
-                        </div>
-                      </div>
-                    ))
-                  ) : localSuggestionNodes.length ? (
-                    <div className="suggestion-row">
-                      <div className="suggestion-row-title">{uiText(uiLocaleDraft, 'No red nodes right now', '当前没有红色节点')}</div>
-                    </div>
-                  ) : (
-                    <div className="suggestion-row">
-                      <div className="suggestion-row-title">{uiText(uiLocaleDraft, 'No nodes to count yet', '当前还没有可统计的节点')}</div>
-                      <div className="suggestion-row-body">{uiText(uiLocaleDraft, 'Nodes will appear here once the main chat has real context.', '等主聊天里有实际上下文之后，这里会列出每个节点的 Token 数。')}</div>
-                    </div>
-                  )}
+              ) : (
+                <div className="context-review-empty workbench-setting-card">
+                  <div className="workbench-setting-title">{uiText(uiLocaleDraft, 'No pending review', '暂无待审核建议')}</div>
+                  <div className="workbench-setting-desc">
+                    {uiText(
+                      uiLocaleDraft,
+                      'Automatic analysis runs after the configured idle interval. You can also analyze the current context now.',
+                      '达到设置的闲置时间后会自动分析。你也可以现在手动分析当前上下文。',
+                    )}
+                  </div>
+                  <div className="context-review-actions">
+                    <button
+                      className="tool-btn-capsule context-review-primary"
+                      disabled={isContextReviewBusy || isMainChatBusy || !sessionId}
+                      type="button"
+                      onClick={() => void handleGenerateContextReview()}
+                    >
+                      {contextReviewAction === 'generate'
+                        ? uiText(uiLocaleDraft, 'Analyzing...', '正在分析...')
+                        : uiText(uiLocaleDraft, 'Analyze Now', '立即分析')}
+                    </button>
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
           </section>
 
@@ -1862,6 +2075,57 @@ export default function ContextWorkbench({
                         ) : null}
                       </div>
                     </SettingsRow>
+
+                    <SettingsRow
+                      title={uiText(uiLocaleDraft, 'Automatic context suggestions', '自动生成上下文建议')}
+                      meta={uiText(
+                        uiLocaleDraft,
+                        'Analyze eligible conversations after they stay idle.',
+                        '对符合条件且持续闲置的对话自动生成压缩建议。',
+                      )}
+                    >
+                      <button
+                        aria-checked={contextReviewAutoEnabled}
+                        aria-label={uiText(uiLocaleDraft, 'Automatic context suggestions', '自动生成上下文建议')}
+                        className={`context-review-setting-switch${contextReviewAutoEnabled ? ' is-on' : ''}`}
+                        disabled={isSettingsLoading || isContextReviewSettingsSaving}
+                        role="switch"
+                        type="button"
+                        onClick={() => void handleSaveContextReviewAutoEnabled(!contextReviewAutoEnabled)}
+                      >
+                        <span />
+                      </button>
+                    </SettingsRow>
+
+                    {contextReviewAutoEnabled ? (
+                      <SettingsRow
+                        title={uiText(uiLocaleDraft, 'Suggestion trigger interval', '建议触发间隔')}
+                        meta={uiText(
+                          uiLocaleDraft,
+                          'Counted independently from each conversation\'s latest proxy request.',
+                          '从每个对话最后一次经过代理的请求开始独立计时。',
+                        )}
+                      >
+                        <div className="context-review-interval-control">
+                          <input
+                            aria-label={uiText(uiLocaleDraft, 'Suggestion trigger interval in minutes', '建议触发间隔（分钟）')}
+                            className="settings-input settings-input-small"
+                            disabled={isSettingsLoading || isContextReviewSettingsSaving}
+                            inputMode="numeric"
+                            max={1440}
+                            min={1}
+                            type="number"
+                            value={contextReviewIntervalDraft}
+                            onBlur={() => void handleSaveContextReviewInterval()}
+                            onChange={(event) => setContextReviewIntervalDraft(event.target.value)}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') (event.target as HTMLInputElement).blur();
+                            }}
+                          />
+                          <span>{uiText(uiLocaleDraft, 'minutes', '分钟')}</span>
+                        </div>
+                      </SettingsRow>
+                    ) : null}
                   </div>
 
                   <div className="workbench-panel-title workbench-settings-title">

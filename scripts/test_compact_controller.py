@@ -42,14 +42,22 @@ def test_metadata_detects_manual_and_auto_compact() -> None:
     manual_body = {
         "client_metadata": {
             "x-codex-turn-metadata": json.dumps(
-                {"request_kind": "compaction", "trigger": "manual", "turn_id": "turn-manual"}
+                {
+                    "request_kind": "compaction",
+                    "turn_id": "turn-manual",
+                    "compaction": {"trigger": "manual", "phase": "pre_turn"},
+                }
             )
         }
     }
     auto_body = {
         "client_metadata": {
             "x-codex-turn-metadata": json.dumps(
-                {"request_kind": "compaction", "trigger": "auto", "turn_id": "turn-auto"}
+                {
+                    "request_kind": "compaction",
+                    "turn_id": "turn-auto",
+                    "compaction": {"trigger": "auto", "phase": "mid_turn"},
+                }
             )
         }
     }
@@ -76,11 +84,19 @@ def test_non_compact_metadata_does_not_trigger() -> None:
     }
     invalid_body = {"client_metadata": {"x-codex-turn-metadata": "{not-json"}}
     missing_body = {"input": []}
+    obsolete_flat_body = {
+        "client_metadata": {
+            "x-codex-turn-metadata": json.dumps(
+                {"request_kind": "compaction", "trigger": "auto"}
+            )
+        }
+    }
 
     assert parse_compact_turn_metadata(normal_body) is None
     assert parse_compact_turn_metadata(invalid_body) is None
     assert parse_compact_turn_metadata(missing_body) is None
     assert is_compact_request(normal_body) is False
+    assert parse_compact_turn_metadata(obsolete_flat_body) is None
 
 
 def test_replace_prompt_roundtrips_through_transcript_to_input_items() -> None:
@@ -145,15 +161,15 @@ def test_compact_success_manual_builds_retained_users_plus_summary() -> None:
     ]
 
 
-def test_auto_compact_excludes_last_in_progress_user() -> None:
+def test_auto_mid_turn_compact_simulates_active_user_without_assistant() -> None:
     transcript = input_items_to_transcript(
         [
             message("user", "stable user"),
-            message("assistant", "partial work"),
             message("user", "in progress user"),
+            message("assistant", "partial work"),
+            message("user", AUTO_LOCAL_COMPACT_PROMPT),
         ]
     )
-
     result = CompactController.on_compact_success(
         transcript,
         [message("assistant", "auto summary")],
@@ -162,8 +178,53 @@ def test_auto_compact_excludes_last_in_progress_user() -> None:
 
     assert result.new_items == [
         message("user", "stable user"),
+        message("user", "in progress user"),
         typed_message("user", f"{LOCAL_COMPACT_SUMMARY_PREFIX}\n\nauto summary"),
     ]
+    assert transcript_to_input_items(result.new_transcript) == result.new_items
+    assert all(node["role"] == "user" for node in result.new_transcript)
+
+
+def test_lite_compact_simulation_keeps_only_leading_protocol_context() -> None:
+    additional_tools = {
+        "type": "additional_tools",
+        "role": "developer",
+        "tools": [{"type": "function", "name": "exec"}],
+    }
+    base_developer = typed_message("developer", "Codex base instructions")
+    runtime_developer = typed_message("developer", "permissions and skills")
+    transcript = input_items_to_transcript(
+        [
+            additional_tools,
+            base_developer,
+            runtime_developer,
+            message("user", "active request"),
+            message("assistant", "partial work"),
+            message("developer", "non-prefix world state"),
+            message("user", AUTO_LOCAL_COMPACT_PROMPT),
+        ]
+    )
+
+    result = CompactController.on_compact_success(
+        transcript,
+        [message("assistant", "Lite summary")],
+        "auto",
+    )
+
+    assert result.new_items == [
+        additional_tools,
+        base_developer,
+        runtime_developer,
+        message("user", "active request"),
+        typed_message("user", f"{LOCAL_COMPACT_SUMMARY_PREFIX}\n\nLite summary"),
+    ]
+    assert transcript_to_input_items(result.new_transcript) == result.new_items
+    assert not any(node["role"] == "assistant" for node in result.new_transcript)
+    assert all(
+        item.get("content") != "non-prefix world state"
+        for item in result.new_items
+        if isinstance(item, dict)
+    )
 
 
 def test_summary_message_is_not_collected_again() -> None:
@@ -189,14 +250,39 @@ def test_summary_message_is_not_collected_again() -> None:
     ]
 
 
+def test_auto_mid_turn_active_user_participates_in_history_budget() -> None:
+    active_user = "active-" + ("x" * 200)
+    transcript = input_items_to_transcript(
+        [
+            message("user", "older user"),
+            message("user", active_user),
+            message("assistant", "partial work"),
+            message("user", AUTO_LOCAL_COMPACT_PROMPT),
+        ]
+    )
+
+    result = CompactController.on_compact_success(
+        transcript,
+        [message("assistant", "summary")],
+        "auto",
+        max_user_tokens=5,
+    )
+
+    retained_text = result.new_items[0]["content"]
+    assert retained_text == active_user[:20]
+    assert result.retained_user_count == 1
+
+
 def main() -> None:
     tests = [
         test_metadata_detects_manual_and_auto_compact,
         test_non_compact_metadata_does_not_trigger,
         test_replace_prompt_roundtrips_through_transcript_to_input_items,
         test_compact_success_manual_builds_retained_users_plus_summary,
-        test_auto_compact_excludes_last_in_progress_user,
+        test_auto_mid_turn_compact_simulates_active_user_without_assistant,
+        test_lite_compact_simulation_keeps_only_leading_protocol_context,
         test_summary_message_is_not_collected_again,
+        test_auto_mid_turn_active_user_participates_in_history_budget,
     ]
     for test in tests:
         test()

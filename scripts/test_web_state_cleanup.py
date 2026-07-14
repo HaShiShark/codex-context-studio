@@ -39,13 +39,13 @@ def _settings(project_root: Path):
 
 
 def main() -> None:
-    with tempfile.TemporaryDirectory(prefix="hash-web-state-cleanup-") as raw_tmp_dir:
+    with tempfile.TemporaryDirectory(prefix="studio-web-state-cleanup-") as raw_tmp_dir:
         tmp_dir = Path(raw_tmp_dir)
         state_dir = tmp_dir / "state"
         state_dir.mkdir(parents=True)
-        os.environ["HASH_DATA_DIR"] = str(state_dir)
+        os.environ["CODEX_CONTEXT_STUDIO_DATA_DIR"] = str(state_dir)
 
-        state_file = state_dir / "hash_web_state.json"
+        state_file = state_dir / "codex_context_studio_web_state.json"
         state_file.write_text(
             json.dumps(
                 {
@@ -68,15 +68,15 @@ def main() -> None:
         from backend.proxy_routes_support import is_title_generation_request
         from backend.transcript_codec import input_items_to_transcript
         from backend.web_constants import NEW_SESSION_TITLE
-        from backend.web_handler import HashHTTPRequestHandler
+        from backend.web_handler import StudioHTTPRequestHandler
         from backend.web_state import AppState
 
         app_state = AppState(_settings(tmp_dir))
         bootstrap = app_state.bootstrap_payload("legacy-project-session")
         legacy_session = app_state.get_session("legacy-project-session")
 
-        previous_proxy_port = os.environ.get("HASH_CONTEXT_PROXY_PORT")
-        os.environ["HASH_CONTEXT_PROXY_PORT"] = "9876"
+        previous_proxy_port = os.environ.get("CODEX_CONTEXT_STUDIO_PROXY_PORT")
+        os.environ["CODEX_CONTEXT_STUDIO_PROXY_PORT"] = "9876"
         try:
             runtime_bootstrap = app_state.bootstrap_payload(
                 "legacy-project-session",
@@ -84,9 +84,9 @@ def main() -> None:
             )
         finally:
             if previous_proxy_port is None:
-                os.environ.pop("HASH_CONTEXT_PROXY_PORT", None)
+                os.environ.pop("CODEX_CONTEXT_STUDIO_PROXY_PORT", None)
             else:
-                os.environ["HASH_CONTEXT_PROXY_PORT"] = previous_proxy_port
+                os.environ["CODEX_CONTEXT_STUDIO_PROXY_PORT"] = previous_proxy_port
         runtime = runtime_bootstrap.get("runtime")
         if not isinstance(runtime, dict) or runtime.get("proxy_port") != 9876:
             raise AssertionError("bootstrap runtime should expose the current proxy port")
@@ -202,7 +202,7 @@ def main() -> None:
             if hasattr(web_constants, attribute):
                 raise AssertionError(f"project management constant still exists: {attribute}")
 
-        routes = HashHTTPRequestHandler.__new__(HashHTTPRequestHandler)._post_routes()
+        routes = StudioHTTPRequestHandler.__new__(StudioHTTPRequestHandler)._post_routes()
         stale_routes = sorted(
             {
                 "/api/sessions",
@@ -245,17 +245,17 @@ def main() -> None:
         if not is_title_generation_request(codex_title_body):
             raise AssertionError("Codex UI title generation should remain passthrough")
 
-        old_hash_context_title_body = {
+        old_codex_context_studio_title_body = {
             "input": [
                 {
                     "type": "message",
                     "role": "user",
-                    "content": "Generate a local Hash Context chat title from the first user message.",
+                    "content": "Generate a local Codex Context Studio chat title from the first user message.",
                 }
             ]
         }
-        if is_title_generation_request(old_hash_context_title_body):
-            raise AssertionError("old Hash Context local title prompt should not be special-cased")
+        if is_title_generation_request(old_codex_context_studio_title_body):
+            raise AssertionError("old Codex Context Studio local title prompt should not be special-cased")
 
     print("web state cleanup checks passed")
 

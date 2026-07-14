@@ -53,7 +53,7 @@ export default function UsageSummaryCard({
         </div>
       </div>
       <div className="usage-cost-row">
-        <span>{uiText(uiLocale, 'Estimated API cost (GPT-5.5 reference)', '预估 API 成本（按 GPT-5.5 参考）')}</span>
+        <span>{uiText(uiLocale, 'Estimated API cost (GPT-5.6 Sol reference)', '预估 API 成本（按 GPT-5.6 Sol 参考）')}</span>
         <strong>{formatCostUsd(summary?.known_cost_usd)}</strong>
       </div>
       {summary?.unknown_cost_request_count ? (

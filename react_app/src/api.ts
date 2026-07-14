@@ -1,5 +1,6 @@
 import type {
   ContextChatStreamEvent,
+  ContextReview,
   ContextWorkbenchChatMessage,
   ContextWorkbenchSettingsResponse,
   InitPayload,
@@ -131,6 +132,7 @@ export interface ProxySessionSummary {
   node_locks?: Record<string, boolean>;
   node_lock_revision?: number;
   usage_summary?: ProxyUsageSummary;
+  pending_context_review?: ContextReview | null;
 }
 
 export interface ProxySessionsResponse {
@@ -232,6 +234,44 @@ export function clearContextWorkbenchChatRequest(
   return apiFetch('/api/context-workbench-history-clear', {
     method: 'POST',
     body: JSON.stringify({ session_id: sessionId }),
+  });
+}
+
+export function fetchContextReviewRequest(
+  sessionId: string,
+): Promise<{ pending_review: ContextReview | null; transcript_version: number }> {
+  return apiFetch('/api/context-workbench-suggestions', {
+    method: 'POST',
+    body: JSON.stringify({ session_id: sessionId }),
+  });
+}
+
+export function generateContextReviewRequest(
+  sessionId: string,
+): Promise<{ pending_review: ContextReview | null; status: string; reason?: string; session?: ProxySessionSummary }> {
+  return apiFetch('/api/context-review-generate', {
+    method: 'POST',
+    body: JSON.stringify({ session_id: sessionId, source: 'manual' }),
+  });
+}
+
+export function applyContextReviewRequest(
+  sessionId: string,
+  reviewId: string,
+): Promise<ProxySessionSummary> {
+  return apiFetch('/api/context-review-apply', {
+    method: 'POST',
+    body: JSON.stringify({ session_id: sessionId, review_id: reviewId }),
+  });
+}
+
+export function discardContextReviewRequest(
+  sessionId: string,
+  reviewId = '',
+): Promise<ProxySessionSummary> {
+  return apiFetch('/api/context-review-discard', {
+    method: 'POST',
+    body: JSON.stringify({ session_id: sessionId, review_id: reviewId }),
   });
 }
 

@@ -256,6 +256,8 @@ class ProxySessionStorage:
             "updated_at": updated_at,
             "last_codex_session_headers": copy.deepcopy(metadata.get("last_codex_session_headers") or {}),
             "last_turn_metadata_header": str(metadata.get("last_turn_metadata_header") or ""),
+            "last_proxy_request_at": str(metadata.get("last_proxy_request_at") or ""),
+            "context_review_cancel_revision": int(metadata.get("context_review_cancel_revision") or 0),
             "tail_conflict": bool(metadata.get("tail_conflict")),
             "compact_pending": bool(metadata.get("compact_pending")),
             "compact_kind": str(metadata.get("compact_kind") or ""),
@@ -266,6 +268,7 @@ class ProxySessionStorage:
             "status": str(metadata.get("status") or "mirror"),
             "usage_events": copy.deepcopy(metadata.get("usage_events") or []),
             "usage_summary": copy.deepcopy(metadata.get("usage_summary") or {}),
+            "pending_context_review": copy.deepcopy(metadata.get("pending_context_review") or None),
         }
 
     def _metadata_from_session(
@@ -284,6 +287,10 @@ class ProxySessionStorage:
             "updated_at": str(getattr(session, "updated_at", "") or utc_timestamp()),
             "last_codex_session_headers": copy.deepcopy(getattr(session, "last_codex_session_headers", {}) or {}),
             "last_turn_metadata_header": str(getattr(session, "last_turn_metadata_header", "") or ""),
+            "last_proxy_request_at": str(getattr(session, "last_proxy_request_at", "") or ""),
+            "context_review_cancel_revision": int(
+                getattr(session, "context_review_cancel_revision", 0) or 0
+            ),
             "tail_conflict": bool(getattr(proxy_state, "tail_conflict", False)),
             "compact_pending": bool(getattr(proxy_state, "compact_pending", False)),
             "compact_kind": str(getattr(proxy_state, "compact_kind", "") or ""),
@@ -294,6 +301,7 @@ class ProxySessionStorage:
             "status": str(getattr(session, "status", "") or "mirror"),
             "usage_events": copy.deepcopy(getattr(session, "usage_events", []) or []),
             "usage_summary": copy.deepcopy(summary),
+            "pending_context_review": copy.deepcopy(getattr(session, "pending_context_review", None)),
         }
 
     def _index_entry(self, session: Any) -> dict[str, Any]:

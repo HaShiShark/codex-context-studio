@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 try:
     from . import proxy_routes_support as route_support
+    from .codex_request_protocol import apply_base_instructions_override, find_base_instructions
     from .proxy_store import STORE
     from .realtime_events import (
         compact_update,
@@ -39,6 +40,7 @@ except ImportError:
     if str(repo_root_for_import) not in sys.path:
         sys.path.insert(0, str(repo_root_for_import))
     from backend import proxy_routes_support as route_support
+    from backend.codex_request_protocol import apply_base_instructions_override, find_base_instructions
     from backend.proxy_store import STORE
     from backend.realtime_events import (
         compact_update,
@@ -194,15 +196,17 @@ def _sse_event_bytes(event: dict[str, Any]) -> bytes:
 
 def _capture_first_codex_instructions(body: dict[str, Any]) -> None:
     global _FIRST_CODEX_INSTRUCTIONS_SCAN_DONE
+    location = find_base_instructions(body)
+    if location is None:
+        route_support.proxy_log("first Codex instructions scan found no base instructions")
+        return
+
     with _FIRST_CODEX_INSTRUCTIONS_SCAN_LOCK:
         if _FIRST_CODEX_INSTRUCTIONS_SCAN_DONE:
             return
         _FIRST_CODEX_INSTRUCTIONS_SCAN_DONE = True
 
-    instructions = route_support.compact_text(body.get("instructions") if isinstance(body, dict) else "").strip()
-    if not instructions:
-        route_support.proxy_log("first Codex instructions scan found no top-level instructions")
-        return
+    instructions = location.text
 
     try:
         from simple_agent.config import load_settings, save_settings
@@ -211,7 +215,10 @@ def _capture_first_codex_instructions(body: dict[str, Any]) -> None:
         old_default = str(getattr(settings, "codex_system_prompt_default", "") or "").strip()
         old_current = str(getattr(settings, "codex_system_prompt", "") or "").strip()
         if instructions == old_default:
-            route_support.proxy_log(f"first Codex instructions match existing default chars={len(instructions)}")
+            route_support.proxy_log(
+                f"first Codex instructions match existing default transport={location.transport} "
+                f"chars={len(instructions)}"
+            )
             return
 
         kwargs: dict[str, str] = {"codex_system_prompt_default": instructions}
@@ -219,7 +226,7 @@ def _capture_first_codex_instructions(body: dict[str, Any]) -> None:
             kwargs["codex_system_prompt"] = instructions
         save_settings(**kwargs)
         route_support.proxy_log(
-            f"updated first Codex instructions default chars={len(instructions)} "
+            f"updated first Codex instructions default transport={location.transport} chars={len(instructions)} "
             f"sync_current={'codex_system_prompt' in kwargs}"
         )
     except Exception as exc:  # noqa: BLE001
@@ -235,19 +242,14 @@ def _apply_codex_system_prompt_override(body: dict[str, Any]) -> dict[str, Any]:
         route_support.proxy_log(f"failed to load Codex system prompt override error={type(exc).__name__}: {exc}")
         return body
 
-    if not system_prompt:
-        return body
-
-    next_body = copy.deepcopy(body)
-    next_body["instructions"] = system_prompt
-    return next_body
+    return apply_base_instructions_override(body, system_prompt)
 
 
 async def _context_control_stream(body: dict[str, Any], opened: bool, error: str = "") -> AsyncIterator[bytes]:
-    response_id = f"resp_hash_context_{uuid.uuid4().hex}"
-    message_id = f"msg_hash_context_{uuid.uuid4().hex}"
-    model = str(body.get("model") or "gpt-5.5")
-    text = route_support.CONTEXT_CONTROL_NOTICE_TEXT if opened else f"Hash Context: workbench unavailable. {error}".strip()
+    response_id = f"resp_codex_context_studio_{uuid.uuid4().hex}"
+    message_id = f"msg_codex_context_studio_{uuid.uuid4().hex}"
+    model = str(body.get("model") or "gpt-5.6-sol")
+    text = route_support.CONTEXT_CONTROL_NOTICE_TEXT if opened else f"Codex Context Studio: workbench unavailable. {error}".strip()
     item = {
         "type": "message",
         "role": "assistant",
@@ -413,7 +415,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="Hash Context Proxy", lifespan=lifespan)
+app = FastAPI(title="Codex Context Studio", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -487,6 +489,86 @@ async def replace_transcript(session_id: str, request: Request) -> Response:
         before_transcript=before_transcript,
         transcript_mode="full",
     )
+    return JSONResponse(session)
+
+
+@app.post("/api/proxy/sessions/{session_id:path}/context-review")
+async def set_context_review(session_id: str, request: Request) -> Response:
+    try:
+        payload = await _read_json_body(request)
+    except json.JSONDecodeError:
+        return _json_error("request body must be JSON", HTTPStatus.BAD_REQUEST)
+    except ValueError as exc:
+        return _json_error(str(exc), HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
+
+    review = payload.get("review") if isinstance(payload.get("review"), dict) else payload
+    try:
+        session = STORE.set_pending_context_review(session_id, review)
+    except KeyError:
+        return _json_error("session not found", HTTPStatus.NOT_FOUND)
+    except RuntimeError as exc:
+        return _json_error(str(exc), HTTPStatus.CONFLICT)
+    except ValueError as exc:
+        return _json_error(str(exc), HTTPStatus.BAD_REQUEST)
+
+    await HUB.publish(session_status(session, reason="context_review_pending"))
+    await HUB.publish(session_list_update(STORE.list_sessions()))
+    return JSONResponse(session)
+
+
+@app.post("/api/proxy/sessions/{session_id:path}/context-review/apply")
+async def apply_context_review(session_id: str, request: Request) -> Response:
+    try:
+        payload = await _read_json_body(request)
+    except json.JSONDecodeError:
+        return _json_error("request body must be JSON", HTTPStatus.BAD_REQUEST)
+    except ValueError as exc:
+        return _json_error(str(exc), HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
+
+    review_id = str(payload.get("review_id") or "").strip()
+    before_version = _session_version(session_id)
+    before_transcript = _session_transcript(session_id)
+    try:
+        session = STORE.apply_pending_context_review(session_id, review_id)
+    except KeyError:
+        return _json_error("session not found", HTTPStatus.NOT_FOUND)
+    except RuntimeError as exc:
+        if str(exc) == "context_review_stale":
+            await HUB.publish(session_list_update(STORE.list_sessions()))
+            return _json_error("context review is stale", HTTPStatus.CONFLICT)
+        return _json_error(str(exc), HTTPStatus.CONFLICT)
+    except ValueError as exc:
+        return _json_error(str(exc), HTTPStatus.BAD_REQUEST)
+
+    await _publish_session_change(
+        session_id,
+        reason="context_review_applied",
+        before_version=before_version,
+        before_transcript=before_transcript,
+        transcript_mode="full",
+    )
+    return JSONResponse(session)
+
+
+@app.post("/api/proxy/sessions/{session_id:path}/context-review/discard")
+async def discard_context_review(session_id: str, request: Request) -> Response:
+    try:
+        payload = await _read_json_body(request)
+    except json.JSONDecodeError:
+        return _json_error("request body must be JSON", HTTPStatus.BAD_REQUEST)
+    except ValueError as exc:
+        return _json_error(str(exc), HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
+
+    review_id = str(payload.get("review_id") or "").strip()
+    try:
+        session = STORE.clear_pending_context_review(session_id, review_id)
+    except KeyError:
+        return _json_error("session not found", HTTPStatus.NOT_FOUND)
+    except ValueError as exc:
+        return _json_error(str(exc), HTTPStatus.BAD_REQUEST)
+
+    await HUB.publish(session_status(session, reason="context_review_discarded"))
+    await HUB.publish(session_list_update(STORE.list_sessions()))
     return JSONResponse(session)
 
 
@@ -678,7 +760,7 @@ async def responses(request: Request) -> Response:
                         "Codex auth has not been captured by the local proxy yet. "
                         "Send one normal Codex message through this proxy first, then retry the context workbench."
                     ),
-                    "type": "hash_context_auth_unavailable",
+                    "type": "codex_context_studio_auth_unavailable",
                     "code": "codex_auth_not_captured",
                 }
             },
@@ -696,8 +778,13 @@ async def responses(request: Request) -> Response:
         headers_for_upstream = headers
         before_version = _session_version(session_id)
         before_transcript = _session_transcript(session_id)
-        session, forwarded_body = STORE.begin_request(session_id, body, headers)
-        forwarded_body = await asyncio.to_thread(_apply_codex_system_prompt_override, forwarded_body)
+        effective_body = await asyncio.to_thread(_apply_codex_system_prompt_override, body)
+        session, forwarded_body = STORE.begin_request(
+            session_id,
+            body,
+            headers,
+            effective_body=effective_body,
+        )
         await _publish_session_change(
             session_id,
             reason="begin_request",
@@ -888,13 +975,13 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=route_support.PORT)
     args = parser.parse_args()
 
-    print(f"Hash Context proxy listening on http://{args.host}:{args.port} (FastAPI)")
+    print(f"Codex Context Studio proxy listening on http://{args.host}:{args.port} (FastAPI)")
     if route_support.FORCE_UPSTREAM_BASE_URL:
         print(f"Force upstream: {route_support.FORCE_UPSTREAM_BASE_URL.rstrip('/')}/responses")
     else:
         print(f"OpenAI API upstream: {route_support.OPENAI_UPSTREAM_BASE_URL.rstrip()}/responses")
         print(f"ChatGPT upstream: {route_support.CHATGPT_UPSTREAM_BASE_URL.rstrip()}/responses")
-    uvicorn.run(app, host=args.host, port=args.port, log_level=os.environ.get("HASH_CONTEXT_UVICORN_LOG_LEVEL", "info"))
+    uvicorn.run(app, host=args.host, port=args.port, log_level=os.environ.get("CODEX_CONTEXT_STUDIO_UVICORN_LOG_LEVEL", "info"))
 
 
 if __name__ == "__main__":

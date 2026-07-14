@@ -4,15 +4,15 @@ import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 
 const repoRoot = path.resolve(__dirname, '..');
-const devTargetHost = process.env.HASH_CONTEXT_HOST || 'localhost';
+const devTargetHost = process.env.CODEX_CONTEXT_STUDIO_HOST || 'localhost';
 
 function readPort(name: string, fallback: number): number {
   const value = Number(process.env[name] || fallback);
   return Number.isInteger(value) && value > 0 && value < 65536 ? value : fallback;
 }
 
-const backendPort = readPort('HASH_WEB_PORT', 8765);
-const proxyPort = readPort('HASH_CONTEXT_PROXY_PORT', 8787);
+const backendPort = readPort('CODEX_CONTEXT_STUDIO_WEB_PORT', 8765);
+const proxyPort = readPort('CODEX_CONTEXT_STUDIO_PROXY_PORT', 8787);
 
 export default defineConfig(({ command }) => ({
   root: __dirname,

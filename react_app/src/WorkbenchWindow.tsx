@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
+  applyContextReviewRequest,
+  discardContextReviewRequest,
   fetchInit,
   fetchProxySessionRequest,
   fetchProxySessionsRequest,
+  generateContextReviewRequest,
   proxyRealtimeUrl,
   syncProxySessionRequest,
   updateProxySessionNodeLockRequest,
@@ -14,6 +17,7 @@ import {
 import ContextMapSidebar from './components/ContextMapSidebar';
 import { normalizeSupportedLocale, type UiLocale } from './i18n';
 import type {
+  ContextReview,
   ContextWorkbenchChatMessage,
   InitPayload,
   MessageRecord,
@@ -211,6 +215,8 @@ export default function WorkbenchWindow() {
   const [nodeLocks, setNodeLocks] = useState<Record<string, boolean>>({});
   const [nodeLockPendingIds, setNodeLockPendingIds] = useState<Set<string>>(new Set());
   const [messages, setMessages] = useState<MessageRecord[]>([]);
+  const [pendingContextReview, setPendingContextReview] = useState<ContextReview | null>(null);
+  const [previewContextReview, setPreviewContextReview] = useState<ContextReview | null>(null);
   const [contextWorkbenchChats, setContextWorkbenchChats] = useState<Record<string, ContextWorkbenchChatMessage[]>>({});
   const [reasoningOptions] = useState<ReasoningOption[]>(normalizeReasoningOptions());
   const [proxyUsageSummary, setProxyUsageSummary] = useState<ProxyUsageSummary | null>(null);
@@ -225,6 +231,8 @@ export default function WorkbenchWindow() {
   const isContextRunningRef = useRef(false);
   const nodeLocksRef = useRef<Record<string, boolean>>({});
   const nodeLockRevisionRef = useRef(0);
+  const pendingContextReviewRef = useRef<ContextReview | null>(null);
+  const previewContextReviewRef = useRef<ContextReview | null>(null);
   const nodeLockPendingIdsRef = useRef<Set<string>>(new Set());
   const lastRealtimeEventIdRef = useRef(0);
   const realtimeClientIdRef = useRef(`frontend-window-${Math.random().toString(36).slice(2)}`);
@@ -264,6 +272,34 @@ export default function WorkbenchWindow() {
     }
   }, []);
 
+  const applyPendingContextReview = useCallback((review: ContextReview | null | undefined) => {
+    const nextReview = review || null;
+    setPendingContextReview((previous) => {
+      let merged = nextReview;
+      if (
+        previous
+        && nextReview
+        && previous.id === nextReview.id
+        && previous.proposed_transcript
+        && !nextReview.proposed_transcript
+      ) {
+        merged = { ...nextReview, proposed_transcript: previous.proposed_transcript };
+      }
+      pendingContextReviewRef.current = merged;
+      return merged;
+    });
+    setPreviewContextReview((previous) => {
+      const shouldKeepPreview = Boolean(
+        previous
+        && nextReview
+        && previous.id === nextReview.id,
+      );
+      const nextPreview = shouldKeepPreview ? previous : null;
+      previewContextReviewRef.current = nextPreview;
+      return nextPreview;
+    });
+  }, []);
+
   const applyProxySession = useCallback((session: ProxySessionSummary | null | undefined) => {
     if (!session?.id) return;
     const sessionChanged = proxySessionIdRef.current !== session.id;
@@ -278,8 +314,9 @@ export default function WorkbenchWindow() {
     setProxySessionId(session.id);
     applyProxySessionRuntime(session);
     setProxyUsageSummary(session.usage_summary || null);
+    applyPendingContextReview(session.pending_context_review || null);
     setMessagesIfChanged(normalizeConversation(transcriptRef.current));
-  }, [applyProxySessionRuntime, setMessagesIfChanged]);
+  }, [applyPendingContextReview, applyProxySessionRuntime, setMessagesIfChanged]);
 
   const loadInit = useCallback(async (opts: { silent?: boolean; targetSessionId?: string } = {}) => {
     const targetSid = opts.targetSessionId?.trim() || currentUrlSessionId();
@@ -318,6 +355,7 @@ export default function WorkbenchWindow() {
         setNodeLocks({});
         setNodeLockPendingIds(new Set());
         setProxyUsageSummary(null);
+        applyPendingContextReview(null);
         setMessagesIfChanged([]);
         return;
       }
@@ -347,7 +385,7 @@ export default function WorkbenchWindow() {
     } finally {
       if (!opts.silent) { visibleLoadInFlightRef.current = false; if (isCurrentLoad()) setLoading(false); }
     }
-  }, [applyProxySession]);
+  }, [applyPendingContextReview, applyProxySession]);
 
   useEffect(() => { void loadInit(); }, [loadInit]);
 
@@ -382,8 +420,8 @@ export default function WorkbenchWindow() {
       }
       void loadInit({ silent: !targetSid, targetSessionId: targetSid });
     };
-    window.addEventListener('hash-context-window-show', handler);
-    return () => window.removeEventListener('hash-context-window-show', handler);
+    window.addEventListener('codex-context-studio-window-show', handler);
+    return () => window.removeEventListener('codex-context-studio-window-show', handler);
   }, [loadInit]);
 
   const applyRealtimeEvent = useCallback((event: ProxyRealtimeEvent) => {
@@ -415,6 +453,7 @@ export default function WorkbenchWindow() {
     if (event.type === 'session_status') {
       setIsMainTurnRunning(Boolean(event.is_main_turn_running ?? event.session?.is_main_turn_running));
       applyProxySessionRuntime(event.session);
+      applyPendingContextReview(event.session?.pending_context_review || null);
       if (event.session?.usage_summary) setProxyUsageSummary(event.session.usage_summary);
       return;
     }
@@ -427,6 +466,7 @@ export default function WorkbenchWindow() {
       setMessagesIfChanged(normalizeConversation(transcriptRef.current));
       if (event.session) {
         applyProxySessionRuntime(event.session);
+        applyPendingContextReview(event.session.pending_context_review || null);
         setProxyUsageSummary(event.session.usage_summary || null);
       }
       return;
@@ -444,6 +484,7 @@ export default function WorkbenchWindow() {
       setMessagesIfChanged(normalizeConversation(transcriptRef.current));
       if (event.session) {
         applyProxySessionRuntime(event.session);
+        applyPendingContextReview(event.session.pending_context_review || null);
         setProxyUsageSummary(event.session.usage_summary || null);
       }
       return;
@@ -452,7 +493,7 @@ export default function WorkbenchWindow() {
     if (event.type === 'usage_update') {
       setProxyUsageSummary(event.usage_summary || null);
     }
-  }, [applyProxySession, applyProxySessionRuntime, setMessagesIfChanged, uiLocale]);
+  }, [applyPendingContextReview, applyProxySession, applyProxySessionRuntime, setMessagesIfChanged, uiLocale]);
 
   useEffect(() => {
     if (!proxySessionId) return undefined;
@@ -511,6 +552,14 @@ export default function WorkbenchWindow() {
     [contextWorkbenchChats, proxySessionId],
   );
 
+  const previewMessages = useMemo(() => (
+    previewContextReview?.proposed_transcript
+      ? normalizeConversation(previewContextReview.proposed_transcript)
+      : null
+  ), [previewContextReview]);
+
+  const visibleMessages = previewMessages || messages;
+
   const handleConversationChange = useCallback(
     (changedSessionId: string, conversation: MessageRecord[], rawTranscript?: TranscriptEntry[]) => {
       if (changedSessionId !== proxySessionId) return;
@@ -521,6 +570,65 @@ export default function WorkbenchWindow() {
     },
     [proxySessionId, setMessagesIfChanged],
   );
+
+  const handleContextReviewGenerate = useCallback(async () => {
+    const sessionId = proxySessionIdRef.current;
+    if (!sessionId) throw new Error(windowText(uiLocale, 'No active session', '没有当前会话'));
+    const result = await generateContextReviewRequest(sessionId);
+    const review = result.pending_review || result.session?.pending_context_review || null;
+    applyPendingContextReview(review);
+    if (result.session) applyProxySession(result.session);
+    return review;
+  }, [applyPendingContextReview, applyProxySession, uiLocale]);
+
+  const handleContextReviewPreview = useCallback(async (review: ContextReview) => {
+    const sessionId = proxySessionIdRef.current;
+    if (!sessionId) throw new Error(windowText(uiLocale, 'No active session', '没有当前会话'));
+
+    let fullReview = review;
+    if (!fullReview.proposed_transcript?.length) {
+      const session = await fetchProxySessionRequest(sessionId);
+      applyProxySession(session);
+      const loadedReview = session.pending_context_review || null;
+      if (loadedReview?.id === review.id) {
+        fullReview = loadedReview;
+      }
+    }
+
+    if (!fullReview.proposed_transcript?.length) {
+      throw new Error(windowText(uiLocale, 'Review preview is not available', '审核预览不可用'));
+    }
+
+    pendingContextReviewRef.current = fullReview;
+    setPendingContextReview(fullReview);
+    previewContextReviewRef.current = fullReview;
+    setPreviewContextReview(fullReview);
+  }, [applyProxySession, uiLocale]);
+
+  const handleContextReviewPreviewClose = useCallback(() => {
+    previewContextReviewRef.current = null;
+    setPreviewContextReview(null);
+  }, []);
+
+  const handleContextReviewApply = useCallback(async (reviewId: string) => {
+    const sessionId = proxySessionIdRef.current;
+    if (!sessionId) throw new Error(windowText(uiLocale, 'No active session', '没有当前会话'));
+    const session = await applyContextReviewRequest(sessionId, reviewId);
+    previewContextReviewRef.current = null;
+    setPreviewContextReview(null);
+    applyProxySession(session);
+    return session.pending_context_review || null;
+  }, [applyProxySession, uiLocale]);
+
+  const handleContextReviewDiscard = useCallback(async (reviewId: string) => {
+    const sessionId = proxySessionIdRef.current;
+    if (!sessionId) throw new Error(windowText(uiLocale, 'No active session', '没有当前会话'));
+    const session = await discardContextReviewRequest(sessionId, reviewId);
+    previewContextReviewRef.current = null;
+    setPreviewContextReview(null);
+    applyProxySession(session);
+    return session.pending_context_review || null;
+  }, [applyProxySession, uiLocale]);
 
   const handleNodeLockChange = useCallback(async (nodeId: string, locked: boolean) => {
     const safeNodeId = nodeId.trim();
@@ -611,14 +719,17 @@ export default function WorkbenchWindow() {
         <WorkbenchWindowControls uiLocale={uiLocale} />
         {realtimeError ? <div className="workbench-realtime-error">{realtimeError}</div> : null}
         <ContextMapSidebar
-          messages={messages}
+          messages={visibleMessages}
           sessionId={proxySessionId}
           isMainChatBusy={isMainTurnRunning}
-          isContextModelBusy={isContextRunning}
+          isContextModelBusy={isContextRunning || Boolean(previewContextReview)}
+          isContextPreviewActive={Boolean(previewContextReview)}
+          contextPreviewSummary={previewContextReview?.summary || ''}
           nodeLocks={nodeLocks}
           nodeLockPendingIds={nodeLockPendingIds}
           contextWorkbenchChat={currentContextWorkbenchChat}
           reasoningOptions={reasoningOptions}
+          pendingContextReview={pendingContextReview}
           proxyUsageSummary={proxyUsageSummary}
           uiLocale={uiLocale}
           themeMode={themeMode}
@@ -627,6 +738,11 @@ export default function WorkbenchWindow() {
           }}
           onContextWorkbenchConversationChange={handleConversationChange}
           onProxyUsageSummaryChange={setProxyUsageSummary}
+          onContextReviewGenerate={handleContextReviewGenerate}
+          onContextReviewPreview={handleContextReviewPreview}
+          onContextReviewPreviewClose={handleContextReviewPreviewClose}
+          onContextReviewApply={handleContextReviewApply}
+          onContextReviewDiscard={handleContextReviewDiscard}
           onNodeLockChange={handleNodeLockChange}
           onEnsureSession={async () => proxySessionId}
           onUiLocaleChange={(locale) => setUiLocale(normalizeSupportedLocale(locale))}

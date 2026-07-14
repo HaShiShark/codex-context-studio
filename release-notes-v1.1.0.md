@@ -2,7 +2,7 @@
 
 ## Highlights
 
-- Updated the project presentation from Codex Context Proxy to Codex Context Studio
+- Updated the project presentation from Codex Context Studio to Codex Context Studio
 - Refreshed English and Chinese documentation with new screenshots and architecture notes
 - Preserved Codex internal turn metadata while rebuilding request input
 - Improved support for newer tool-call item shapes and compact metadata handling

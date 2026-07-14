@@ -13,6 +13,7 @@ import ContextWorkbench from './ContextWorkbench';
 import ContextMapNodeList from './ContextMapNodeList';
 import ContextMinimap from './ContextMinimap';
 import type {
+  ContextReview,
   ContextWorkbenchChatMessage,
   MessageRecord,
   ProxyUsageSummary,
@@ -77,10 +78,13 @@ interface ContextMapSidebarProps {
   sessionId: string;
   isMainChatBusy: boolean;
   isContextModelBusy: boolean;
+  isContextPreviewActive: boolean;
+  contextPreviewSummary: string;
   nodeLocks: Record<string, boolean>;
   nodeLockPendingIds: Set<string>;
   contextWorkbenchChat: ContextWorkbenchChatMessage[];
   reasoningOptions: ReasoningOption[];
+  pendingContextReview: ContextReview | null;
   proxyUsageSummary: ProxyUsageSummary | null;
   uiLocale: 'zh-CN' | 'en-US';
   themeMode: 'light' | 'dark';
@@ -93,6 +97,11 @@ interface ContextMapSidebarProps {
   onProxyUsageSummaryChange: (summary: ProxyUsageSummary | null) => void;
   onNodeLockChange: (nodeId: string, locked: boolean) => void | Promise<void>;
   onEnsureSession: () => Promise<string>;
+  onContextReviewGenerate: () => Promise<ContextReview | null>;
+  onContextReviewPreview: (review: ContextReview) => Promise<void>;
+  onContextReviewPreviewClose: () => void;
+  onContextReviewApply: (reviewId: string) => Promise<ContextReview | null>;
+  onContextReviewDiscard: (reviewId: string) => Promise<ContextReview | null>;
   onUiLocaleChange?: (locale: 'zh-CN' | 'en-US') => void;
   onUiFontChange?: (font: string, fontSize: number) => void;
   onThemeModeChange?: (themeMode: 'light' | 'dark') => void;
@@ -103,10 +112,13 @@ export default function ContextMapSidebar({
   sessionId,
   isMainChatBusy,
   isContextModelBusy,
+  isContextPreviewActive,
+  contextPreviewSummary,
   nodeLocks,
   nodeLockPendingIds,
   contextWorkbenchChat,
   reasoningOptions,
+  pendingContextReview,
   proxyUsageSummary,
   uiLocale,
   themeMode,
@@ -115,6 +127,11 @@ export default function ContextMapSidebar({
   onProxyUsageSummaryChange,
   onNodeLockChange,
   onEnsureSession,
+  onContextReviewGenerate,
+  onContextReviewPreview,
+  onContextReviewPreviewClose,
+  onContextReviewApply,
+  onContextReviewDiscard,
   onUiLocaleChange,
   onUiFontChange,
   onThemeModeChange,
@@ -615,7 +632,7 @@ export default function ContextMapSidebar({
   }
 
   const toggleNodeLock = useCallback((index: number) => {
-    if (isContextModelBusy) {
+    if (isContextModelBusy || isContextPreviewActive) {
       return false;
     }
 
@@ -629,6 +646,7 @@ export default function ContextMapSidebar({
     return true;
   }, [
     isContextModelBusy,
+    isContextPreviewActive,
     messages,
     nodeLockPendingIds,
     nodeMeta,
@@ -774,14 +792,6 @@ export default function ContextMapSidebar({
     () => [...selectedIndexes].sort((left, right) => left - right),
     [selectedIndexes],
   );
-  const criticalNodeIndexes = useMemo(
-    () =>
-      messageStats
-        .map((stats, index) => (stats.editable && stats.weightClass === 'heavy' ? index : -1))
-        .filter((index) => index >= 0),
-    [messageStats],
-  );
-
   return (
     <aside className="right-panel stage-2">
       <div className="context-map-pane">
@@ -790,6 +800,28 @@ export default function ContextMapSidebar({
             <div className="context-map-title">{sidebarText(uiLocale, 'Context Map', '上下文地图')}</div>
           </div>
         </div>
+
+        {isContextPreviewActive ? (
+          <div className="context-review-preview-banner" role="status">
+            <div className="context-review-preview-copy">
+              <div className="context-review-preview-title">
+                {sidebarText(uiLocale, 'Previewing compressed context', '正在预览压缩建议')}
+              </div>
+              {contextPreviewSummary ? (
+                <div className="context-review-preview-summary">{contextPreviewSummary}</div>
+              ) : null}
+            </div>
+            <button
+              aria-label={sidebarText(uiLocale, 'Close context preview', '关闭上下文预览')}
+              className="context-review-preview-close"
+              title={sidebarText(uiLocale, 'Close preview', '关闭预览')}
+              type="button"
+              onClick={onContextReviewPreviewClose}
+            >
+              <i className="ph-light ph-x" />
+            </button>
+          </div>
+        ) : null}
 
         <div className="context-map-list">
           <ContextMapNodeList
@@ -805,7 +837,7 @@ export default function ContextMapSidebar({
             onToggleMessage={toggleMessage}
             onGutterMouseDown={handleGutterMouseDown}
             onGutterKeyDown={handleGutterKeyDown}
-            isNodeLockDisabled={isContextModelBusy}
+            isNodeLockDisabled={isContextModelBusy || isContextPreviewActive}
             nodeLockPendingIds={nodeLockPendingIds}
           />
 
@@ -831,12 +863,13 @@ export default function ContextMapSidebar({
         <ContextWorkbench
           messageTokenStats={messageStats}
           selectedNodeIndexes={selectedNodeIndexes}
-          criticalNodeIndexes={criticalNodeIndexes}
           tokenThresholds={tokenThresholds}
           sessionId={sessionId}
           isMainChatBusy={isMainChatBusy}
+          isContextPreviewActive={isContextPreviewActive}
           contextWorkbenchChat={contextWorkbenchChat}
           reasoningOptions={reasoningOptions}
+          pendingContextReview={pendingContextReview}
           proxyUsageSummary={proxyUsageSummary}
           uiLocale={uiLocale}
           themeMode={themeMode}
@@ -844,6 +877,11 @@ export default function ContextMapSidebar({
           onConversationChange={onContextWorkbenchConversationChange}
           onProxyUsageSummaryChange={onProxyUsageSummaryChange}
           onEnsureSession={onEnsureSession}
+          onContextReviewGenerate={onContextReviewGenerate}
+          onContextReviewPreview={onContextReviewPreview}
+          onContextReviewPreviewClose={onContextReviewPreviewClose}
+          onContextReviewApply={onContextReviewApply}
+          onContextReviewDiscard={onContextReviewDiscard}
           onTokenThresholdsChange={setTokenThresholds}
           onUiLocaleChange={onUiLocaleChange}
           onUiFontChange={onUiFontChange}

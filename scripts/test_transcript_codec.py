@@ -225,6 +225,65 @@ def test_additional_tools_creates_developer_node() -> None:
     assert transcript_to_input_items(transcript) == input_items
 
 
+def test_current_codex_context_fields_roundtrip_losslessly() -> None:
+    input_items = [
+        {
+            "type": "additional_tools",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "workspace_search",
+                    "namespace": "codex.workspace",
+                    "schema": {"unknown_nested": {"kept": [1, 2, 3]}},
+                }
+            ],
+        },
+        {
+            "type": "message",
+            "role": "developer",
+            "phase": "world_state",
+            "content": [{"type": "input_text", "text": "<environment_context />"}],
+            "internal_chat_message_metadata_passthrough": {
+                "turn_id": "turn-world-state",
+                "unknown_nested": {"kept": True},
+            },
+        },
+        {
+            "type": "message",
+            "role": "user",
+            "phase": "input",
+            "content": [{"type": "input_text", "text": "current request"}],
+            "internal_chat_message_metadata_passthrough": {"turn_id": "turn-user"},
+        },
+        {
+            "type": "function_call",
+            "call_id": "call-1",
+            "name": "run",
+            "namespace": "codex.exec",
+            "arguments": "{}",
+        },
+        {
+            "type": "agent_message",
+            "author": "worker",
+            "recipient": "root",
+            "content": [{"type": "input_text", "text": "worker result"}],
+        },
+        {
+            "type": "compaction",
+            "encrypted_content": "opaque-summary",
+            "unknown_nested": {"future": {"field": "preserved"}},
+        },
+        {
+            "type": "future_context_item",
+            "payload": {"unknown_nested": [{"a": 1}, {"b": 2}]},
+        },
+    ]
+
+    transcript = input_items_to_transcript(input_items)
+
+    assert transcript_to_input_items(transcript) == input_items
+
+
 def test_system_message_preserves_original_role() -> None:
     input_items = [
         message("system", "system policy"),
@@ -348,6 +407,7 @@ def main() -> None:
         test_compaction_is_independent_node,
         test_agent_message_is_subagent_node,
         test_additional_tools_creates_developer_node,
+        test_current_codex_context_fields_roundtrip_losslessly,
         test_system_message_preserves_original_role,
         test_append_preserves_existing_user_node_id,
         test_append_assistant_tool_keeps_existing_assistant_node,

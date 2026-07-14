@@ -1,4 +1,4 @@
-# Hash Context Proxy - 最终设计方案
+# Codex Context Studio - 最终设计方案
 
 > 本版按 `docs/user-intent.md` 和后续关于 cursor / compact / ctx 的纠正重新校准。
 > 后续代理核心、Workbench、子代理调研都以本文为技术准绳；旧文档和旧代码只能用于背景或外围能力参考。
@@ -6,11 +6,12 @@
 ## 0. 最容易误解的点
 
 1. `transcript` 是业务真相，`codex_input_cursor` 是机器游标。cursor 必须落盘，但不是第二份 transcript，不展示、不编辑、不交给上下文模型改。
-2. `Transcript = input 1:1` 指 provider items 不丢失、可从 transcript 无损重组上游 input。用户编辑后，transcript 可以和 Codex 原始 raw input 不同；cursor 仍代表 Codex 侧原始锚点。
+2. `Transcript = input 1:1` 指 provider items 不丢失、可从 transcript 无损重组上游 input。用户编辑后，transcript 可以和 Codex 原始请求不同；cursor 代表经过协议原位设置覆盖后、实际转发上游的 effective input 锚点。
 3. 普通 Workbench 编辑只改 transcript，不改 cursor。compact 成功后才允许同时重置 transcript 和 cursor，因为那是主动模拟 compact 后锚点。
-4. 自动 compact 的 summarization 输入是压缩前全量 transcript，包括当前最新 user；只有 compact 成功后的模拟状态才排除“当前正在运行的最新 user”。
+4. 自动 compact 的 summarization 输入是压缩前全量 transcript，包括当前最新 user；compact 成功后的模拟状态同样保留 Codex 会写入 replacement history 的当前 user，但不保留压缩前 assistant/tool items。
 5. `ctx` 首选由 hook 层拦截，成功时不会进入 Codex 上下文；代理内拦截只是 fallback，fallback 里 `ctx` 和打开工作台提示进入上下文也可以接受。
 6. `transcript_editor.py` / `revision_id` / 节点防错字段是后续可演进的编辑器实现方向，不是当前判断核心代理是否完成的硬性主路径。
+7. Codex Responses 现在同时存在标准模式和 Lite 模式。当前 GPT-5.6 使用 Lite：工具定义和基础提示词都进入 `input`；代理必须按请求形状识别协议，不能把标准模式的顶层字段强行补进 Lite 请求。
 
 ## 1. 核心原则
 
@@ -35,15 +36,19 @@
 - 需要落盘，重启后不能丢。
 - 不给用户展示，不给上下文模型编辑。
 - 普通 Workbench commit 不更新 cursor。
-- 正常请求吸收后推进到 Codex 当前 raw input；正常响应完成后追加 assistant output items。
+- 正常请求吸收后推进到实际转发上游的 effective input；正常响应完成后追加 assistant output items。
 - compact 成功后可被主动重置为模拟后的 compact 前缀。
+
+原始请求仍完整写入 request log。若设置里的系统提示词覆盖了 Lite 基础 developer，transcript 和 cursor 必须吸收覆盖后的 effective input，因为它才是上游模型实际看到、代理下一轮也会再次构造出的输入。
 
 ### 1.3 代理只有一条主路径
 
 没有“未编辑就透传、编辑后才重组”的分支。每轮都走：
 
 ```text
-Codex raw input
+Codex 原始请求
+-> 在原协议位置应用系统提示词覆盖，得到 effective request
+-> effective input
 -> cursor diff
 -> pop/append transcript
 -> 如是 compact，替换 compact prompt
@@ -54,12 +59,40 @@ Codex raw input
 
 无编辑时，重组出的 input 应自然等价于原始 input；有编辑时，上游看到的是编辑后的 transcript 加本轮 Codex 新增尾巴。
 
+### 1.4 标准 Responses 与 Responses Lite
+
+标准 Responses 请求：
+
+```text
+instructions: 基础提示词
+tools: 工具定义
+input: 对话历史
+```
+
+Responses Lite 请求：
+
+```text
+input[0]: type=additional_tools
+input[1]: type=message, role=developer   # 基础提示词
+input[2...]: 其他前置 developer/system、用户与对话历史
+```
+
+当前 GPT-5.6 模型由 Codex 配置为 Lite，但代理以规范请求形状 `input[0].type == additional_tools` 为识别依据。模型名只是当前事实，不是协议判定条件；这样 Codex 将 Lite 扩展到其他模型时不需要再维护模型白名单。
+
+系统提示词覆盖规则：
+
+- 标准模式只替换已经存在的顶层 `instructions`。
+- Lite 只替换 `additional_tools` 后紧邻的第一条 `role=developer` message，也就是 Codex 源码写入的 base instructions。
+- Lite 后续权限、skills、协作模式等 developer 节点不修改。
+- 请求没有对应提示词位置时不创建字段。
+- 顶层 `tools`、`instructions` 及其他未知字段默认只透传；Codex 没发就不补。
+
 ## 2. 状态模型和落盘
 
 ```text
 ProxyState
 ├── transcript: list[TranscriptNode]      # 唯一业务真相
-├── codex_input_cursor: list[ProviderItem]# Codex raw input diff 锚点
+├── codex_input_cursor: list[ProviderItem]# effective input diff 锚点
 ├── tail_conflict: bool                   # 上次 pop 尾部 fingerprint 不匹配
 ├── compact_pending: bool                 # compact 请求进行中
 ├── compact_kind: "auto" | "manual" | ""
@@ -81,7 +114,7 @@ NodeItem
 推荐落盘布局：
 
 ```text
-~/.hash-context-codex/
+~/.codex-context-studio/
 ├── index.json
 └── sessions/
     └── <session_id>/
@@ -130,7 +163,9 @@ fingerprint 用于判断两个 provider item 是否是同一个语义 item。
 ### 5.1 主流程
 
 ```text
-new_input = body["input"]
+raw_body = Codex 原始请求
+effective_body = 在原协议位置应用设置覆盖后的请求
+new_input = effective_body["input"]
 cursor = state.codex_input_cursor
 transcript = state.transcript
 
@@ -151,11 +186,13 @@ body["input"] = transcript_to_input_items(transcript)
 state.codex_input_cursor = new_input
 ```
 
+request log 同时保留原始 `body` 和实际 `forwarded_body`，但核心状态只吸收 effective input。对于 Lite，这能避免代理自己替换的基础 developer 在下一轮被误判为 Codex 改写历史。
+
 注意：compact 请求会在同一轮里把 transcript 中的内置 compact prompt 替换成自定义 prompt。compact 成功后会重置 transcript/cursor；compact 失败必须回滚到 compact 前状态。实现上需要保留 inflight checkpoint，避免失败后留下半更新状态。
 
 ### 5.2 Pop 规则
 
-`pop` 表示 Codex 这轮 raw input 相比 cursor 撤回或替换了旧尾巴。
+`pop` 表示 Codex 这轮 effective input 相比 cursor 撤回或替换了旧尾巴。
 
 删除必须保守：
 
@@ -169,11 +206,11 @@ for expected in reversed(pop):
     停止 pop
 ```
 
-不要为了追上 Codex raw input 而强删 transcript。宁可多留旧尾巴，也不能误删用户编辑过的内容。
+不要为了追上 Codex effective input 而强删 transcript。宁可多留旧尾巴，也不能误删用户编辑过的内容。
 
 ### 5.3 Append 规则
 
-`append` 表示 Codex 这轮 raw input 相比 cursor 新增的 provider items。
+`append` 表示 Codex 这轮 effective input 相比 cursor 新增的 provider items。
 
 append 必须走 TranscriptNode 归组规则，而不是把所有 item 拼成纯文本。append 后：
 
@@ -215,7 +252,8 @@ SSE 解析器必须处理跨 chunk 的 event，不能按 HTTP chunk 硬切。
 ```text
 body.client_metadata["x-codex-turn-metadata"]
 request_kind == "compaction"
-trigger == "manual" | "auto"
+compaction.trigger == "manual" | "auto"
+compaction.phase == "pre_turn" | "mid_turn"
 ```
 
 local compact 没有 `CompactionTrigger` item；那属于 remote compact/v2 路径，不使用。
@@ -237,19 +275,26 @@ pop/append transcript
 
 > 自动 compact 发给上游 summarization 的输入是 compact 前全量 transcript，包括当前最新 user、正在运行相关上下文、工具调用信息等。这里不能排除最新 user。
 
-“排除当前正在运行的最新 user”只发生在 compact 成功后的本地模拟状态，不发生在送上游总结时。
+compact 成功后的本地模拟状态也保留当前最新 user。压缩前 assistant/tool items 只参与 summarization，不进入 replacement history。
 
 ### 7.3 Compact 成功后：模拟新 transcript/cursor
 
 为什么要模拟：不模拟也能靠下一轮 Codex input 全量 append 接上，但 compact 成功到下一轮请求之间，前端会看到空窗或旧状态。成功后立即模拟可以让前端马上展示 compact 后上下文。
 
-summary 必须是普通 `role=user` message，放在 selected users 后面：
+summary 必须是普通 `role=user` message，放在 selected users 后面。模拟结构取决于请求协议：
 
 ```text
+标准 Responses:
 recent old user messages + summary user message
+
+Responses Lite:
+leading additional_tools
++ contiguous leading developer/system messages
++ recent old user messages
++ summary user message
 ```
 
-不能把 summary 放前面；不能把 developer/context items 塞进模拟状态。developer/context 等下一轮 Codex 请求进来再 append。
+Lite 的 canonical prefix 必须逐项沿用 compact 请求的 effective input，只取从索引 0 开始的 `additional_tools` 以及紧随其后的连续 developer/system；对话中段出现的 developer/context 不进入模拟。不能按展示需要伪造或重排这些 provider items。
 
 #### 手动 compact
 
@@ -258,7 +303,8 @@ source = compact 前 transcript
 selected_user_msgs = 从 source 中选择最近若干 user message
 排除已有 LOCAL_COMPACT_SUMMARY_PREFIX summary
 
-new_items = selected_user_msgs + [summary as role=user message]
+protocol_prefix = Lite canonical prefix；标准模式为空
+new_items = protocol_prefix + selected_user_msgs + [summary as role=user message]
 
 state.transcript = TranscriptCodec.to_transcript(new_items)
 state.codex_input_cursor = new_items
@@ -269,22 +315,22 @@ compact_kind = ""
 下一轮 Codex 可能发：
 
 ```text
-new_items + developer/context + 新 user
+new_items + 新 user/后续上下文
 ```
 
-diff 会自然 append 后面的 developer/context 和新 user。
+Lite 前缀稳定时 diff 通常只 append 新尾部；标准模式继续按原来的 user + summary 前缀匹配。
 
 #### 自动 compact
 
-自动 compact 可能发生在 assistant mid-turn。compact 成功后的模拟状态必须排除当前正在运行那轮的最新 user：
+自动 compact 可能发生在 assistant mid-turn。当前 Codex 会把当前 user 纳入 replacement history，因此模拟状态也保留它：
 
 ```text
 source = compact 前 transcript
 selected_user_msgs = 最近若干 user message
 排除已有 summary
-排除最后一条“当前正在运行”的 user
 
-new_items = selected_user_msgs + [summary as role=user message]
+protocol_prefix = Lite canonical prefix；标准模式为空
+new_items = protocol_prefix + selected_user_msgs + [summary as role=user message]
 
 state.transcript = TranscriptCodec.to_transcript(new_items)
 state.codex_input_cursor = new_items
@@ -292,20 +338,21 @@ compact_pending = false
 compact_kind = ""
 ```
 
-下一轮 Codex 可能发：
+下一轮 Codex 仍可能改变工具定义、前置 developer、world-state 或历史形状：
 
 ```text
-new_items + 被排除的最新 user + 压缩前还在运行/随后完成的 assistant items
+Codex 下一轮真实 effective input
 ```
 
 diff：
 
 ```text
-prefix = new_items
-append = 最新 user + assistant items
+prefix = 最长共同 provider-item 前缀
+pop = 模拟尾部中与真实 input 位置不一致的 items
+append = Codex 真实 input 的新尾部
 ```
 
-这样当前 user/assistant 会自然 append 回来，不会被 summary 吞掉，也不会因为 cursor prefix 已包含最新 user 而漏 append。
+如果 Lite canonical prefix 和 user/summary 都匹配，下一轮通常无需 pop，只 append 尚未出现的 items。若 `additional_tools`、前置 developer 或任意位置改变，cursor 仍先计算最长公共前缀，再对旧模拟尾部执行原有保守 pop，随后 append Codex 的真实新尾部。索引 0 就不匹配时允许完整 pop；若 transcript 尾部被用户编辑导致 fingerprint 不匹配，则设置 `tail_conflict` 并停止删除。模拟优化不能绕过或削弱这套最终兜底。
 
 ### 7.4 Compact 失败
 
@@ -392,7 +439,7 @@ Codex 已经把 ctx 作为请求发到代理
 返回 fake SSE notice 给 Codex client
 ```
 
-fallback 里不需要再强行清理 `ctx` 或 `Hash Context: opened workbench.`。如果下一轮 Codex raw input 带回它们，就按普通上下文进入 transcript/cursor。它们只是一点本地控制痕迹，不值得为此破坏 cursor/raw input 一致性。
+fallback 里不需要再强行清理 `ctx` 或 `Codex Context Studio: opened workbench.`。如果下一轮 Codex raw input 带回它们，就按普通上下文进入 transcript/cursor。它们只是一点本地控制痕迹，不值得为此破坏 cursor/raw input 一致性。
 
 ## 10. 明确禁止恢复的旧逻辑
 
@@ -440,11 +487,14 @@ transcript_editor.py             # 节点级编辑防错和批量操作，可后
 
 - transcript 是否仍能无损重组成 provider input？
 - cursor 是否仍只作为 diff 锚点，不被普通编辑修改？
+- 标准/Lite 是否按实际请求形状识别，且提示词只在原位置替换？
+- Codex 未发送的顶层 `instructions` / `tools` 是否仍不会被代理创建？
 - 请求处理是否仍只有一条主路径？
 - response completed 是否同时追加 transcript 和 cursor？
 - compact 是否只走 local compact？
 - 自动 compact 的总结输入是否全量？
-- 自动 compact 成功后的模拟状态是否才排除最新运行 user？
+- 自动 compact 成功后的模拟状态是否保留当前 user、同时排除压缩前 assistant/tool？
+- Lite compact 是否保留精确的 canonical 前缀，并仍允许从索引 0 完整 pop 恢复？
 - compact 失败是否回滚 transcript/cursor？
 - Workbench 是否没有落盘第二份 transcript？
 - 代码里是否又出现 override/restore/pending restore 等旧状态？

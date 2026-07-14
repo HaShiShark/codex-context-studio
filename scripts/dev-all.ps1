@@ -3,10 +3,10 @@ $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $root
 
-$loopbackHost = if ($env:HASH_CONTEXT_HOST) { $env:HASH_CONTEXT_HOST } else { "localhost" }
-$backendPort = if ($env:HASH_WEB_PORT) { $env:HASH_WEB_PORT } else { "8765" }
-$frontendPort = if ($env:HASH_CONTEXT_FRONTEND_PORT) { $env:HASH_CONTEXT_FRONTEND_PORT } else { "5174" }
-$proxyPort = if ($env:HASH_CONTEXT_PROXY_PORT) { $env:HASH_CONTEXT_PROXY_PORT } else { "8787" }
+$loopbackHost = if ($env:CODEX_CONTEXT_STUDIO_HOST) { $env:CODEX_CONTEXT_STUDIO_HOST } else { "localhost" }
+$backendPort = if ($env:CODEX_CONTEXT_STUDIO_WEB_PORT) { $env:CODEX_CONTEXT_STUDIO_WEB_PORT } else { "8765" }
+$frontendPort = if ($env:CODEX_CONTEXT_STUDIO_FRONTEND_PORT) { $env:CODEX_CONTEXT_STUDIO_FRONTEND_PORT } else { "5174" }
+$proxyPort = if ($env:CODEX_CONTEXT_STUDIO_PROXY_PORT) { $env:CODEX_CONTEXT_STUDIO_PROXY_PORT } else { "8787" }
 
 $python = if (Test-Path ".venv\Scripts\python.exe") {
   ".venv\Scripts\python.exe"
@@ -27,16 +27,16 @@ function Start-NamedJob {
 $backend = Start-NamedJob -Name "backend" -Arguments @($root.Path, $python, $loopbackHost, $backendPort) -Command {
   param($cwd, $pythonExe, $hostName, $port)
   Set-Location $cwd
-  $env:HASH_WEB_HOST = $hostName
-  $env:HASH_WEB_PORT = $port
+  $env:CODEX_CONTEXT_STUDIO_WEB_HOST = $hostName
+  $env:CODEX_CONTEXT_STUDIO_WEB_PORT = $port
   & $pythonExe -m backend.web_server 2>&1
 }
 
 $proxy = Start-NamedJob -Name "proxy" -Arguments @($root.Path, $python, $loopbackHost, $proxyPort) -Command {
   param($cwd, $pythonExe, $hostName, $port)
   Set-Location $cwd
-  $env:HASH_CONTEXT_PROXY_HOST = $hostName
-  $env:HASH_CONTEXT_PROXY_PORT = $port
+  $env:CODEX_CONTEXT_STUDIO_PROXY_HOST = $hostName
+  $env:CODEX_CONTEXT_STUDIO_PROXY_PORT = $port
   & $pythonExe -m backend.proxy_fastapi 2>&1
 }
 
@@ -47,7 +47,7 @@ $frontend = Start-NamedJob -Name "frontend" -Arguments @($root.Path, $loopbackHo
 }
 
 Write-Host ""
-Write-Host "Hash Context Codex Lab is starting..."
+Write-Host "Codex Context Studio is starting..."
 Write-Host "Backend:  http://${loopbackHost}:$backendPort"
 Write-Host "Proxy:    http://${loopbackHost}:$proxyPort"
 Write-Host "Frontend: http://${loopbackHost}:$frontendPort/"
@@ -76,7 +76,7 @@ try {
 }
 finally {
   Write-Host ""
-  Write-Host "Stopping Hash Context Codex Lab..."
+  Write-Host "Stopping Codex Context Studio..."
   $jobs | Where-Object { $_.State -eq "Running" } | Stop-Job
   $jobs | Remove-Job -Force
   Write-Host "Stopped."

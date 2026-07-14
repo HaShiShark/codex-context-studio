@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="electron/assets/hash-icon.ico" alt="Codex Context Studio icon" width="128" height="128">
+  <img src="electron/assets/codex-context-studio.ico" alt="Codex Context Studio icon" width="128" height="128">
 </p>
 
 <h1 align="center">Codex Context Studio</h1>
@@ -144,13 +144,22 @@ codex ctx desktop off     # Disable
 ```
 
 > [!NOTE]
-> Desktop mode modifies local Codex provider configuration. CLI mode only adds a shim and does not affect any config files.
+> Enabling either persistent proxy mode or Desktop mode temporarily writes the selected Studio provider, hook, and notify entries to local Codex configuration. The matching `off` command restores the previous configuration.
 
 ---
 
 ## 🛠️ Development
 
+The source checkout uses an explicit `dev` profile. Every development control command ends in `dev`; installed EXE commands never do. See [runtime layout and external files](docs/runtime-layout.md) for the full command matrix and directory boundaries.
+
 ```powershell
+# Register and control the source checkout
+npm run ctx:install:dev
+codex ctx desktop on dev
+codex ctx desktop status dev
+codex ctx desktop off dev
+codex ctx desktop uninstall dev
+
 # Install dependencies
 npm install
 npm run setup:python

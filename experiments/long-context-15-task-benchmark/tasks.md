@@ -52,7 +52,7 @@ Expected validation:
 
 - TODO
 
-Compression checkpoint for Hash Context group.
+Compression checkpoint for Codex Context Studio group.
 
 ### T06
 
@@ -94,7 +94,7 @@ Expected validation:
 
 - TODO
 
-Compression checkpoint for Hash Context group.
+Compression checkpoint for Codex Context Studio group.
 
 ### T11
 

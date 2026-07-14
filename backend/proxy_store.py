@@ -52,7 +52,7 @@ except ImportError:
     )
 
 
-DATA_DIR = Path(os.environ.get("HASH_CONTEXT_PROXY_DATA_DIR", Path.home() / ".hash-context-codex"))
+DATA_DIR = Path(os.environ.get("CODEX_CONTEXT_STUDIO_PROXY_DATA_DIR", Path.home() / ".codex-context-studio" / "shared"))
 STATE_PATH = DATA_DIR / "proxy_state.json"
 USAGE_EVENT_LIMIT = 500
 
@@ -192,18 +192,23 @@ def first_usage_int(record: dict[str, Any], *keys: str) -> int:
     return 0
 
 
-GPT55_INPUT_USD_PER_MILLION = 1.25
-GPT55_CACHED_INPUT_USD_PER_MILLION = 0.125
-GPT55_OUTPUT_USD_PER_MILLION = 10.0
+GPT56_SOL_INPUT_USD_PER_MILLION = 5.0
+GPT56_SOL_CACHED_INPUT_USD_PER_MILLION = 0.5
+GPT56_SOL_OUTPUT_USD_PER_MILLION = 30.0
+GPT56_SOL_LONG_CONTEXT_THRESHOLD = 272_000
 
 
-def estimate_gpt55_cost_usd(input_tokens: int, cached_input_tokens: int, output_tokens: int) -> float:
-    cached_tokens = min(max(0, cached_input_tokens), max(0, input_tokens))
-    non_cached_tokens = max(0, input_tokens - cached_tokens)
+def estimate_gpt56_sol_cost_usd(input_tokens: int, cached_input_tokens: int, output_tokens: int) -> float:
+    safe_input_tokens = max(0, input_tokens)
+    cached_tokens = min(max(0, cached_input_tokens), safe_input_tokens)
+    non_cached_tokens = max(0, safe_input_tokens - cached_tokens)
+    long_context = safe_input_tokens > GPT56_SOL_LONG_CONTEXT_THRESHOLD
+    input_multiplier = 2.0 if long_context else 1.0
+    output_multiplier = 1.5 if long_context else 1.0
     return (
-        (non_cached_tokens * GPT55_INPUT_USD_PER_MILLION)
-        + (cached_tokens * GPT55_CACHED_INPUT_USD_PER_MILLION)
-        + (max(0, output_tokens) * GPT55_OUTPUT_USD_PER_MILLION)
+        (non_cached_tokens * GPT56_SOL_INPUT_USD_PER_MILLION * input_multiplier)
+        + (cached_tokens * GPT56_SOL_CACHED_INPUT_USD_PER_MILLION * input_multiplier)
+        + (max(0, output_tokens) * GPT56_SOL_OUTPUT_USD_PER_MILLION * output_multiplier)
     ) / 1_000_000
 
 
@@ -271,7 +276,7 @@ def normalize_usage_payload(raw_usage: Any) -> dict[str, Any] | None:
         }
     )
     bucket["non_cached_input_tokens"] = max(0, bucket["input_tokens"] - bucket["cached_input_tokens"])
-    bucket["known_cost_usd"] = estimate_gpt55_cost_usd(
+    bucket["known_cost_usd"] = estimate_gpt56_sol_cost_usd(
         bucket["input_tokens"],
         bucket["cached_input_tokens"],
         bucket["output_tokens"],
@@ -305,7 +310,7 @@ def add_usage_to_bucket(bucket: dict[str, Any], usage: dict[str, Any], created_a
         "total_tokens",
     ):
         bucket[key] += usage_int(usage.get(key))
-    bucket["known_cost_usd"] += estimate_gpt55_cost_usd(
+    bucket["known_cost_usd"] += estimate_gpt56_sol_cost_usd(
         usage_int(usage.get("input_tokens")),
         usage_int(usage.get("cached_input_tokens")),
         usage_int(usage.get("output_tokens")),
@@ -383,6 +388,8 @@ class ProxySession:
     usage_summary_cache: dict[str, Any] | None = None
     last_codex_session_headers: dict[str, str] = field(default_factory=dict)
     last_turn_metadata_header: str = ""
+    last_proxy_request_at: str = ""
+    context_review_cancel_revision: int = 0
     last_error: str = ""
     node_locks: dict[str, bool] = field(default_factory=dict)
     node_lock_revision: int = 0
@@ -391,6 +398,7 @@ class ProxySession:
     main_turn_id: str = ""
     main_turn_started_at: str = ""
     main_turn_updated_at: str = ""
+    pending_context_review: dict[str, Any] | None = None
     created_at: str = field(default_factory=utc_timestamp)
     updated_at: str = field(default_factory=utc_timestamp)
     payloads_loaded: bool = True
@@ -421,6 +429,14 @@ class ProxySession:
         self.main_turn_started_at = ""
         self.main_turn_updated_at = ""
 
+    def pending_context_review_payload(self, *, include_transcript: bool) -> dict[str, Any] | None:
+        if not isinstance(self.pending_context_review, dict):
+            return None
+        payload = copy.deepcopy(self.pending_context_review)
+        if not include_transcript:
+            payload.pop("proposed_transcript", None)
+        return payload
+
     def metadata_payload(self) -> dict[str, Any]:
         self.node_locks = effective_node_lock_overrides(self.node_locks, self.proxy_state.transcript)
         effective_status = self.effective_status()
@@ -438,10 +454,13 @@ class ProxySession:
             "last_error": self.last_error,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "last_proxy_request_at": self.last_proxy_request_at,
+            "context_review_cancel_revision": int(self.context_review_cancel_revision or 0),
             "transcript_version": self.transcript_version,
             "node_locks": copy.deepcopy(self.node_locks),
             "node_lock_revision": int(self.node_lock_revision or 0),
             "usage_summary": self.usage_summary(),
+            "pending_context_review": self.pending_context_review_payload(include_transcript=False),
         }
 
     def to_payload(self) -> dict[str, Any]:
@@ -450,6 +469,7 @@ class ProxySession:
         return {
             **self.metadata_payload(),
             "transcript": visible_transcript,
+            "pending_context_review": self.pending_context_review_payload(include_transcript=True),
             "tail_conflict": self.proxy_state.tail_conflict,
             "compact_pending": self.proxy_state.compact_pending,
             "compact_kind": self.proxy_state.compact_kind,
@@ -568,7 +588,15 @@ class ProxyStore:
             if isinstance(metadata.get("last_codex_session_headers"), dict)
             else {},
             last_turn_metadata_header=str(metadata.get("last_turn_metadata_header") or ""),
+            last_proxy_request_at=str(metadata.get("last_proxy_request_at") or ""),
+            context_review_cancel_revision=int(metadata.get("context_review_cancel_revision") or 0),
             last_error=str(metadata.get("last_error") or ""),
+            pending_context_review=(
+                copy.deepcopy(metadata.get("pending_context_review"))
+                if isinstance(metadata.get("pending_context_review"), dict)
+                and int(metadata["pending_context_review"].get("review_schema_version") or 0) == 2
+                else None
+            ),
             created_at=str(metadata.get("created_at") or utc_timestamp()),
             updated_at=str(metadata.get("updated_at") or utc_timestamp()),
             payloads_loaded=True,
@@ -595,7 +623,10 @@ class ProxyStore:
             session.node_lock_revision = loaded.node_lock_revision
             session.last_codex_session_headers = loaded.last_codex_session_headers
             session.last_turn_metadata_header = loaded.last_turn_metadata_header
+            session.last_proxy_request_at = loaded.last_proxy_request_at
+            session.context_review_cancel_revision = loaded.context_review_cancel_revision
             session.last_error = loaded.last_error
+            session.pending_context_review = loaded.pending_context_review
             session.created_at = loaded.created_at
             session.updated_at = loaded.updated_at
         _ensure_session_proxy_state(session)
@@ -659,7 +690,14 @@ class ProxyStore:
                 "kept_session_ids": kept_session_ids,
             }
 
-    def begin_request(self, session_id: str, body: dict[str, Any], headers: dict[str, str]) -> tuple[ProxySession, dict[str, Any]]:
+    def begin_request(
+        self,
+        session_id: str,
+        body: dict[str, Any],
+        headers: dict[str, str],
+        *,
+        effective_body: dict[str, Any] | None = None,
+    ) -> tuple[ProxySession, dict[str, Any]]:
         with self.lock:
             session = self.sessions.get(session_id)
             if session is None:
@@ -670,6 +708,10 @@ class ProxyStore:
             else:
                 _ensure_session_proxy_state(session)
 
+            request_timestamp = utc_timestamp()
+            session.pending_context_review = None
+            session.last_proxy_request_at = request_timestamp
+            session.context_review_cancel_revision += 1
             previous_transcript = copy.deepcopy(session.proxy_state.transcript)
             self.active_session_id = session_id
             current_turn_metadata = request_turn_metadata(headers)
@@ -693,7 +735,8 @@ class ProxyStore:
                 compact_kind=session.proxy_state.compact_kind,
                 compact_error=session.proxy_state.compact_error,
             )
-            forwarded_body = proxy_core_handle_request(draft_state, body)
+            request_body = effective_body if effective_body is not None else body
+            forwarded_body = proxy_core_handle_request(draft_state, request_body)
             session.proxy_state = draft_state
             _sync_session_from_proxy_state(session)
             if session.proxy_state.transcript != previous_transcript:
@@ -703,7 +746,7 @@ class ProxyStore:
             if current_turn_metadata:
                 session.last_turn_metadata_header = current_turn_metadata
             session.last_error = ""
-            session.updated_at = utc_timestamp()
+            session.updated_at = request_timestamp
             session.request_log.append(
                 {
                     "created_at": session.updated_at,
@@ -907,6 +950,116 @@ class ProxyStore:
                 self._ensure_session_payloads_loaded(session)
             return session.to_payload() if session else None
 
+    def set_pending_context_review(self, session_id: str, review: dict[str, Any]) -> dict[str, Any]:
+        safe_session_id = sanitize_id(session_id)
+        if not safe_session_id:
+            raise ValueError("session_id is required")
+        if not isinstance(review, dict):
+            raise ValueError("review must be an object")
+
+        proposed_transcript = review.get("proposed_transcript")
+        if not isinstance(proposed_transcript, list) or not proposed_transcript:
+            raise ValueError("proposed_transcript must be a non-empty list")
+        next_core_transcript = _core_transcript_from_session_transcript(proposed_transcript, strict=True)
+        if not next_core_transcript:
+            raise ValueError("proposed_transcript must contain proxy core transcript nodes")
+
+        with self.lock:
+            session = self.sessions.get(safe_session_id)
+            if session is None:
+                raise KeyError("session not found")
+            self._ensure_session_payloads_loaded(session)
+
+            review_id = str(review.get("id") or uuid.uuid4().hex).strip() or uuid.uuid4().hex
+            safe_review = copy.deepcopy(review)
+            safe_review["id"] = review_id
+            safe_review["review_schema_version"] = 2
+            safe_review["session_id"] = safe_session_id
+            safe_review["status"] = "pending"
+            safe_review["base_transcript_version"] = int(
+                review.get("base_transcript_version")
+                if review.get("base_transcript_version") is not None
+                else session.transcript_version
+            )
+            base_version = int(safe_review["base_transcript_version"] or 0)
+            if base_version != int(session.transcript_version or 0):
+                raise RuntimeError("context_review_stale")
+            expected_cancel_revision = int(
+                review.get("base_context_review_cancel_revision")
+                if review.get("base_context_review_cancel_revision") is not None
+                else session.context_review_cancel_revision
+            )
+            if expected_cancel_revision != int(session.context_review_cancel_revision or 0):
+                raise RuntimeError("context_review_cancelled")
+            safe_review["base_context_review_cancel_revision"] = expected_cancel_revision
+            safe_review["created_at"] = str(review.get("created_at") or utc_timestamp())
+            safe_review["proposed_transcript"] = copy.deepcopy(next_core_transcript)
+            session.pending_context_review = safe_review
+            session.updated_at = utc_timestamp()
+            self._persist_session(session)
+            return session.to_payload()
+
+    def clear_pending_context_review(self, session_id: str, review_id: str = "") -> dict[str, Any]:
+        safe_session_id = sanitize_id(session_id)
+        if not safe_session_id:
+            raise ValueError("session_id is required")
+
+        with self.lock:
+            session = self.sessions.get(safe_session_id)
+            if session is None:
+                raise KeyError("session not found")
+            self._ensure_session_payloads_loaded(session)
+            review = session.pending_context_review if isinstance(session.pending_context_review, dict) else None
+            if review_id and review and str(review.get("id") or "") != review_id:
+                raise ValueError("pending context review id mismatch")
+            if review is not None:
+                session.pending_context_review = None
+                session.updated_at = utc_timestamp()
+                self._persist_session(session)
+            return session.to_payload()
+
+    def apply_pending_context_review(self, session_id: str, review_id: str = "") -> dict[str, Any]:
+        safe_session_id = sanitize_id(session_id)
+        if not safe_session_id:
+            raise ValueError("session_id is required")
+
+        with self.lock:
+            session = self.sessions.get(safe_session_id)
+            if session is None:
+                raise KeyError("session not found")
+            self._ensure_session_payloads_loaded(session)
+            review = session.pending_context_review if isinstance(session.pending_context_review, dict) else None
+            if not review:
+                raise ValueError("pending context review not found")
+            if review_id and str(review.get("id") or "") != review_id:
+                raise ValueError("pending context review id mismatch")
+
+            base_version = int(review.get("base_transcript_version") or 0)
+            if base_version != int(session.transcript_version or 0):
+                session.pending_context_review = None
+                session.updated_at = utc_timestamp()
+                self._persist_session(session)
+                raise RuntimeError("context_review_stale")
+
+            proposed_transcript = review.get("proposed_transcript")
+            next_core_transcript = _core_transcript_from_session_transcript(proposed_transcript, strict=True)
+            previous_input = core_transcript_to_input_items(session.proxy_state.transcript)
+            next_input = core_transcript_to_input_items(next_core_transcript)
+            session.proxy_state.transcript = copy.deepcopy(next_core_transcript)
+            session.proxy_state.tail_conflict = False
+            session.node_locks = effective_node_lock_overrides(session.node_locks, next_core_transcript)
+            session.pending_context_review = None
+            session.transcript_version += 1
+            _sync_session_from_proxy_state(session)
+            session.status = "mirror"
+            session.last_error = ""
+            session.updated_at = utc_timestamp()
+            self.active_session_id = safe_session_id
+            self._persist_session(session)
+            payload = session.to_payload()
+            payload["changed"] = previous_input != next_input
+            return payload
+
     def replace_transcript(self, session_id: str, transcript: list[dict[str, Any]]) -> dict[str, Any]:
         with self.lock:
             session = self.sessions.get(session_id)
@@ -922,6 +1075,7 @@ class ProxyStore:
             session.proxy_state.transcript = copy.deepcopy(next_core_transcript)
             session.proxy_state.tail_conflict = False
             session.node_locks = effective_node_lock_overrides(session.node_locks, next_core_transcript)
+            session.pending_context_review = None
             session.transcript_version += 1
             _sync_session_from_proxy_state(session)
             session.status = "mirror"
@@ -1018,6 +1172,8 @@ class ProxyStore:
                 self._ensure_session_payloads_loaded(session)
 
             if running:
+                session.pending_context_review = None
+                session.context_review_cancel_revision += 1
                 if not safe_turn_id:
                     safe_turn_id = uuid.uuid4().hex
                 timestamp = utc_timestamp()
@@ -1030,6 +1186,8 @@ class ProxyStore:
                 session.clear_main_turn()
 
             session.updated_at = utc_timestamp()
+            if running:
+                self._persist_session(session)
             return session.to_payload()
 
     def wait_context_idle(self, session_id: str, timeout_seconds: float = 900.0) -> bool:

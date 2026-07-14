@@ -1,1 +1,1 @@
-"""Backend services for the Hash Context Codex Lab."""
+"""Backend services for the Codex Context Studio."""
