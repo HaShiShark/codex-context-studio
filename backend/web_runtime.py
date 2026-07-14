@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from collections.abc import Callable, Iterable, Mapping
@@ -55,7 +56,6 @@ from backend.web_context import (
     context_review_transcript_stats,
     editable_context_node_count,
     extract_text_from_provider_message_content,
-    model_options,
     normalize_context_chat_history,
     normalize_selected_node_indexes,
     normalize_transcript,
@@ -189,6 +189,7 @@ You are preparing a context-compression proposal for human review in a Codex con
 You are preparing a draft for human review; never continue the user's task and never edit the live transcript.
 
 Analyze the complete transcript conservatively and decide whether selective compression is genuinely useful.
+- Image payloads are intentionally omitted and represented by placeholders. Treat a placeholder only as evidence that an image exists; never infer its visual contents.
 - A clean, coherent conversation with no meaningful pollution should remain unchanged. In that case, do not call tools.
 - Preserve the current topic and recent working set exactly unless there is overwhelming evidence that a recent node is obsolete.
 - Preserve requirements, constraints, decisions, file paths, verified facts, unresolved work, and evidence needed for future implementation.
@@ -216,6 +217,64 @@ review_rationale is product copy shown directly to the user before anything is a
 """.strip()
 
 
+CONTEXT_REVIEW_IMAGE_PLACEHOLDER = {
+    "type": "image_placeholder",
+    "image_present": True,
+    "note": "The original transcript contains an image. Its visual content is intentionally omitted from automatic context review.",
+}
+CONTEXT_REVIEW_IMAGE_TYPES = {"image", "image_url", "input_image", "output_image"}
+CONTEXT_REVIEW_IMAGE_DATA_URL_RE = re.compile(
+    r"data:image/[^\s\"'\\]+",
+    flags=re.IGNORECASE,
+)
+
+
+def context_review_model_value(value: Any) -> Any:
+    """Build a review-only copy that records image presence without image payloads."""
+    if isinstance(value, dict):
+        value_type = sanitize_text(value.get("type") or "").strip().lower()
+        if value_type in CONTEXT_REVIEW_IMAGE_TYPES:
+            return dict(CONTEXT_REVIEW_IMAGE_PLACEHOLDER)
+
+        mime_type = sanitize_text(
+            value.get("mime_type")
+            or value.get("mimeType")
+            or value.get("media_type")
+            or ""
+        ).strip().lower()
+        if mime_type.startswith("image/") and any(
+            key in value for key in ("data", "inline_data", "inlineData", "source")
+        ):
+            return dict(CONTEXT_REVIEW_IMAGE_PLACEHOLDER)
+
+        return {
+            sanitize_text(key): context_review_model_value(item)
+            for key, item in value.items()
+        }
+
+    if isinstance(value, (list, tuple)):
+        return [context_review_model_value(item) for item in value]
+
+    if isinstance(value, str):
+        return CONTEXT_REVIEW_IMAGE_DATA_URL_RE.sub(
+            CONTEXT_REVIEW_IMAGE_PLACEHOLDER["note"],
+            value,
+        )
+
+    return sanitize_value(value)
+
+
+def context_review_model_record(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep one canonical record representation instead of repeated UI derivatives."""
+    provider_items = record.get("providerItems")
+    if isinstance(provider_items, list) and provider_items:
+        return {
+            "role": sanitize_text(record.get("role") or "").strip() or "unknown",
+            "providerItems": context_review_model_value(provider_items),
+        }
+    return context_review_model_value(dict(record))
+
+
 def build_context_review_proposal_runtime(
     settings: Settings,
     session: SessionState,
@@ -235,7 +294,7 @@ def build_context_review_proposal_runtime(
         {
             "node_number": node.source_node_number,
             "locked": not node.editable,
-            "record": sanitize_value(node.record),
+            "record": context_review_model_record(node.record),
         }
         for node in sorted(draft.nodes, key=lambda item: item.order)
     ]

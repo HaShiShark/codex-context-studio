@@ -302,6 +302,52 @@ def test_context_review_uses_private_rationale_field_and_one_model_round() -> No
     assert draft.has_changes
 
 
+def test_context_review_replaces_image_payloads_without_mutating_transcript() -> None:
+    image_data_url = "data:image/png;base64," + ("large-image-payload" * 100)
+    core_transcript = input_items_to_transcript(
+        [
+            {
+                "type": "custom_tool_call",
+                "call_id": "call-image",
+                "name": "exec",
+                "input": "render the current UI",
+            },
+            {
+                "type": "custom_tool_call_output",
+                "call_id": "call-image",
+                "output": [
+                    {"type": "input_text", "text": "Rendered UI screenshot."},
+                    {"type": "input_image", "image_url": image_data_url},
+                ],
+            },
+            {"type": "message", "role": "user", "content": "Keep the layout decision."},
+        ]
+    )
+    session = SessionState(
+        session_id="session-auto-review-image",
+        title="Automatic Review With Image",
+        transcript=core_transcript,
+        context_workbench_history=[],
+    )
+
+    _instructions, _model, _draft, _registry, context_input = (
+        web_runtime.build_context_review_proposal_runtime(_context_settings(), session)
+    )
+    serialized_review_input = str(context_input[0]["content"])
+    serialized_live_transcript = json.dumps(session.transcript, ensure_ascii=False)
+
+    assert image_data_url not in serialized_review_input
+    assert "data:image" not in serialized_review_input
+    assert '"image_present": true' in serialized_review_input
+    assert "visual content is intentionally omitted" in serialized_review_input
+    assert "Rendered UI screenshot." in serialized_review_input
+    assert "Keep the layout decision." in serialized_review_input
+    assert '"providerItems"' in serialized_review_input
+    assert '"blocks"' not in serialized_review_input
+    assert '"toolEvents"' not in serialized_review_input
+    assert image_data_url in serialized_live_transcript
+
+
 def test_analyze_now_uses_proposal_runtime_instead_of_manual_chat_runtime() -> None:
     core_transcript = input_items_to_transcript(
         [
@@ -533,6 +579,7 @@ def main() -> None:
         test_context_workbench_draft_reports_changes_after_write,
         test_context_chat_turn_returns_fallback_after_changed_draft_empty_final_response,
         test_context_review_uses_private_rationale_field_and_one_model_round,
+        test_context_review_replaces_image_payloads_without_mutating_transcript,
         test_analyze_now_uses_proposal_runtime_instead_of_manual_chat_runtime,
         test_context_chat_turn_uses_selected_non_codex_provider_adapter_path,
         test_context_chat_response_payload_commits_changed_draft,
