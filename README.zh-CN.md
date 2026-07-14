@@ -4,7 +4,7 @@
 
 <h1 align="center">Codex Context Studio</h1>
 
-<p align="center"><a href="docs/runtime-layout.md">开发版与 EXE 的命令隔离、运行目录和外部文件说明</a></p>
+<p align="center"><a href="docs/operations/runtime-layout.md">开发版与 EXE 的命令隔离、运行目录和外部文件说明</a></p>
 
 <p align="center">
   <strong>🧠 Codex 的上下文控制面板</strong>
@@ -71,19 +71,19 @@
 
 ### 上下文地图 & 副模型对话
 
-![上下文地图和副模型对话](docs/images/cn/1.png)
+![上下文地图和副模型对话](docs/assets/screenshots/cn/1.png)
 
 ### 上下文压缩效果
 
-![上下文压缩效果](docs/images/cn/2.png)
+![上下文压缩效果](docs/assets/screenshots/cn/2.png)
 
 ### 提示词替换
 
-![提示词替换](docs/images/cn/3.png)
+![提示词替换](docs/assets/screenshots/cn/3.png)
 
 ### Usage 用量面板
 
-![Usage 用量面板](docs/images/cn/4.png)
+![Usage 用量面板](docs/assets/screenshots/cn/4.png)
 
 ---
 

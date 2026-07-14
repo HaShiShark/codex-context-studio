@@ -1,4 +1,4 @@
-# Responses Lite 代理适配实施记录
+# Responses Lite 协议
 
 ## 1. 目标
 
@@ -10,16 +10,9 @@
 - compact 模拟只提前构造 Codex 确定会出现的 canonical items。
 - 模拟不准确时，原有最长公共前缀和保守 pop 仍是最终恢复机制。
 
-## 2. Codex 源码结论
+## 2. 协议形状
 
-核对源码环境：
-
-- 本地源码：`D:\opensource\codex`
-- 分支：`main`，与 `origin/main` 同步
-- 核对提交：`2f7d89b1419bf7064346855b0acde23514b1ebc5`
-- 全局 CLI：`codex-cli 0.144.2`
-
-`codex-rs/core/src/client.rs` 当前按模型配置 `use_responses_lite` 构造请求：
+Codex 按模型能力选择标准 Responses 或 Responses Lite。两种请求的规范形状为：
 
 ```text
 Lite:
@@ -34,7 +27,7 @@ top-level tools = tools
 input = formatted history
 ```
 
-当前模型目录中 `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna` 的 `use_responses_lite=true`。这说明“5.6 使用 Lite”是当前模型配置事实，而 `additional_tools` 首项才是代理收到的可验证协议事实。
+GPT-5.6 当前使用 Lite，但模型名只是运行时配置事实；`additional_tools` 首项才是代理能够直接验证的协议事实。
 
 ## 3. 协议识别决定
 
@@ -151,26 +144,13 @@ compact summary (role=user)
 
 这意味着 Lite 前缀模拟只是提高匹配率，不是新的正确性依赖；原有 pop 仍承担最强兜底。
 
-## 9. 前端 additional_tools 展示
+## 9. 前端边界
 
-前端只增加 display projection：
+协议层只保证原始 `additional_tools` provider item 无损进入 transcript、token 统计和请求重建。结构化阅读、命名空间展开、schema 展示和原始审计视图属于前端展示投影，见[Additional Tools 展示](../../features/context-map/additional-tools.md)。
 
-- 显示 `additional_tools` 的工具总数。
-- 显示顶层工具名称与类型。
-- namespace 工具显示其子工具名称。
-- 不展开大段 description、schema 或原始 JSON。
-- 保留名称中的下划线，例如 `request_user_input`。
-- 展开文本保留换行。
+展示状态和可读标签不得写回 provider item。设置页可以说明 GPT-5.6 的基础提示词通过 developer 节点传递，但不能因此改变协议识别方式。
 
-原始 `providerItems` 没有改变，token 统计和 transcript 回写仍使用原 provider item。展示优化不会进入后端请求、持久化或编解码。
-
-设置页在“Codex 系统提示词”下增加说明：
-
-```text
-GPT-5.6 的系统提示词以 developer 节点传递。
-```
-
-## 10. 验证范围
+## 10. 验证要求
 
 新增或扩展的自动测试覆盖：
 
@@ -182,4 +162,4 @@ GPT-5.6 的系统提示词以 developer 节点传递。
 - 稳定前缀零变化和索引 0 变化的完整 pop。
 - `additional_tools` 可读展示、下划线、namespace 和 provider item 保留。
 
-运行时注意：当前正在运行的代理不会自动加载 Python 代码变化。完成测试后需要在合适时机重启代理，再用真实 GPT-5.6 新会话验证一次；本次实施过程中不主动中断正在运行的 Codex 会话。
+修改协议处理后，除自动测试外还应在重启代理后用真实 Lite 新会话验证请求形状、提示词位置和 compact 后续对齐。不得为了验证主动中断仍在运行的用户会话。

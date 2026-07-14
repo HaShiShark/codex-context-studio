@@ -1,7 +1,6 @@
-# Codex Context Studio - 最终设计方案
+# 代理核心设计
 
-> 本版按 `docs/user-intent.md` 和后续关于 cursor / compact / ctx 的纠正重新校准。
-> 后续代理核心、Workbench、子代理调研都以本文为技术准绳；旧文档和旧代码只能用于背景或外围能力参考。
+> 本文是代理主链路和状态模型的技术事实来源。产品边界见[产品原则](../product/principles.md)，Responses Lite 的具体协议规则见[Responses Lite 协议](protocols/responses-lite.md)。
 
 ## 0. 最容易误解的点
 

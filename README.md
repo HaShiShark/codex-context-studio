@@ -68,19 +68,19 @@ This project lets you see Codex's context consumption, what's retained after com
 
 ### Context Map & Secondary Model Chat
 
-![Context map and secondary model chat](docs/images/eng/1.png)
+![Context map and secondary model chat](docs/assets/screenshots/eng/1.png)
 
 ### Context Compression Result
 
-![Context compression result](docs/images/eng/2.png)
+![Context compression result](docs/assets/screenshots/eng/2.png)
 
 ### Prompt Replacement
 
-![Prompt replacement](docs/images/eng/3.png)
+![Prompt replacement](docs/assets/screenshots/eng/3.png)
 
 ### Usage Panel
 
-![Usage panel](docs/images/eng/4.png)
+![Usage panel](docs/assets/screenshots/eng/4.png)
 
 ---
 
@@ -150,7 +150,7 @@ codex ctx desktop off     # Disable
 
 ## 🛠️ Development
 
-The source checkout uses an explicit `dev` profile. Every development control command ends in `dev`; installed EXE commands never do. See [runtime layout and external files](docs/runtime-layout.md) for the full command matrix and directory boundaries.
+The source checkout uses an explicit `dev` profile. Every development control command ends in `dev`; installed EXE commands never do. See [runtime layout and external files](docs/operations/runtime-layout.md) for the full command matrix and directory boundaries.
 
 ```powershell
 # Register and control the source checkout

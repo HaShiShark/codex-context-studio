@@ -1,7 +1,7 @@
 """Pure data helpers for Codex local compact handling.
 
 This module implements only the local compact path described in
-``docs/proxy-design.md``.  It has no HTTP, persistence, or frontend knowledge.
+``docs/architecture/proxy-core.md``.  It has no HTTP, persistence, or frontend knowledge.
 """
 
 from __future__ import annotations
