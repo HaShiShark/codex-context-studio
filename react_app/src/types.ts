@@ -154,6 +154,26 @@ export interface ProxyUsageSummary extends ProxyUsageBucket {
   by_model?: Record<string, ProxyUsageBucket>;
 }
 
+export interface ContextReviewStats {
+  node_count: number;
+  token_count: number;
+  tool_token_count?: number;
+}
+
+export interface ContextReview {
+  id: string;
+  session_id: string;
+  status: 'pending' | 'running' | 'stale' | string;
+  source?: string;
+  base_transcript_version: number;
+  created_at: string;
+  summary: string;
+  model?: string;
+  before?: ContextReviewStats;
+  after?: ContextReviewStats;
+  proposed_transcript?: TranscriptEntry[];
+}
+
 export interface InitPayload {
   settings?: {
     workbench_model?: string;
@@ -176,6 +196,8 @@ export interface ContextWorkbenchSettingsResponse {
   settings: {
     context_workbench_model: string;
     context_workbench_provider_id: string;
+    context_review_auto_enabled: boolean;
+    context_review_interval_minutes: number;
     context_token_warning_threshold: number;
     context_token_critical_threshold: number;
     user_locale?: string;

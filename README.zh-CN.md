@@ -1,8 +1,10 @@
 <p align="center">
-  <img src="electron/assets/hash-icon.ico" alt="Codex Context Studio icon" width="128" height="128">
+  <img src="electron/assets/codex-context-studio.ico" alt="Codex Context Studio icon" width="128" height="128">
 </p>
 
 <h1 align="center">Codex Context Studio</h1>
+
+<p align="center"><a href="docs/operations/runtime-layout.md">开发版与 EXE 的命令隔离、运行目录和外部文件说明</a></p>
 
 <p align="center">
   <strong>🧠 Codex 的上下文控制面板</strong>
@@ -69,19 +71,19 @@
 
 ### 上下文地图 & 副模型对话
 
-![上下文地图和副模型对话](docs/images/cn/1.png)
+![上下文地图和副模型对话](docs/assets/screenshots/cn/1.png)
 
 ### 上下文压缩效果
 
-![上下文压缩效果](docs/images/cn/2.png)
+![上下文压缩效果](docs/assets/screenshots/cn/2.png)
 
 ### 提示词替换
 
-![提示词替换](docs/images/cn/3.png)
+![提示词替换](docs/assets/screenshots/cn/3.png)
 
 ### Usage 用量面板
 
-![Usage 用量面板](docs/images/cn/4.png)
+![Usage 用量面板](docs/assets/screenshots/cn/4.png)
 
 ---
 
@@ -145,7 +147,7 @@ codex ctx desktop off     # 关闭
 ```
 
 > [!NOTE]
-> Desktop 模式会修改本地 Codex provider 配置，CLI 模式仅添加 shim，不影响任何配置文件。
+> 启用持久代理模式或 Desktop 模式时，都会临时把所选 Studio provider、hook 和 notify 写入本地 Codex 配置；执行对应的 `off` 会恢复原配置。
 
 ---
 
@@ -153,6 +155,12 @@ codex ctx desktop off     # 关闭
 
 ```powershell
 # 安装依赖
+npm run ctx:install:dev
+codex ctx desktop on dev
+codex ctx desktop status dev
+codex ctx desktop off dev
+codex ctx desktop uninstall dev
+
 npm install
 npm run setup:python
 

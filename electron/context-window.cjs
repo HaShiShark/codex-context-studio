@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, screen } = require('electron');
+const { app, BrowserWindow, Notification, dialog, ipcMain, screen } = require('electron');
 const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const http = require('node:http');
@@ -9,36 +9,43 @@ function readPort(name, fallback) {
   return Number.isInteger(value) && value > 0 && value < 65536 ? value : fallback;
 }
 
-const HOST = process.env.HASH_CONTEXT_HOST || 'localhost';
-const PROBE_HOST = process.env.HASH_CONTEXT_PROBE_HOST || (HOST === 'localhost' ? '127.0.0.1' : HOST);
-const BACKEND_PORT = readPort('HASH_WEB_PORT', 8765);
-const FRONTEND_PORT = readPort('HASH_CONTEXT_FRONTEND_PORT', 5174);
-const PROXY_PORT = readPort('HASH_CONTEXT_PROXY_PORT', 8787);
-const CONTROL_PORT = readPort('HASH_CONTEXT_CONTROL_PORT', 8790);
-const USE_VITE_FRONTEND = !app.isPackaged && process.env.HASH_CONTEXT_USE_BUILT_FRONTEND !== '1';
+const HOST = process.env.CODEX_CONTEXT_STUDIO_HOST || 'localhost';
+const PROBE_HOST = process.env.CODEX_CONTEXT_STUDIO_PROBE_HOST || (HOST === 'localhost' ? '127.0.0.1' : HOST);
+const BACKEND_PORT = readPort('CODEX_CONTEXT_STUDIO_WEB_PORT', 8765);
+const FRONTEND_PORT = readPort('CODEX_CONTEXT_STUDIO_FRONTEND_PORT', 5174);
+const PROXY_PORT = readPort('CODEX_CONTEXT_STUDIO_PROXY_PORT', 8787);
+const CONTROL_PORT = readPort('CODEX_CONTEXT_STUDIO_CONTROL_PORT', 8790);
+const USE_VITE_FRONTEND = !app.isPackaged && process.env.CODEX_CONTEXT_STUDIO_USE_BUILT_FRONTEND !== '1';
+const PROFILE = process.env.CODEX_CONTEXT_STUDIO_PROFILE === 'development' ? 'development' : 'production';
+const STUDIO_ROOT = process.env.CODEX_CONTEXT_STUDIO_ROOT || path.join(app.getPath('home'), '.codex-context-studio');
+const PROFILE_ROOT = path.join(STUDIO_ROOT, PROFILE);
+const CODEX_CONTEXT_STUDIO_DATA_DIR = process.env.CODEX_CONTEXT_STUDIO_DATA_DIR || path.join(STUDIO_ROOT, 'shared');
 const MIN_WINDOW_WIDTH = 600;
 const MIN_WINDOW_HEIGHT = 360;
 const LIGHT_WINDOW_ACCENT_COLOR = '#f8f5f1';
 const DARK_WINDOW_ACCENT_COLOR = '#211c18';
 
-app.setPath('userData', path.join(app.getPath('appData'), 'hash-context-codex-lab'));
-
-// All project-related data/state/logs live under ~/.hash-context-codex
-const HASH_CONTEXT_DATA_DIR = path.join(app.getPath('home'), '.hash-context-codex');
+app.setPath('userData', path.join(PROFILE_ROOT, 'cache', 'electron'));
+if (process.platform === 'win32') {
+  app.setAppUserModelId(`CodexContextStudio.${PROFILE}`);
+}
 
 let mainWindow = null;
 let backendProcess = null;
 let frontendProcess = null;
 let proxyProcess = null;
 let controlServer = null;
+let contextReviewNotificationTimer = null;
+let contextReviewNotificationWatcherPrimed = false;
 let isQuitting = false;
+const notifiedContextReviewIds = new Set();
 
 function appRoot() {
   return path.resolve(__dirname, '..');
 }
 
 function writeLog(message) {
-  const logDir = path.join(HASH_CONTEXT_DATA_DIR, 'logs');
+  const logDir = path.join(PROFILE_ROOT, 'logs');
   fs.mkdirSync(logDir, { recursive: true });
   fs.appendFileSync(
     path.join(logDir, 'electron-window.log'),
@@ -104,7 +111,7 @@ function showWindow(options = {}) {
         nextUrl.searchParams.set('session_id', ${sessionLiteral});
         window.history.replaceState(null, '', nextUrl.pathname + nextUrl.search + nextUrl.hash);
       }
-      window.dispatchEvent(new CustomEvent('hash-context-window-show', { detail: ${detail} }));
+      window.dispatchEvent(new CustomEvent('codex-context-studio-window-show', { detail: ${detail} }));
     `,
     true,
   ).catch((error) => {
@@ -236,8 +243,8 @@ function sourcePythonCandidates(root) {
   }
 
   const candidates = [];
-  if (process.env.HASH_CONTEXT_PYTHON) {
-    candidates.push({ command: process.env.HASH_CONTEXT_PYTHON, args: [] });
+  if (process.env.CODEX_CONTEXT_STUDIO_PYTHON) {
+    candidates.push({ command: process.env.CODEX_CONTEXT_STUDIO_PYTHON, args: [] });
   }
   if (process.platform === 'win32') {
     candidates.push({ command: 'py', args: ['-3'] });
@@ -264,7 +271,7 @@ function pythonModuleCommand(root, moduleName) {
         'Run npm run setup:python to repair it, then try again.',
     );
   }
-  throw new Error('No usable Python runtime found. Run npm run setup:python or set HASH_CONTEXT_PYTHON to a Python with the project dependencies installed.');
+  throw new Error('No usable Python runtime found. Run npm run setup:python or set CODEX_CONTEXT_STUDIO_PYTHON to a Python with the project dependencies installed.');
 }
 
 function bundledPythonCommand(root, moduleName) {
@@ -289,8 +296,8 @@ function bundledPythonCommand(root, moduleName) {
 
 function pythonServerCommand(root, moduleName) {
   const preferSource =
-    process.env.HASH_CONTEXT_PREFER_SOURCE_SERVERS === '1' ||
-    (!app.isPackaged && process.env.HASH_CONTEXT_USE_BUNDLED_PYTHON !== '1');
+    process.env.CODEX_CONTEXT_STUDIO_PREFER_SOURCE_SERVERS === '1' ||
+    (!app.isPackaged && process.env.CODEX_CONTEXT_STUDIO_USE_BUNDLED_PYTHON !== '1');
   if (preferSource) {
     return pythonModuleCommand(root, moduleName);
   }
@@ -331,6 +338,43 @@ function pipeChildLogs(child, label) {
   });
 }
 
+function getJson(port, pathname, hostname = PROBE_HOST) {
+  return new Promise((resolve) => {
+    const req = http.get(
+      {
+        hostname,
+        port,
+        path: pathname,
+        timeout: 1500,
+      },
+      (res) => {
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk) => {
+          body += chunk;
+        });
+        res.on('end', () => {
+          if (!res.statusCode || res.statusCode >= 500) {
+            resolve(null);
+            return;
+          }
+          try {
+            resolve(JSON.parse(body || '{}'));
+          } catch {
+            resolve(null);
+          }
+        });
+      },
+    );
+
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(null);
+    });
+  });
+}
+
 async function startBackend(root) {
   writeLog('checking backend');
   if (await requestOk(BACKEND_PORT, '/api/health', PROBE_HOST)) {
@@ -343,13 +387,15 @@ async function startBackend(root) {
   backendProcess = spawn(serverCommand.command, serverCommand.args, {
     cwd: root,
     env: cleanEnv({
-      HASH_CONTEXT_HOST: HOST,
-      HASH_CONTEXT_PROXY_HOST: HOST,
-      HASH_CONTEXT_PROXY_PORT: String(PROXY_PORT),
-      HASH_CONTEXT_CONTROL_PORT: String(CONTROL_PORT),
-      HASH_WEB_HOST: HOST,
-      HASH_WEB_PORT: String(BACKEND_PORT),
-      HASH_DATA_DIR: HASH_CONTEXT_DATA_DIR,
+      CODEX_CONTEXT_STUDIO_HOST: HOST,
+      CODEX_CONTEXT_STUDIO_PROXY_HOST: HOST,
+      CODEX_CONTEXT_STUDIO_PROXY_PORT: String(PROXY_PORT),
+      CODEX_CONTEXT_STUDIO_CONTROL_PORT: String(CONTROL_PORT),
+      CODEX_CONTEXT_STUDIO_WEB_HOST: HOST,
+      CODEX_CONTEXT_STUDIO_WEB_PORT: String(BACKEND_PORT),
+      CODEX_CONTEXT_STUDIO_DATA_DIR,
+      CODEX_CONTEXT_STUDIO_PROFILE: PROFILE,
+      CODEX_CONTEXT_STUDIO_ROOT: STUDIO_ROOT,
       PYTHONIOENCODING: 'utf-8',
       PYTHONPATH: pythonPathForRoot(root),
     }),
@@ -375,11 +421,14 @@ async function startProxy(root) {
   proxyProcess = spawn(serverCommand.command, serverCommand.args, {
     cwd: root,
     env: cleanEnv({
-      HASH_CONTEXT_HOST: HOST,
-      HASH_CONTEXT_PROXY_HOST: HOST,
-      HASH_CONTEXT_PROXY_PORT: String(PROXY_PORT),
-      HASH_CONTEXT_CONTROL_PORT: String(CONTROL_PORT),
-      HASH_CONTEXT_PROXY_DATA_DIR: HASH_CONTEXT_DATA_DIR,
+      CODEX_CONTEXT_STUDIO_HOST: HOST,
+      CODEX_CONTEXT_STUDIO_PROXY_HOST: HOST,
+      CODEX_CONTEXT_STUDIO_PROXY_PORT: String(PROXY_PORT),
+      CODEX_CONTEXT_STUDIO_CONTROL_PORT: String(CONTROL_PORT),
+      CODEX_CONTEXT_STUDIO_PROXY_DATA_DIR: CODEX_CONTEXT_STUDIO_DATA_DIR,
+      CODEX_CONTEXT_STUDIO_DATA_DIR,
+      CODEX_CONTEXT_STUDIO_PROFILE: PROFILE,
+      CODEX_CONTEXT_STUDIO_ROOT: STUDIO_ROOT,
       PYTHONIOENCODING: 'utf-8',
       PYTHONPATH: pythonPathForRoot(root),
     }),
@@ -438,12 +487,86 @@ async function warmContextWorkbenchModels() {
   }
 }
 
+function showContextReviewNotification(sessionId, review) {
+  if (!Notification.isSupported()) {
+    return;
+  }
+  const reviewId = typeof review?.id === 'string' ? review.id.trim() : '';
+  if (!reviewId || notifiedContextReviewIds.has(reviewId)) {
+    return;
+  }
+  if (mainWindow && mainWindow.isVisible() && !mainWindow.isMinimized()) {
+    return;
+  }
+
+  notifiedContextReviewIds.add(reviewId);
+  const notification = new Notification({
+    title: 'Codex Context Studio',
+    body: 'Context compression review is ready.',
+    icon: iconPath(appRoot()),
+    silent: false,
+  });
+  notification.on('click', () => {
+    showWindow({ sessionId });
+  });
+  notification.show();
+  writeLog(`context review notification shown session=${sessionId} review=${reviewId}`);
+}
+
+async function pollContextReviewNotification() {
+  const payload = await getJson(PROXY_PORT, '/api/proxy/sessions', PROBE_HOST);
+  if (!payload || typeof payload !== 'object') {
+    return;
+  }
+  const sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
+  const pendingReviews = sessions
+    .map((session) => {
+      const sessionId = typeof session?.id === 'string' ? session.id.trim() : '';
+      const review = session && typeof session.pending_context_review === 'object'
+        ? session.pending_context_review
+        : null;
+      return sessionId && review ? { sessionId, review } : null;
+    })
+    .filter(Boolean);
+  if (!contextReviewNotificationWatcherPrimed) {
+    for (const item of pendingReviews) {
+      const reviewId = typeof item.review?.id === 'string' ? item.review.id.trim() : '';
+      if (reviewId) notifiedContextReviewIds.add(reviewId);
+    }
+    contextReviewNotificationWatcherPrimed = true;
+    return;
+  }
+  for (const item of pendingReviews) {
+    showContextReviewNotification(item.sessionId, item.review);
+  }
+}
+
+function startContextReviewNotificationWatcher() {
+  if (contextReviewNotificationTimer || process.env.CODEX_CONTEXT_STUDIO_REVIEW_TOAST === '0') {
+    return;
+  }
+  const poll = () => {
+    pollContextReviewNotification().catch((error) => {
+      writeLog(`context review notification poll failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  };
+  contextReviewNotificationTimer = setInterval(poll, 30000);
+  poll();
+}
+
+function stopContextReviewNotificationWatcher() {
+  if (!contextReviewNotificationTimer) {
+    return;
+  }
+  clearInterval(contextReviewNotificationTimer);
+  contextReviewNotificationTimer = null;
+  contextReviewNotificationWatcherPrimed = false;
+}
+
 function iconPath(root) {
-  const iconName = process.platform === 'win32' ? 'hash-icon.ico' : 'hash-icon.png';
+  const iconName = process.platform === 'win32' ? 'codex-context-studio.ico' : 'codex-context-studio.icns';
   const localIcon = path.join(root, 'electron', 'assets', iconName);
   if (fs.existsSync(localIcon)) return localIcon;
-  const localPng = path.join(root, 'electron', 'assets', 'hash-icon.png');
-  if (fs.existsSync(localPng)) return localPng;
   return localIcon;
 }
 
@@ -485,7 +608,7 @@ function createWindow(root) {
     accentColor: LIGHT_WINDOW_ACCENT_COLOR,
     resizable: true,
     show: false,
-    title: 'Codex Context Proxy',
+    title: 'Codex Context Studio',
     icon: iconPath(root),
     webPreferences: {
       preload: path.join(root, 'electron', 'preload.cjs'),
@@ -513,7 +636,7 @@ function createWindow(root) {
   mainWindow.on('restore', publishWindowMaximizedState);
 
   mainWindow.once('ready-to-show', () => {
-    if (process.env.HASH_CONTEXT_START_HIDDEN === '1') {
+    if (process.env.CODEX_CONTEXT_STUDIO_START_HIDDEN === '1') {
       writeLog('window ready hidden');
       return;
     }
@@ -522,7 +645,7 @@ function createWindow(root) {
   });
 
   mainWindow.on('close', (event) => {
-    if (isQuitting || process.env.HASH_CONTEXT_CAPTURE_PATH) {
+    if (isQuitting || process.env.CODEX_CONTEXT_STUDIO_CAPTURE_PATH) {
       return;
     }
 
@@ -556,11 +679,11 @@ function createWindow(root) {
   void mainWindow.loadURL(frontendUrl);
   writeLog(`loading ${frontendUrl}`);
 
-  if (process.env.HASH_CONTEXT_CAPTURE_PATH) {
+  if (process.env.CODEX_CONTEXT_STUDIO_CAPTURE_PATH) {
     mainWindow.webContents.once('did-finish-load', () => {
       setTimeout(async () => {
         const image = await mainWindow.webContents.capturePage();
-        fs.writeFileSync(path.resolve(root, process.env.HASH_CONTEXT_CAPTURE_PATH), image.toPNG());
+        fs.writeFileSync(path.resolve(root, process.env.CODEX_CONTEXT_STUDIO_CAPTURE_PATH), image.toPNG());
         app.quit();
       }, 4200);
     });
@@ -594,6 +717,7 @@ async function boot() {
   }
   createWindow(root);
   startControlServer();
+  startContextReviewNotificationWatcher();
 }
 
 app.whenReady().then(() => {
@@ -601,7 +725,7 @@ app.whenReady().then(() => {
   boot().catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
     writeLog(`boot failed: ${message}`);
-    dialog.showErrorBox('Codex Context Proxy failed to start', message);
+    dialog.showErrorBox('Codex Context Studio failed to start', message);
     app.quit();
   });
 });
@@ -615,6 +739,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   isQuitting = true;
   writeLog('before quit');
+  stopContextReviewNotificationWatcher();
   controlServer?.close();
   stopChild(frontendProcess);
   stopChild(backendProcess);

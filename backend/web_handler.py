@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 from simple_agent.agent import ToolEvent, sanitize_text, sanitize_value
 from simple_agent.config import load_settings, save_settings
 
+from backend.context_review_scheduler import ContextReviewIdleScheduler
 from backend.web_constants import (
     ATTACHMENTS_ROUTE,
     CONTEXT_REQUEST_DEBUG_FILE,
@@ -27,7 +28,6 @@ from backend.web_constants import (
 from backend.web_context import (
     codex_local_session_transcript,
     consume_context_edit_marker,
-    context_workbench_suggestions_payload,
     editable_context_node_count,
     normalize_selected_node_indexes,
     normalize_transcript,
@@ -36,11 +36,14 @@ from backend.web_context import (
     write_context_edit_marker,
 )
 from backend.web_runtime import (
+    apply_proxy_context_review,
     build_context_chat_response_payload,
     codex_proxy_session_exists,
     context_workbench_models_payload,
     context_workbench_provider_payloads,
     context_workbench_settings_payload,
+    discard_proxy_context_review,
+    generate_and_store_context_review,
     get_codex_proxy_control_json,
     post_codex_proxy_control_json,
     refresh_session_from_proxy_active_context_if_known,
@@ -50,8 +53,8 @@ from backend.web_runtime import (
 from backend.web_state import AppState, list_workspace_entries, resolve_attachment_file_path
 
 
-class HashHTTPRequestHandler(BaseHTTPRequestHandler):
-    server_version = "HashCodeWeb/0.2"
+class StudioHTTPRequestHandler(BaseHTTPRequestHandler):
+    server_version = "CodexContextStudioWeb/0.2"
 
     @property
     def app_state(self) -> AppState:
@@ -73,7 +76,10 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_GATEWAY)
                 return
-            self._send_json(proxy_payload or {"error": "proxy returned empty sessions payload"}, status=HTTPStatus.BAD_GATEWAY)
+            if proxy_payload is None:
+                self._send_json({"error": "proxy returned empty sessions payload"}, status=HTTPStatus.BAD_GATEWAY)
+                return
+            self._send_json(proxy_payload)
             return
 
         if parsed.path == "/api/proxy/usage":
@@ -82,7 +88,10 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_GATEWAY)
                 return
-            self._send_json(proxy_payload or {"error": "proxy returned empty usage payload"}, status=HTTPStatus.BAD_GATEWAY)
+            if proxy_payload is None:
+                self._send_json({"error": "proxy returned empty usage payload"}, status=HTTPStatus.BAD_GATEWAY)
+                return
+            self._send_json(proxy_payload)
             return
 
         if parsed.path.startswith("/api/proxy/sessions/") and parsed.path.endswith("/usage"):
@@ -191,6 +200,9 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
             "/api/proxy-session-node-lock": self._handle_proxy_session_node_lock_post,
             "/api/proxy-session-usage-reset": self._handle_proxy_session_usage_reset_post,
             "/api/context-workbench-suggestions": self._handle_context_workbench_suggestions_post,
+            "/api/context-review-generate": self._handle_context_review_generate_post,
+            "/api/context-review-apply": self._handle_context_review_apply_post,
+            "/api/context-review-discard": self._handle_context_review_discard_post,
             "/api/cancel-request": self._handle_cancel_request_post,
             "/api/context-chat": self._handle_context_chat_post,
             "/api/context-chat-stream": self._handle_context_chat_stream_post,
@@ -271,6 +283,12 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
             or None,
             context_workbench_provider_id=sanitize_text(payload.get("context_workbench_provider_id") or "").strip()
             or None,
+            context_review_auto_enabled=payload.get("context_review_auto_enabled")
+            if type(payload.get("context_review_auto_enabled")) is bool
+            else None,
+            context_review_interval_minutes=payload.get("context_review_interval_minutes")
+            if type(payload.get("context_review_interval_minutes")) is int
+            else None,
             response_providers=payload.get("response_providers")
             if isinstance(payload.get("response_providers"), list)
             else None,
@@ -389,9 +407,84 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
         self._send_json(proxy_payload)
 
     def _handle_context_workbench_suggestions_post(self, payload: dict[str, object]) -> None:
-        session = self.app_state.get_session(payload.get("session_id"))
-        session = refresh_session_from_proxy_active_context_if_known(self.app_state, session)
-        self._send_json(context_workbench_suggestions_payload(session))
+        session_id = sanitize_text(payload.get("session_id") or "").strip()
+        if not session_id:
+            raise ValueError("session_id is required")
+        proxy_payload = get_codex_proxy_control_json(
+            f"/api/proxy/sessions/{quote(session_id, safe='')}",
+            timeout_seconds=3,
+        )
+        if proxy_payload is None:
+            self._send_json({"error": "session not found"}, status=HTTPStatus.NOT_FOUND)
+            return
+        self._send_json(
+            {
+                "pending_review": proxy_payload.get("pending_context_review")
+                if isinstance(proxy_payload.get("pending_context_review"), dict)
+                else None,
+                "transcript_version": int(proxy_payload.get("transcript_version") or 0),
+            }
+        )
+
+    def _handle_context_review_generate_post(self, payload: dict[str, object]) -> None:
+        session_id = sanitize_text(payload.get("session_id") or "").strip()
+        if not session_id:
+            raise ValueError("session_id is required")
+        result = generate_and_store_context_review(
+            self.app_state,
+            session_id,
+            source=sanitize_text(payload.get("source") or "manual").strip() or "manual",
+        )
+        if result.get("reason") in {"main_turn_running", "context_model_running"}:
+            self._send_json(result, status=HTTPStatus.CONFLICT)
+            return
+        self._send_json(result)
+
+    def _handle_context_review_apply_post(self, payload: dict[str, object]) -> None:
+        session_id = sanitize_text(payload.get("session_id") or "").strip()
+        review_id = sanitize_text(payload.get("review_id") or "").strip()
+        if not session_id:
+            raise ValueError("session_id is required")
+        try:
+            proxy_payload = apply_proxy_context_review(session_id, review_id)
+        except ValueError as exc:
+            message = sanitize_text(str(exc))
+            status = HTTPStatus.CONFLICT if "stale" in message.lower() else HTTPStatus.BAD_REQUEST
+            self._send_json({"error": message}, status=status)
+            return
+
+        visible_transcript = normalize_transcript(proxy_payload.get("transcript"))
+        updated = self.app_state.upsert_proxy_session(
+            session_id=session_id,
+            title=sanitize_text(proxy_payload.get("title") or "").strip() or "Codex Context",
+            transcript=visible_transcript,
+            is_main_turn_running=bool(proxy_payload.get("is_main_turn_running")),
+            main_turn_id=sanitize_text(proxy_payload.get("main_turn_id") or "").strip(),
+            main_turn_started_at=sanitize_text(proxy_payload.get("main_turn_started_at") or "").strip(),
+            main_turn_updated_at=sanitize_text(proxy_payload.get("main_turn_updated_at") or "").strip(),
+            node_locks=proxy_payload.get("node_locks") if isinstance(proxy_payload.get("node_locks"), dict) else {},
+            node_lock_revision=int(proxy_payload.get("node_lock_revision") or 0),
+        )
+        if bool(proxy_payload.get("changed")):
+            write_context_edit_marker(
+                session_id,
+                summary="Context review applied.",
+                edit_version=int(proxy_payload.get("transcript_version") or 0),
+                node_count=editable_context_node_count(visible_transcript, updated.node_locks),
+            )
+        self._send_json(proxy_payload)
+
+    def _handle_context_review_discard_post(self, payload: dict[str, object]) -> None:
+        session_id = sanitize_text(payload.get("session_id") or "").strip()
+        review_id = sanitize_text(payload.get("review_id") or "").strip()
+        if not session_id:
+            raise ValueError("session_id is required")
+        try:
+            proxy_payload = discard_proxy_context_review(session_id, review_id)
+        except ValueError as exc:
+            self._send_json({"error": sanitize_text(str(exc))}, status=HTTPStatus.BAD_REQUEST)
+            return
+        self._send_json(proxy_payload)
 
     def _handle_cancel_request_post(self, payload: dict[str, object]) -> None:
         session = self.app_state.get_session(payload.get("session_id"))
@@ -556,7 +649,7 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
 
     def _serve_static(self, request_path: str) -> None:
         normalized_path = request_path or "/"
-        if normalized_path in {"/", "/hash.html"}:
+        if normalized_path == "/":
             file_path = DEFAULT_PAGE
         elif normalized_path in {"/react", "/react/", "/react/index.html"}:
             file_path = self._resolve_react_asset("index.html")
@@ -664,27 +757,31 @@ class HashHTTPRequestHandler(BaseHTTPRequestHandler):
         return
 
 
-class HashHTTPServer(ThreadingHTTPServer):
+class StudioHTTPServer(ThreadingHTTPServer):
     def __init__(self, server_address: tuple[str, int], app_state: AppState) -> None:
-        super().__init__(server_address, HashHTTPRequestHandler)
+        super().__init__(server_address, StudioHTTPRequestHandler)
         self.app_state = app_state
 
 
 def main() -> None:
     load_dotenv(REPO_ROOT / ".env")
     settings = load_settings()
-    port = int(os.getenv("HASH_WEB_PORT", "8765"))
-    host = os.getenv("HASH_WEB_HOST", os.getenv("HASH_CONTEXT_HOST", "localhost"))
+    port = int(os.getenv("CODEX_CONTEXT_STUDIO_WEB_PORT", "8765"))
+    host = os.getenv("CODEX_CONTEXT_STUDIO_WEB_HOST", os.getenv("CODEX_CONTEXT_STUDIO_HOST", "localhost"))
+    CONTEXT_REQUEST_DEBUG_FILE.parent.mkdir(parents=True, exist_ok=True)
     CONTEXT_REQUEST_DEBUG_FILE.write_text("", encoding="utf-8")
     app_state = AppState(settings)
-    server = HashHTTPServer((host, port), app_state)
+    review_scheduler = ContextReviewIdleScheduler(app_state)
+    server = StudioHTTPServer((host, port), app_state)
 
-    print(f"hash-code web ready: http://{host}:{port}")
+    print(f"Codex Context Studio web ready: http://{host}:{port}")
+    review_scheduler.start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        review_scheduler.stop()
         server.server_close()
 
 

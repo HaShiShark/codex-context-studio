@@ -28,26 +28,26 @@ except ImportError:
     from backend.proxy_store import DATA_DIR, compact_text, read_message_text, utc_timestamp
 
 
-HOST = os.environ.get("HASH_CONTEXT_PROXY_HOST", os.environ.get("HASH_CONTEXT_HOST", "localhost"))
-PORT = int(os.environ.get("HASH_CONTEXT_PROXY_PORT", "8787"))
+HOST = os.environ.get("CODEX_CONTEXT_STUDIO_PROXY_HOST", os.environ.get("CODEX_CONTEXT_STUDIO_HOST", "localhost"))
+PORT = int(os.environ.get("CODEX_CONTEXT_STUDIO_PROXY_PORT", "8787"))
 OPENAI_UPSTREAM_BASE_URL = os.environ.get(
-    "HASH_CONTEXT_OPENAI_UPSTREAM_BASE_URL",
-    os.environ.get("HASH_CONTEXT_UPSTREAM_BASE_URL", "https://api.openai.com/v1"),
+    "CODEX_CONTEXT_STUDIO_OPENAI_UPSTREAM_BASE_URL",
+    os.environ.get("CODEX_CONTEXT_STUDIO_UPSTREAM_BASE_URL", "https://api.openai.com/v1"),
 )
 CHATGPT_UPSTREAM_BASE_URL = os.environ.get(
-    "HASH_CONTEXT_CHATGPT_UPSTREAM_BASE_URL",
+    "CODEX_CONTEXT_STUDIO_CHATGPT_UPSTREAM_BASE_URL",
     "https://chatgpt.com/backend-api/codex",
 )
-FORCE_UPSTREAM_BASE_URL = os.environ.get("HASH_CONTEXT_FORCE_UPSTREAM_BASE_URL", "").strip()
-FORCE_UPSTREAM_API_KEY = os.environ.get("HASH_CONTEXT_FORCE_UPSTREAM_API_KEY", "").strip()
+FORCE_UPSTREAM_BASE_URL = os.environ.get("CODEX_CONTEXT_STUDIO_FORCE_UPSTREAM_BASE_URL", "").strip()
+FORCE_UPSTREAM_API_KEY = os.environ.get("CODEX_CONTEXT_STUDIO_FORCE_UPSTREAM_API_KEY", "").strip()
 LOG_PATH = DATA_DIR / "proxy.log"
 REQUEST_CAPTURE_DIR = DATA_DIR / "request_captures"
 REQUEST_CAPTURE_MARKER = DATA_DIR / "capture_requests.enabled"
-REQUEST_CAPTURE_MAX_FILES = int(os.environ.get("HASH_CONTEXT_REQUEST_CAPTURE_MAX_FILES", "20") or "20")
-INTERNAL_CONTEXT_HEADER = "x-hash-context-internal"
+REQUEST_CAPTURE_MAX_FILES = int(os.environ.get("CODEX_CONTEXT_STUDIO_REQUEST_CAPTURE_MAX_FILES", "20") or "20")
+INTERNAL_CONTEXT_HEADER = "x-codex-context-studio-internal"
 INTERNAL_CONTEXT_VALUE = "context-workbench"
-CONTEXT_CONTROL_NOTICE_TEXT = "Hash Context: opened workbench."
-CONTROL_PORT = int(os.environ.get("HASH_CONTEXT_CONTROL_PORT", "8790"))
+CONTEXT_CONTROL_NOTICE_TEXT = "Codex Context Studio: opened workbench."
+CONTROL_PORT = int(os.environ.get("CODEX_CONTEXT_STUDIO_CONTROL_PORT", "8790"))
 CODEX_AUTH_PATH = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "auth.json"
 CODEX_HOME = CODEX_AUTH_PATH.parent
 DEFAULT_MODEL_CONTEXT_WINDOW = 200000
@@ -118,9 +118,9 @@ def is_title_generation_request(body: dict[str, Any]) -> bool:
 
 
 def session_id_for_request(body: dict[str, Any], headers: dict[str, str]) -> str:
-    hash_context_session_id = headers.get("x-hash-context-session-id")
-    if hash_context_session_id:
-        return sanitize_id(hash_context_session_id)
+    codex_context_studio_session_id = headers.get("x-codex-context-studio-session-id")
+    if codex_context_studio_session_id:
+        return sanitize_id(codex_context_studio_session_id)
 
     metadata_session_id = session_id_from_codex_metadata(headers, body)
     if metadata_session_id:
@@ -194,8 +194,8 @@ def fallback_codex_session_headers(session_id: str) -> dict[str, str]:
             {
                 "session_id": safe_session_id,
                 "thread_id": safe_session_id,
-                "thread_source": "hash_context_workbench",
-                "turn_id": f"hash-context-{safe_session_id}",
+                "thread_source": "codex_context_studio_workbench",
+                "turn_id": f"codex-context-studio-{safe_session_id}",
             },
             ensure_ascii=False,
             separators=(",", ":"),
@@ -347,7 +347,7 @@ def response_headers_for_upstream(headers: dict[str, str]) -> dict[str, str]:
         "accept-encoding",
         "transfer-encoding",
         INTERNAL_CONTEXT_HEADER,
-        "x-hash-context-session-id",
+        "x-codex-context-studio-session-id",
     }
     canonical_names = {
         "accept": "Accept",
@@ -505,7 +505,7 @@ def safe_headers_for_log(headers: dict[str, str]) -> dict[str, str]:
 
 
 def request_capture_enabled() -> bool:
-    env_value = os.environ.get("HASH_CONTEXT_CAPTURE_REQUEST_BODIES", "").strip().lower()
+    env_value = os.environ.get("CODEX_CONTEXT_STUDIO_CAPTURE_REQUEST_BODIES", "").strip().lower()
     return env_value in {"1", "true", "yes", "on"} or REQUEST_CAPTURE_MARKER.exists()
 
 
@@ -691,7 +691,7 @@ def open_context_workbench(session_id: str) -> tuple[bool, str]:
     path = "/show"
     if session_id:
         path = f"{path}?session_id={urllib.parse.quote(session_id, safe='')}"
-    conn = http.client.HTTPConnection(os.environ.get("HASH_CONTEXT_HOST", "localhost"), CONTROL_PORT, timeout=2)
+    conn = http.client.HTTPConnection(os.environ.get("CODEX_CONTEXT_STUDIO_HOST", "localhost"), CONTROL_PORT, timeout=2)
     try:
         conn.request("POST", path, body=b"", headers={"Content-Length": "0"})
         response = conn.getresponse()
@@ -733,9 +733,7 @@ def codex_rollout_thread_id_from_path(path: Path) -> str:
     return ""
 
 
-def codex_existing_thread_ids(codex_home: Path | None = None) -> tuple[set[str] | None, dict[str, Any]]:
-    home = Path(codex_home or CODEX_HOME).expanduser()
-    roots = [home / "sessions", home / "archived_sessions"]
+def _codex_thread_ids_in_roots(home: Path, roots: list[Path]) -> tuple[set[str] | None, dict[str, Any]]:
     existing_roots = [root for root in roots if root.exists() and root.is_dir()]
     if not existing_roots:
         return None, {
@@ -771,6 +769,17 @@ def codex_existing_thread_ids(codex_home: Path | None = None) -> tuple[set[str] 
     }
 
 
+def codex_active_thread_ids(codex_home: Path | None = None) -> tuple[set[str] | None, dict[str, Any]]:
+    home = Path(codex_home or CODEX_HOME).expanduser()
+    return _codex_thread_ids_in_roots(home, [home / "sessions"])
+
+
+def codex_existing_thread_ids(codex_home: Path | None = None) -> tuple[set[str] | None, dict[str, Any]]:
+    home = Path(codex_home or CODEX_HOME).expanduser()
+    roots = [home / "sessions", home / "archived_sessions"]
+    return _codex_thread_ids_in_roots(home, roots)
+
+
 def is_internal_context_request(headers: dict[str, str], body: dict[str, Any] | None = None) -> bool:
     if str(headers.get(INTERNAL_CONTEXT_HEADER) or "").strip() == INTERNAL_CONTEXT_VALUE:
         return True
@@ -778,7 +787,7 @@ def is_internal_context_request(headers: dict[str, str], body: dict[str, Any] | 
         metadata = (body or {}).get(metadata_key) if isinstance(body, dict) else None
         if not isinstance(metadata, dict):
             continue
-        if str(metadata.get("hash_context_internal") or "").strip() == INTERNAL_CONTEXT_VALUE:
+        if str(metadata.get("codex_context_studio_internal") or "").strip() == INTERNAL_CONTEXT_VALUE:
             return True
     return False
 
@@ -871,12 +880,15 @@ def normalize_models_response_body(response_body: bytes) -> bytes:
 
 
 def fallback_models_response_body() -> bytes:
-    configured = os.environ.get("HASH_CONTEXT_FALLBACK_MODELS", "")
+    configured = os.environ.get("CODEX_CONTEXT_STUDIO_FALLBACK_MODELS", "")
     model_ids = [
         item.strip()
         for item in configured.split(",")
         if item.strip()
     ] or [
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
         "gpt-5.5",
         "gpt-5.4",
         "gpt-5.4-mini",

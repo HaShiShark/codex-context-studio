@@ -7,17 +7,28 @@ $ErrorActionPreference = "Stop"
 
 $projectRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $codexHome = Join-Path $env:USERPROFILE ".codex"
-$configPath = if ($env:HASH_CONTEXT_DESKTOP_CONFIG) { $env:HASH_CONTEXT_DESKTOP_CONFIG } else { Join-Path $codexHome "config.toml" }
-$stateDir = if ($env:HASH_CONTEXT_DESKTOP_STATE_DIR) { $env:HASH_CONTEXT_DESKTOP_STATE_DIR } else { Join-Path $env:USERPROFILE ".hash-context-codex" }
-$shimDir = if ($env:HASH_CONTEXT_SHIM_DIR) { $env:HASH_CONTEXT_SHIM_DIR } else { Join-Path $stateDir "bin" }
-$statePath = Join-Path $stateDir "codex-desktop-proxy.json"
-$proxyPort = if ($env:HASH_CONTEXT_PROXY_PORT) { $env:HASH_CONTEXT_PROXY_PORT } else { "8787" }
-$controlPort = if ($env:HASH_CONTEXT_CONTROL_PORT) { $env:HASH_CONTEXT_CONTROL_PORT } else { "8790" }
-$backendPort = if ($env:HASH_WEB_PORT) { $env:HASH_WEB_PORT } else { "8765" }
-$frontendPort = if ($env:HASH_CONTEXT_FRONTEND_PORT) { $env:HASH_CONTEXT_FRONTEND_PORT } else { "5174" }
-$loopbackHost = if ($env:HASH_CONTEXT_HOST) { $env:HASH_CONTEXT_HOST } else { "localhost" }
+$studioRoot = if ($env:CODEX_CONTEXT_STUDIO_ROOT) { $env:CODEX_CONTEXT_STUDIO_ROOT } else { Join-Path $env:USERPROFILE ".codex-context-studio" }
+$profile = if ($env:CODEX_CONTEXT_STUDIO_PROFILE -eq "development") { "development" } else { "production" }
+$isDevelopment = ($profile -eq "development")
+$profileRoot = Join-Path $studioRoot $profile
+$providerId = "codex-context-studio"
+$profileLabel = if ($isDevelopment) { "development" } else { "production" }
+$hookName = if ($isDevelopment) { "codex-context-studio-hook-dev" } else { "codex-context-studio-hook" }
+$notifyName = if ($isDevelopment) { "codex-context-studio-notify-dev" } else { "codex-context-studio-notify" }
+$configPath = if ($env:CODEX_CONTEXT_STUDIO_DESKTOP_CONFIG) { $env:CODEX_CONTEXT_STUDIO_DESKTOP_CONFIG } else { Join-Path $codexHome "config.toml" }
+$stateDir = if ($env:CODEX_CONTEXT_STUDIO_DESKTOP_STATE_DIR) { $env:CODEX_CONTEXT_STUDIO_DESKTOP_STATE_DIR } else { Join-Path $profileRoot "state" }
+$shimDir = if ($env:CODEX_CONTEXT_STUDIO_SHIM_DIR) { $env:CODEX_CONTEXT_STUDIO_SHIM_DIR } else { Join-Path $profileRoot "bin" }
+$statePath = Join-Path $stateDir "desktop.json"
+$proxyPort = if ($env:CODEX_CONTEXT_STUDIO_PROXY_PORT) { $env:CODEX_CONTEXT_STUDIO_PROXY_PORT } else { "8787" }
+$controlPort = if ($env:CODEX_CONTEXT_STUDIO_CONTROL_PORT) { $env:CODEX_CONTEXT_STUDIO_CONTROL_PORT } else { "8790" }
+$backendPort = if ($env:CODEX_CONTEXT_STUDIO_WEB_PORT) { $env:CODEX_CONTEXT_STUDIO_WEB_PORT } else { "8765" }
+$frontendPort = if ($env:CODEX_CONTEXT_STUDIO_FRONTEND_PORT) { $env:CODEX_CONTEXT_STUDIO_FRONTEND_PORT } else { "5174" }
+$loopbackHost = if ($env:CODEX_CONTEXT_STUDIO_HOST) { $env:CODEX_CONTEXT_STUDIO_HOST } else { "localhost" }
 $serviceProbeHost = if ($loopbackHost -eq "localhost") { "127.0.0.1" } else { $loopbackHost }
-$runtimeDataDir = if ($env:HASH_CONTEXT_DESKTOP_DATA_DIR) { $env:HASH_CONTEXT_DESKTOP_DATA_DIR } else { $stateDir }
+$runtimeDataDir = if ($env:CODEX_CONTEXT_STUDIO_DESKTOP_DATA_DIR) { $env:CODEX_CONTEXT_STUDIO_DESKTOP_DATA_DIR } else { Join-Path $studioRoot "shared" }
+$env:CODEX_CONTEXT_STUDIO_PROFILE = $profile
+$env:CODEX_CONTEXT_STUDIO_ROOT = $studioRoot
+$env:CODEX_CONTEXT_STUDIO_DATA_DIR = $runtimeDataDir
 
 function Read-DesktopState {
   if (-not (Test-Path $statePath)) {
@@ -40,76 +51,21 @@ function Write-DesktopCommandShims {
   New-Item -ItemType Directory -Force -Path $shimDir | Out-Null
   Set-Content -Path (Join-Path $shimDir "current-project-root.txt") -Value $projectRoot.Path -Encoding UTF8
 
-  $hookPsShim = @'
-$ErrorActionPreference = "Stop"
-$rootFile = Join-Path $PSScriptRoot "current-project-root.txt"
-$statePath = if ($env:HASH_CONTEXT_PROXY_SWITCH_STATE) { $env:HASH_CONTEXT_PROXY_SWITCH_STATE } else { Join-Path $env:USERPROFILE ".hash-context-codex\codex-ctx-proxy.json" }
-$projectRoot = ""
-if (Test-Path -LiteralPath $rootFile) {
-  $projectRoot = (Get-Content -Raw -LiteralPath $rootFile).Trim()
-}
-if (-not $projectRoot -and (Test-Path -LiteralPath $statePath)) {
-  try {
-    $state = Get-Content -Raw -LiteralPath $statePath | ConvertFrom-Json
-    $projectRoot = ([string] $state.project_root).Trim()
-  } catch {
-  }
-}
-if (-not $projectRoot) {
-  throw "Hash Context project root was not found. Reinstall the codex ctx proxy shim."
-}
-$target = Join-Path $projectRoot "scripts\codex-context-hook.ps1"
-& $target
-exit $LASTEXITCODE
-'@
-  Set-Content -Path (Join-Path $shimDir "codex-context-hook.ps1") -Value $hookPsShim -Encoding UTF8
+  $escapedRoot = $projectRoot.Path.Replace("'", "''")
+  $escapedStudioRoot = $studioRoot.Replace("'", "''")
+  $escapedRuntimeDataDir = $runtimeDataDir.Replace("'", "''")
 
-  $hookCmdShim = @'
-@echo off
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0codex-context-hook.ps1"
-exit /b %ERRORLEVEL%
-'@
-  Set-Content -Path (Join-Path $shimDir "codex-context-hook.cmd") -Value $hookCmdShim -Encoding ASCII
+  $hookPsShim = "`$ErrorActionPreference = `"Stop`"`r`n`$env:CODEX_CONTEXT_STUDIO_PROFILE = '$profile'`r`n`$env:CODEX_CONTEXT_STUDIO_ROOT = '$escapedStudioRoot'`r`n`$env:CODEX_CONTEXT_STUDIO_DATA_DIR = '$escapedRuntimeDataDir'`r`n& '$escapedRoot\scripts\codex-context-hook.ps1'`r`nexit `$LASTEXITCODE`r`n"
+  Set-Content -Path (Join-Path $shimDir "$hookName.ps1") -Value $hookPsShim -Encoding UTF8
+  Set-Content -Path (Join-Path $shimDir "$hookName.cmd") -Value "@echo off`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"%~dp0$hookName.ps1`"`r`nexit /b %ERRORLEVEL%`r`n" -Encoding ASCII
 
-  $notifyPsShim = @'
-param(
-  [Parameter(ValueFromRemainingArguments = $true)]
-  [string[]] $ForwardArgs
-)
-
-$ErrorActionPreference = "Stop"
-$rootFile = Join-Path $PSScriptRoot "current-project-root.txt"
-$statePath = if ($env:HASH_CONTEXT_PROXY_SWITCH_STATE) { $env:HASH_CONTEXT_PROXY_SWITCH_STATE } else { Join-Path $env:USERPROFILE ".hash-context-codex\codex-ctx-proxy.json" }
-$projectRoot = ""
-if (Test-Path -LiteralPath $rootFile) {
-  $projectRoot = (Get-Content -Raw -LiteralPath $rootFile).Trim()
-}
-if (-not $projectRoot -and (Test-Path -LiteralPath $statePath)) {
-  try {
-    $state = Get-Content -Raw -LiteralPath $statePath | ConvertFrom-Json
-    $projectRoot = ([string] $state.project_root).Trim()
-  } catch {
-  }
-}
-if (-not $projectRoot) {
-  throw "Hash Context project root was not found. Reinstall the codex ctx proxy shim."
-}
-$target = Join-Path $projectRoot "scripts\codex-turn-ended-notify.ps1"
-& $target @ForwardArgs
-exit $LASTEXITCODE
-'@
-  Set-Content -Path (Join-Path $shimDir "codex-turn-ended-notify.ps1") -Value $notifyPsShim -Encoding UTF8
-
-  $notifyCmdShim = @'
-@echo off
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0codex-turn-ended-notify.ps1" %*
-exit /b %ERRORLEVEL%
-'@
-  Set-Content -Path (Join-Path $shimDir "codex-turn-ended-notify.cmd") -Value $notifyCmdShim -Encoding ASCII
+  $notifyPsShim = "param([Parameter(ValueFromRemainingArguments = `$true)][string[]] `$ForwardArgs)`r`n`$ErrorActionPreference = `"Stop`"`r`n`$env:CODEX_CONTEXT_STUDIO_PROFILE = '$profile'`r`n`$env:CODEX_CONTEXT_STUDIO_ROOT = '$escapedStudioRoot'`r`n`$env:CODEX_CONTEXT_STUDIO_DATA_DIR = '$escapedRuntimeDataDir'`r`n& '$escapedRoot\scripts\codex-turn-ended-notify.ps1' @ForwardArgs`r`nexit `$LASTEXITCODE`r`n"
+  Set-Content -Path (Join-Path $shimDir "$notifyName.ps1") -Value $notifyPsShim -Encoding UTF8
+  Set-Content -Path (Join-Path $shimDir "$notifyName.cmd") -Value "@echo off`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"%~dp0$notifyName.ps1`" %*`r`nexit /b %ERRORLEVEL%`r`n" -Encoding ASCII
 
   return @{
-    hook_cmd = Join-Path $shimDir "codex-context-hook.cmd"
-    notify_cmd = Join-Path $shimDir "codex-turn-ended-notify.cmd"
+    hook_cmd = Join-Path $shimDir "$hookName.cmd"
+    notify_cmd = Join-Path $shimDir "$notifyName.cmd"
   }
 }
 
@@ -201,7 +157,7 @@ function Repair-ProjectTables {
   }
 
   if ($removedCount -gt 0) {
-    Write-Host "[hash-context] removed malformed projects tables: $removedCount" -ForegroundColor DarkYellow
+    Write-Host "[codex-context-studio] removed malformed projects tables: $removedCount" -ForegroundColor DarkYellow
   }
 
   return (($kept -join "`r`n").TrimEnd() + "`r`n")
@@ -245,12 +201,13 @@ function ConvertTo-TomlInlineStringArray {
   return "[ " + ($quoted -join ", ") + " ]"
 }
 
-function Test-HashContextNotifyCommand {
+function Test-CodexContextStudioNotifyCommand {
   param([string] $Value)
   if (-not $Value) {
     return $false
   }
   return (
+    [string] $Value -match '(?i)(?:^|[\\/])codex-context-studio-notify(?:-dev)?\.(?:cmd|ps1)$' -or
     [string] $Value -like "*codex-turn-ended-notify.cmd" -or
     [string] $Value -like "*codex-turn-ended-notify.ps1"
   )
@@ -263,7 +220,7 @@ function Normalize-OriginalNotifyArgs {
     return @()
   }
 
-  while ($args.Count -gt 0 -and (Test-HashContextNotifyCommand -Value ([string] $args[0]))) {
+  while ($args.Count -gt 0 -and (Test-CodexContextStudioNotifyCommand -Value ([string] $args[0]))) {
     if ($args.Count -le 1) {
       return @()
     }
@@ -279,7 +236,7 @@ function Normalize-OriginalNotifyArgs {
       }
       continue
     }
-    if (Test-HashContextNotifyCommand -Value $arg) {
+    if (Test-CodexContextStudioNotifyCommand -Value $arg) {
       continue
     }
     $clean += $arg
@@ -297,7 +254,8 @@ function Remove-DesktopManagedConfig {
   $clean = $Text
   $clean = [regex]::Replace($clean, '(?m)^\s*hooks\.UserPromptSubmit\s*=.*\r?\n?', '')
   $clean = [regex]::Replace($clean, '(?m)^\s*notify\s*=\s*\[[^\r\n]*\]\s*\r?\n?', '')
-  $clean = [regex]::Replace($clean, '(?ms)(?:^|\r?\n)\s*\[model_providers\.hash-context\]\s*\r?\n.*?(?=(?:\r?\n\s*\[)|\z)', "`r`n")
+  $escapedProviderId = [regex]::Escape($providerId)
+  $clean = [regex]::Replace($clean, "(?ms)(?:^|\r?\n)\s*\[model_providers\.$escapedProviderId\]\s*\r?\n.*?(?=(?:\r?\n\s*\[)|\z)", "`r`n")
   if ($RemoveContextWindow) {
     $clean = [regex]::Replace($clean, '(?m)^\s*model_context_window\s*=\s*\d+\s*\r?\n?', '')
   }
@@ -308,15 +266,15 @@ function Test-CodexUpstreamInfo {
   param([string] $ConfigPath)
 
   if (-not (Test-Path $ConfigPath)) {
-    Write-Host "[hash-context] Codex config not found: $ConfigPath" -ForegroundColor Red
-    Write-Host "[hash-context] Please run 'codex' first to login (codex login) or configure a third-party API provider." -ForegroundColor Red
+    Write-Host "[codex-context-studio] Codex config not found: $ConfigPath" -ForegroundColor Red
+    Write-Host "[codex-context-studio] Please run 'codex' first to login (codex login) or configure a third-party API provider." -ForegroundColor Red
     throw "Codex config file not found."
   }
 
   $content = Get-Content -Raw -Path $ConfigPath -ErrorAction Stop
   if (-not $content.Trim()) {
-    Write-Host "[hash-context] Codex config is empty: $ConfigPath" -ForegroundColor Red
-    Write-Host "[hash-context] Please run 'codex' first to login (codex login) or configure a third-party API provider." -ForegroundColor Red
+    Write-Host "[codex-context-studio] Codex config is empty: $ConfigPath" -ForegroundColor Red
+    Write-Host "[codex-context-studio] Please run 'codex' first to login (codex login) or configure a third-party API provider." -ForegroundColor Red
     throw "Codex config file is empty."
   }
 
@@ -349,8 +307,8 @@ function Test-CodexUpstreamInfo {
     $sectionPattern = "\[model_providers\.$escapedId\][\s\S]*?(?=\[\s*model_providers\.|\z)"
     $sectionMatch = [regex]::Match($content, $sectionPattern)
     if (-not $sectionMatch.Success) {
-      Write-Host "[hash-context] model_provider '$modelProvider' has no [model_providers.$modelProvider] section." -ForegroundColor Red
-      Write-Host "[hash-context] Please configure [model_providers.$modelProvider] in your config or switch to a valid provider." -ForegroundColor Red
+      Write-Host "[codex-context-studio] model_provider '$modelProvider' has no [model_providers.$modelProvider] section." -ForegroundColor Red
+      Write-Host "[codex-context-studio] Please configure [model_providers.$modelProvider] in your config or switch to a valid provider." -ForegroundColor Red
       throw "Provider section [model_providers.$modelProvider] not found."
     }
 
@@ -476,7 +434,7 @@ function Test-CodexUpstreamInfo {
   }
 
   if (-not $upstreamKind) {
-    Write-Host "[hash-context] $errorMessage" -ForegroundColor Red
+    Write-Host "[codex-context-studio] $errorMessage" -ForegroundColor Red
     throw $errorMessage
   }
 
@@ -518,8 +476,12 @@ function Set-DesktopConfigEnabled {
   }
 
   $existingState = Read-DesktopState
-  if ($originalProvider -eq "hash-context" -and $existingState -and $existingState.original_provider) {
-    $originalProvider = [string] $existingState.original_provider
+  if ($originalProvider -eq $providerId) {
+    $originalProvider = if ($existingState -and $existingState.original_provider) {
+      [string] $existingState.original_provider
+    } else {
+      ""
+    }
   }
   $originalNotifyArgs = Normalize-OriginalNotifyArgs -NotifyArgs (ConvertFrom-TomlInlineStringArray -Text $text -Key "notify")
 
@@ -548,8 +510,8 @@ function Set-DesktopConfigEnabled {
   }
 
   $providerBlock = @"
-[model_providers.hash-context]
-name = "Hash Context"
+[model_providers.$providerId]
+name = "Codex Context Studio"
 base_url = "http://${loopbackHost}:$proxyPort/v1"
 requires_openai_auth = $requiresAuth
 wire_api = "responses"
@@ -557,12 +519,12 @@ supports_websockets = false
 "@
 
   $hookBlock = @"
-hooks.UserPromptSubmit = [{ matcher = "*", hooks = [{ type = "command", command = $hookCommand, timeout = 10, statusMessage = "HashContext" }] }]
+hooks.UserPromptSubmit = [{ matcher = "*", hooks = [{ type = "command", command = $hookCommand, timeout = 10, statusMessage = "CodexContextStudio" }] }]
 notify = $notifyConfig
 "@
 
   $text = $text.TrimEnd()
-  $header = "model_provider = `"hash-context`"`r`n" + $contextWindowLine + $hookBlock + "`r`n"
+  $header = "model_provider = `"$providerId`"`r`n" + $contextWindowLine + $hookBlock + "`r`n"
   $text = $header + $text.TrimEnd() + "`r`n`r`n" + $providerBlock + "`r`n"
   Set-Content -Path $configPath -Value $text -Encoding UTF8
 
@@ -571,6 +533,7 @@ notify = $notifyConfig
     version = 2
     enabled = $true
     mode = $Mode
+    profile = $profile
     config_path = $configPath
     had_config = $hadConfig
     service_pid = 0
@@ -594,13 +557,13 @@ notify = $notifyConfig
 function Restore-DesktopConfig {
   $state = Read-DesktopState
   if (-not $state) {
-    Write-Host "[hash-context] no proxy state to restore" -ForegroundColor DarkYellow
+    Write-Host "[codex-context-studio] no proxy state to restore" -ForegroundColor DarkYellow
     Repair-DesktopConfig
     return
   }
 
   if (-not (Test-Path $configPath)) {
-    Write-Host "[hash-context] config missing, nothing to restore"
+    Write-Host "[codex-context-studio] config missing, nothing to restore"
     return
   }
 
@@ -614,7 +577,7 @@ function Restore-DesktopConfig {
   }
 
   $text = Remove-DesktopManagedConfig -Text $text -RemoveContextWindow:($state.upstream_kind -eq "third_party")
-  $text = $text -replace '(?m)^\s*model_provider\s*=\s*"hash-context"\s*\r?\n?', ''
+  $text = $text -replace "(?m)^\s*model_provider\s*=\s*`"$([regex]::Escape($providerId))`"\s*\r?\n?", ''
 
   $text = $text.Trim()
   if ($text -and $text -notmatch '(?m)^\s*model_provider\s*=' -and $state.original_provider) {
@@ -629,16 +592,16 @@ function Restore-DesktopConfig {
 
   if ($text.Trim()) {
     Set-Content -Path $configPath -Value ($text.TrimEnd() + "`r`n") -Encoding UTF8
-    Write-Host "[hash-context] restored config"
+    Write-Host "[codex-context-studio] restored config"
   } else {
     Remove-Item -Path $configPath -Force -ErrorAction SilentlyContinue
-    Write-Host "[hash-context] removed empty config"
+    Write-Host "[codex-context-studio] removed empty config"
   }
 }
 
 function Repair-DesktopConfig {
   if (-not (Test-Path $configPath)) {
-    Write-Host "[hash-context] config not found: $configPath"
+    Write-Host "[codex-context-studio] config not found: $configPath"
     return
   }
 
@@ -653,12 +616,12 @@ function Repair-DesktopConfig {
   $normalizedOriginal = $originalText.TrimEnd() + "`r`n"
 
   if ($repairedText -eq $normalizedOriginal) {
-    Write-Host "[hash-context] config repair: no changes needed"
+    Write-Host "[codex-context-studio] config repair: no changes needed"
     return
   }
 
   Set-Content -Path $configPath -Value $repairedText -Encoding UTF8
-  Write-Host "[hash-context] config repaired"
+  Write-Host "[codex-context-studio] config repaired"
 }
 
 function Test-HttpOk {
@@ -730,9 +693,9 @@ function Stop-ProjectServicePorts {
   foreach ($owner in $owners) {
     try {
       & taskkill /pid $([int] $owner.Pid) /t /f | Out-Null
-      Write-Host "[hash-context] stopped service pid=$($owner.Pid) port=$($owner.Port) reason=$Reason"
+      Write-Host "[codex-context-studio] stopped service pid=$($owner.Pid) port=$($owner.Port) reason=$Reason"
     } catch {
-      Write-Host "[hash-context] could not stop service pid=$($owner.Pid): $($_.Exception.Message)" -ForegroundColor DarkYellow
+      Write-Host "[codex-context-studio] could not stop service pid=$($owner.Pid): $($_.Exception.Message)" -ForegroundColor DarkYellow
     }
   }
   if ($owners.Count -gt 0) {
@@ -757,15 +720,15 @@ function Get-ProjectServiceProcesses {
           $commandLine -like "*backend.web_server*" -or
           $commandLine -like "*electron/context-window.cjs*" -or
           $commandLine -like "*electron\context-window.cjs*" -or
-          $commandLine -like "*Codex Context Proxy.exe*" -or
-          $commandLine -like "*hashcode.exe*" -or
+          $commandLine -like "*Codex Context Studio.exe*" -or
+          $commandLine -like "*codex-context-studio.exe*" -or
           ($inProject -and (
               $commandLine -like "*react_app\vite.config.ts*" -or
               $commandLine -like "*react_app/vite.config.ts*" -or
               $commandLine -like "*node_modules*electron*" -or
               $commandLine -like "*node_modules*vite*" -or
               $commandLine -like "*--app-path*$projectPath*electron*" -or
-              $commandLine -like "*--user-data-dir*hash-context-codex-lab*"
+              $commandLine -like "*--user-data-dir*codex-context-studio*"
             ))
         )
       } |
@@ -780,9 +743,9 @@ function Stop-ProjectServiceProcesses {
   foreach ($target in $targets) {
     try {
       & taskkill /pid $([int] $target.ProcessId) /t /f | Out-Null
-      Write-Host "[hash-context] stopped project service pid=$($target.ProcessId) name=$($target.Name) reason=$Reason"
+      Write-Host "[codex-context-studio] stopped project service pid=$($target.ProcessId) name=$($target.Name) reason=$Reason"
     } catch {
-      Write-Host "[hash-context] could not stop project service pid=$($target.ProcessId): $($_.Exception.Message)" -ForegroundColor DarkYellow
+      Write-Host "[codex-context-studio] could not stop project service pid=$($target.ProcessId): $($_.Exception.Message)" -ForegroundColor DarkYellow
     }
   }
   if ($targets.Count -gt 0) {
@@ -802,10 +765,13 @@ function Test-SourceProxyRunning {
 }
 
 function Get-PackagedWindowExe {
+  if ($isDevelopment) {
+    return ""
+  }
   $installRoot = [System.IO.Path]::GetFullPath((Join-Path $projectRoot.Path "..\.."))
   $candidates = @(
-    (Join-Path $installRoot "Codex Context Proxy.exe"),
-    (Join-Path $installRoot "hashcode.exe")
+    (Join-Path $installRoot "Codex Context Studio.exe"),
+    (Join-Path $installRoot "codex-context-studio.exe")
   )
   foreach ($candidate in $candidates) {
     if (Test-Path $candidate) {
@@ -819,8 +785,13 @@ function Start-ContextWindow {
   $logDir = Join-Path $stateDir "logs"
   New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
-  $packagedExe = Get-PackagedWindowExe
-  if ($packagedExe) {
+  if (-not $isDevelopment) {
+    $packagedExe = Get-PackagedWindowExe
+    if (-not $packagedExe) {
+      throw "Codex Context Studio production executable was not found for project root: $($projectRoot.Path)"
+    }
+    $env:CODEX_CONTEXT_STUDIO_USE_BUNDLED_PYTHON = "1"
+    $env:CODEX_CONTEXT_STUDIO_USE_BUILT_FRONTEND = "1"
     return Start-Process `
       -FilePath $packagedExe `
       -WorkingDirectory (Split-Path -Parent $packagedExe) `
@@ -830,6 +801,8 @@ function Start-ContextWindow {
       -PassThru
   }
 
+  $env:CODEX_CONTEXT_STUDIO_PREFER_SOURCE_SERVERS = "1"
+  $env:CODEX_CONTEXT_STUDIO_USE_BUILT_FRONTEND = "0"
   return Start-Process `
     -FilePath "npm.cmd" `
     -ArgumentList @("run", "window") `
@@ -877,26 +850,49 @@ function Wait-TcpPortOpen {
 function Stop-CodexProcesses {
   param([string] $Reason)
 
-  $targets = @(
+  $candidates = @(
     Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
       Where-Object {
-        $_.ProcessId -ne $PID -and
-        ($_.Name -ieq "Codex.exe" -or $_.Name -ieq "codex.exe")
-      } |
-      Sort-Object ProcessId -Descending
+        if ($_.ProcessId -eq $PID) {
+          return $false
+        }
+
+        if ($_.Name -ieq "Codex.exe") {
+          return $true
+        }
+
+        # The unified Codex desktop package now uses ChatGPT.exe for its UI
+        # process. Restrict this match to the Codex package so a standalone
+        # ChatGPT installation is never closed by this command.
+        $executablePath = [string] $_.ExecutablePath
+        return (
+          $_.Name -ieq "ChatGPT.exe" -and
+          $executablePath -match '[\\/]WindowsApps[\\/]OpenAI\.Codex_[^\\/]+[\\/]app[\\/]ChatGPT\.exe$'
+        )
+      }
   )
 
-  if (-not $targets -or $targets.Count -eq 0) {
-    Write-Host "[hash-context] no Codex processes to stop before $Reason"
+  if (-not $candidates -or $candidates.Count -eq 0) {
+    Write-Host "[codex-context-studio] no Codex processes to stop before $Reason"
     return
   }
 
+  $candidateIds = @($candidates | ForEach-Object { [int] $_.ProcessId })
+  $targets = @(
+    $candidates |
+      Where-Object { $candidateIds -notcontains [int] $_.ParentProcessId } |
+      Sort-Object ProcessId -Descending
+  )
+
   foreach ($target in $targets) {
     try {
-      Stop-Process -Id ([int] $target.ProcessId) -Force -ErrorAction Stop
-      Write-Host "[hash-context] stopped Codex process pid=$($target.ProcessId) name=$($target.Name)"
+      & taskkill /pid $([int] $target.ProcessId) /t /f | Out-Null
+      if ($LASTEXITCODE -ne 0 -and (Get-Process -Id ([int] $target.ProcessId) -ErrorAction SilentlyContinue)) {
+        throw "taskkill exited with code $LASTEXITCODE"
+      }
+      Write-Host "[codex-context-studio] stopped Codex desktop tree pid=$($target.ProcessId) name=$($target.Name)"
     } catch {
-      Write-Host "[hash-context] could not stop Codex process pid=$($target.ProcessId): $($_.Exception.Message)" -ForegroundColor DarkYellow
+      Write-Host "[codex-context-studio] could not stop Codex process pid=$($target.ProcessId): $($_.Exception.Message)" -ForegroundColor DarkYellow
     }
   }
 
@@ -914,9 +910,9 @@ function Test-DesktopConfigInstalled {
   try {
     $text = Get-Content -Raw -Path $configPath
     return (
-      $text.Contains('model_provider = "hash-context"') -and
+      $text.Contains("model_provider = `"$providerId`"") -and
       $text.Contains("hooks.UserPromptSubmit") -and
-      $text.Contains("codex-context-hook.cmd") -and
+      $text.Contains("$hookName.cmd") -and
       ($text.Contains("http://${loopbackHost}:$proxyPort/v1") -or $text.Contains("http://localhost:$proxyPort/v1") -or $text.Contains("http://127.0.0.1:$proxyPort/v1"))
     )
   } catch {
@@ -925,53 +921,63 @@ function Test-DesktopConfigInstalled {
 }
 
 function Start-DesktopServices {
-  if ($env:HASH_CONTEXT_USE_BUNDLED_PYTHON -ne "1" -and
+  if ($env:CODEX_CONTEXT_STUDIO_USE_BUNDLED_PYTHON -ne "1" -and
       (Test-TcpPortOpen -Port ([int] $proxyPort)) -and
       -not (Test-SourceProxyRunning)) {
     Stop-ProjectServicePorts -Reason "refresh source proxy"
   }
 
-  if ((Test-HttpOk "http://${serviceProbeHost}:$proxyPort/api/proxy/health") -and
+  $existingState = Read-DesktopState
+  $existingPid = if ($existingState) { [int] $existingState.service_pid } else { 0 }
+  $sameRuntime = (
+    $existingState -and
+    [string] $existingState.profile -eq $profile -and
+    [string] $existingState.project_root -eq $projectRoot.Path -and
+    $existingPid -gt 0 -and
+    (Get-Process -Id $existingPid -ErrorAction SilentlyContinue)
+  )
+  if ($sameRuntime -and
+      (Test-HttpOk "http://${serviceProbeHost}:$proxyPort/api/proxy/health") -and
       (Test-HttpOk "http://${serviceProbeHost}:$backendPort/api/health") -and
       (Test-HttpOk "http://${loopbackHost}:$controlPort/health")) {
-    Write-Host "[hash-context] desktop services already running"
-    return 0
+    Write-Host "[codex-context-studio] $profileLabel desktop services already running"
+    return $existingPid
   }
 
   Stop-ProjectServicePorts -Reason "refresh incomplete desktop services"
 
-  $previousStartHidden = $env:HASH_CONTEXT_START_HIDDEN
-  $previousControlPort = $env:HASH_CONTEXT_CONTROL_PORT
-  $previousHost = $env:HASH_CONTEXT_HOST
-  $previousPreferSource = $env:HASH_CONTEXT_PREFER_SOURCE_SERVERS
-  $env:HASH_CONTEXT_START_HIDDEN = "1"
-  $env:HASH_CONTEXT_CONTROL_PORT = $controlPort
-  $env:HASH_CONTEXT_HOST = $loopbackHost
+  $previousStartHidden = $env:CODEX_CONTEXT_STUDIO_START_HIDDEN
+  $previousControlPort = $env:CODEX_CONTEXT_STUDIO_CONTROL_PORT
+  $previousHost = $env:CODEX_CONTEXT_STUDIO_HOST
+  $previousPreferSource = $env:CODEX_CONTEXT_STUDIO_PREFER_SOURCE_SERVERS
+  $env:CODEX_CONTEXT_STUDIO_START_HIDDEN = "1"
+  $env:CODEX_CONTEXT_STUDIO_CONTROL_PORT = $controlPort
+  $env:CODEX_CONTEXT_STUDIO_HOST = $loopbackHost
   if ($null -eq $previousPreferSource -and
-      $env:HASH_CONTEXT_USE_BUNDLED_PYTHON -ne "1" -and
+      $env:CODEX_CONTEXT_STUDIO_USE_BUNDLED_PYTHON -ne "1" -and
       -not (Get-PackagedWindowExe)) {
-    $env:HASH_CONTEXT_PREFER_SOURCE_SERVERS = "1"
+    $env:CODEX_CONTEXT_STUDIO_PREFER_SOURCE_SERVERS = "1"
   }
   $process = Start-ContextWindow
   if ($null -eq $previousStartHidden) {
-    Remove-Item Env:\HASH_CONTEXT_START_HIDDEN -ErrorAction SilentlyContinue
+    Remove-Item Env:\CODEX_CONTEXT_STUDIO_START_HIDDEN -ErrorAction SilentlyContinue
   } else {
-    $env:HASH_CONTEXT_START_HIDDEN = $previousStartHidden
+    $env:CODEX_CONTEXT_STUDIO_START_HIDDEN = $previousStartHidden
   }
   if ($null -eq $previousControlPort) {
-    Remove-Item Env:\HASH_CONTEXT_CONTROL_PORT -ErrorAction SilentlyContinue
+    Remove-Item Env:\CODEX_CONTEXT_STUDIO_CONTROL_PORT -ErrorAction SilentlyContinue
   } else {
-    $env:HASH_CONTEXT_CONTROL_PORT = $previousControlPort
+    $env:CODEX_CONTEXT_STUDIO_CONTROL_PORT = $previousControlPort
   }
   if ($null -eq $previousHost) {
-    Remove-Item Env:\HASH_CONTEXT_HOST -ErrorAction SilentlyContinue
+    Remove-Item Env:\CODEX_CONTEXT_STUDIO_HOST -ErrorAction SilentlyContinue
   } else {
-    $env:HASH_CONTEXT_HOST = $previousHost
+    $env:CODEX_CONTEXT_STUDIO_HOST = $previousHost
   }
   if ($null -eq $previousPreferSource) {
-    Remove-Item Env:\HASH_CONTEXT_PREFER_SOURCE_SERVERS -ErrorAction SilentlyContinue
+    Remove-Item Env:\CODEX_CONTEXT_STUDIO_PREFER_SOURCE_SERVERS -ErrorAction SilentlyContinue
   } else {
-    $env:HASH_CONTEXT_PREFER_SOURCE_SERVERS = $previousPreferSource
+    $env:CODEX_CONTEXT_STUDIO_PREFER_SOURCE_SERVERS = $previousPreferSource
   }
 
   Wait-HttpOk -Name "proxy" -Url "http://${serviceProbeHost}:$proxyPort/api/proxy/health" -TimeoutSeconds 30
@@ -986,9 +992,9 @@ function Invoke-ProxySessionPrune {
     $response = Invoke-RestMethod -Method Post -Uri $url -TimeoutSec 8
     $deleted = @($response.deleted_session_ids).Count
     $codexCount = if ($null -ne $response.codex_thread_count) { [int] $response.codex_thread_count } else { 0 }
-    Write-Host "[hash-context] proxy session prune: deleted=$deleted codex_threads=$codexCount"
+    Write-Host "[codex-context-studio] proxy session prune: deleted=$deleted codex_threads=$codexCount"
   } catch {
-    Write-Host "[hash-context] proxy session prune skipped: $($_.Exception.Message)" -ForegroundColor DarkYellow
+    Write-Host "[codex-context-studio] proxy session prune skipped: $($_.Exception.Message)" -ForegroundColor DarkYellow
   }
 }
 
@@ -1006,6 +1012,7 @@ function Update-ServicePid {
     version = 2
     enabled = [bool] $state.enabled
     mode = [string] $state.mode
+    profile = $profile
     config_path = [string] $state.config_path
     had_config = [bool] $state.had_config
     service_pid = $ServiceProcessId
@@ -1043,7 +1050,7 @@ function Stop-DesktopServices {
     $process = Get-Process -Id $pidToStop -ErrorAction SilentlyContinue
     if ($process) {
       & taskkill /pid $pidToStop /t /f | Out-Null
-      Write-Host "[hash-context] stopped desktop services pid=$pidToStop"
+      Write-Host "[codex-context-studio] stopped desktop services pid=$pidToStop"
     }
   }
 
@@ -1060,18 +1067,18 @@ function Stop-DesktopServices {
     $residual = Get-ResidualServicePorts
     if ($residual.Count -eq 0) {
       if ($attempt -gt 1) {
-        Write-Host "[hash-context] all desktop service ports cleared after $attempt attempt(s)"
+        Write-Host "[codex-context-studio] all desktop service ports cleared after $attempt attempt(s)"
       }
       return
     }
 
-    Write-Host "[hash-context] ports still listening after attempt ${attempt}: $($residual -join ', '); retrying" -ForegroundColor DarkYellow
+    Write-Host "[codex-context-studio] ports still listening after attempt ${attempt}: $($residual -join ', '); retrying" -ForegroundColor DarkYellow
     Start-Sleep -Milliseconds 700
   }
 
   $stillOpen = Get-ResidualServicePorts
   if ($stillOpen.Count -gt 0) {
-    Write-Host "[hash-context] WARNING: ports still listening after $maxAttempts attempts: $($stillOpen -join ', '). Run 'codex ctx desktop status' to inspect." -ForegroundColor Red
+    Write-Host "[codex-context-studio] WARNING: ports still listening after $maxAttempts attempts: $($stillOpen -join ', '). Run 'codex ctx desktop status$profileSuffix' to inspect." -ForegroundColor Red
   }
 }
 
@@ -1081,8 +1088,8 @@ function Stop-DesktopProxy {
   Stop-CodexProcesses -Reason $Reason
   Restore-DesktopConfig
   Stop-DesktopServices
-  Remove-Item Env:\HASH_CONTEXT_FORCE_UPSTREAM_BASE_URL -ErrorAction SilentlyContinue
-  Remove-Item Env:\HASH_CONTEXT_FORCE_UPSTREAM_API_KEY -ErrorAction SilentlyContinue
+  Remove-Item Env:\CODEX_CONTEXT_STUDIO_FORCE_UPSTREAM_BASE_URL -ErrorAction SilentlyContinue
+  Remove-Item Env:\CODEX_CONTEXT_STUDIO_FORCE_UPSTREAM_API_KEY -ErrorAction SilentlyContinue
   if (Test-Path $statePath) {
     Remove-Item -Path $statePath -Force
   }
@@ -1094,28 +1101,30 @@ function Show-DesktopStatus {
   $enabled = ($state -and [bool] $state.enabled)
   $beforeSessions = if ($state) { [int] $state.session_count_before } else { $snapshot.session_count }
   $beforeLog = if ($state) { [int64] $state.proxy_log_length_before } else { $snapshot.proxy_log_length }
-  Write-Host "[hash-context] desktop proxy: $(if ($enabled) { 'on' } else { 'off' })"
-  Write-Host "[hash-context] config: $configPath"
-  Write-Host "[hash-context] config installed: $(if (Test-DesktopConfigInstalled) { 'yes' } else { 'no' })"
+  Write-Host "[codex-context-studio] profile: $profileLabel"
+  Write-Host "[codex-context-studio] desktop proxy: $(if ($enabled) { 'on' } else { 'off' })"
+  Write-Host "[codex-context-studio] project root: $($projectRoot.Path)"
+  Write-Host "[codex-context-studio] config: $configPath"
+  Write-Host "[codex-context-studio] config installed: $(if (Test-DesktopConfigInstalled) { 'yes' } else { 'no' })"
   if ($state -and $state.upstream_kind) {
-    Write-Host "[hash-context] upstream: $($state.upstream_kind) -> $($state.upstream_base_url)"
+    Write-Host "[codex-context-studio] upstream: $($state.upstream_kind) -> $($state.upstream_base_url)"
   }
   if (Test-Path $configPath) {
     $configText = Get-Content -Raw -Path $configPath
     if ($configText.Contains('features.codex_hooks = true')) {
-      Write-Host "[hash-context] config warning: features.codex_hooks is deprecated; use features.hooks" -ForegroundColor DarkYellow
+      Write-Host "[codex-context-studio] config warning: features.codex_hooks is deprecated; use features.hooks" -ForegroundColor DarkYellow
     }
   }
-  Write-Host "[hash-context] services proxy: $(if (Test-HttpOk "http://${serviceProbeHost}:$proxyPort/api/proxy/health") { 'ready' } else { 'not ready' })"
-  Write-Host "[hash-context] services backend: $(if (Test-HttpOk "http://${serviceProbeHost}:$backendPort/api/health") { 'ready' } else { 'not ready' })"
-  Write-Host "[hash-context] services control: $(if (Test-HttpOk "http://${loopbackHost}:$controlPort/health") { 'ready' } else { 'not ready' })"
-  Write-Host "[hash-context] data dir: $($snapshot.data_dir)"
-  Write-Host "[hash-context] sessions before/current: $beforeSessions/$($snapshot.session_count)"
-  Write-Host "[hash-context] proxy log bytes before/current: $beforeLog/$($snapshot.proxy_log_length)"
+  Write-Host "[codex-context-studio] services proxy: $(if (Test-HttpOk "http://${serviceProbeHost}:$proxyPort/api/proxy/health") { 'ready' } else { 'not ready' })"
+  Write-Host "[codex-context-studio] services backend: $(if (Test-HttpOk "http://${serviceProbeHost}:$backendPort/api/health") { 'ready' } else { 'not ready' })"
+  Write-Host "[codex-context-studio] services control: $(if (Test-HttpOk "http://${loopbackHost}:$controlPort/health") { 'ready' } else { 'not ready' })"
+  Write-Host "[codex-context-studio] data dir: $($snapshot.data_dir)"
+  Write-Host "[codex-context-studio] sessions before/current: $beforeSessions/$($snapshot.session_count)"
+  Write-Host "[codex-context-studio] proxy log bytes before/current: $beforeLog/$($snapshot.proxy_log_length)"
   if ($snapshot.session_count -gt $beforeSessions -or $snapshot.proxy_log_length -gt $beforeLog) {
-    Write-Host "[hash-context] probe signal: proxy activity increased" -ForegroundColor Green
+    Write-Host "[codex-context-studio] probe signal: proxy activity increased" -ForegroundColor Green
   } elseif ($enabled) {
-    Write-Host "[hash-context] probe signal: no desktop request observed yet; open a fresh desktop chat and send a short message"
+    Write-Host "[codex-context-studio] probe signal: no desktop request observed yet; open a fresh desktop chat and send a short message"
   }
 }
 
@@ -1125,19 +1134,19 @@ switch ($Command) {
     $requiresAuth = ($upstreamInfo.kind -ne "third_party")
     Set-DesktopConfigEnabled -Mode "probe" -RequiresOpenAiAuth $requiresAuth -UpstreamInfo $upstreamInfo
     if ($upstreamInfo.kind -eq "third_party") {
-      $env:HASH_CONTEXT_FORCE_UPSTREAM_BASE_URL = $upstreamInfo.effective_base_url
-      $env:HASH_CONTEXT_FORCE_UPSTREAM_API_KEY = $upstreamInfo.api_key
+      $env:CODEX_CONTEXT_STUDIO_FORCE_UPSTREAM_BASE_URL = $upstreamInfo.effective_base_url
+      $env:CODEX_CONTEXT_STUDIO_FORCE_UPSTREAM_API_KEY = $upstreamInfo.api_key
     }
     $serviceProcessId = Start-DesktopServices
     Update-ServicePid -ServiceProcessId $serviceProcessId
     Invoke-ProxySessionPrune
     if ($upstreamInfo.kind -eq "third_party") {
-      Write-Host "[hash-context] upstream: $($upstreamInfo.effective_base_url) (third-party)" -ForegroundColor Cyan
+      Write-Host "[codex-context-studio] upstream: $($upstreamInfo.effective_base_url) (third-party)" -ForegroundColor Cyan
     }
-    Write-Host "[hash-context] desktop probe is armed"
-    Write-Host "[hash-context] keep this desktop app open; use a fresh chat for testing, then run: codex ctx desktop status"
-    Write-Host "[hash-context] if Codex says hooks need review, run /hooks and approve HashContext once"
-    Write-Host "[hash-context] restore with: codex ctx desktop off"
+    Write-Host "[codex-context-studio] desktop probe is armed"
+    Write-Host "[codex-context-studio] keep this desktop app open; use a fresh chat for testing, then run: codex ctx desktop status$profileSuffix"
+    Write-Host "[codex-context-studio] if Codex says hooks need review, run /hooks and approve CodexContextStudio once"
+    Write-Host "[codex-context-studio] restore with: codex ctx desktop off$profileSuffix"
     break
   }
   "on" {
@@ -1146,23 +1155,23 @@ switch ($Command) {
     $requiresAuth = ($upstreamInfo.kind -ne "third_party")
     Set-DesktopConfigEnabled -Mode "on" -RequiresOpenAiAuth $requiresAuth -UpstreamInfo $upstreamInfo
     if ($upstreamInfo.kind -eq "third_party") {
-      $env:HASH_CONTEXT_FORCE_UPSTREAM_BASE_URL = $upstreamInfo.effective_base_url
-      $env:HASH_CONTEXT_FORCE_UPSTREAM_API_KEY = $upstreamInfo.api_key
+      $env:CODEX_CONTEXT_STUDIO_FORCE_UPSTREAM_BASE_URL = $upstreamInfo.effective_base_url
+      $env:CODEX_CONTEXT_STUDIO_FORCE_UPSTREAM_API_KEY = $upstreamInfo.api_key
     }
     $serviceProcessId = Start-DesktopServices
     Update-ServicePid -ServiceProcessId $serviceProcessId
     Invoke-ProxySessionPrune
     if ($upstreamInfo.kind -eq "third_party") {
-      Write-Host "[hash-context] upstream: $($upstreamInfo.effective_base_url) (third-party)" -ForegroundColor Cyan
+      Write-Host "[codex-context-studio] upstream: $($upstreamInfo.effective_base_url) (third-party)" -ForegroundColor Cyan
     }
-    Write-Host "[hash-context] desktop proxy on"
-    Write-Host "[hash-context] keep this desktop app open; use a fresh chat for testing"
-    Write-Host "[hash-context] if Codex says hooks need review, run /hooks and approve HashContext once"
+    Write-Host "[codex-context-studio] $profileLabel desktop proxy on"
+    Write-Host "[codex-context-studio] keep this desktop app open; use a fresh chat for testing"
+    Write-Host "[codex-context-studio] if Codex says hooks need review, run /hooks and approve CodexContextStudio once"
     break
   }
   "off" {
     Stop-DesktopProxy -Reason "desktop proxy off"
-    Write-Host "[hash-context] desktop proxy off"
+    Write-Host "[codex-context-studio] $profileLabel desktop proxy off"
     break
   }
   "status" {
@@ -1174,7 +1183,7 @@ switch ($Command) {
     break
   }
   default {
-    Write-Host "Usage: codex ctx desktop <probe|on|off|status|repair>" -ForegroundColor Red
+    Write-Host "Usage: codex ctx desktop <probe|on|off|status|repair|uninstall>$profileSuffix" -ForegroundColor Red
     exit 2
   }
 }

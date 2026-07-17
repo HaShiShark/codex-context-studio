@@ -13,13 +13,15 @@ try {
 } catch {
 }
 
-$loopbackHost = if ($env:HASH_CONTEXT_HOST) { $env:HASH_CONTEXT_HOST } else { "localhost" }
+$loopbackHost = if ($env:CODEX_CONTEXT_STUDIO_HOST) { $env:CODEX_CONTEXT_STUDIO_HOST } else { "localhost" }
 $serviceProbeHost = if ($loopbackHost -eq "localhost") { "127.0.0.1" } else { $loopbackHost }
-$proxyPort = if ($env:HASH_CONTEXT_PROXY_PORT) { $env:HASH_CONTEXT_PROXY_PORT } else { "8787" }
-$hashContextHome = Join-Path $env:USERPROFILE ".hash-context-codex"
+$proxyPort = if ($env:CODEX_CONTEXT_STUDIO_PROXY_PORT) { $env:CODEX_CONTEXT_STUDIO_PROXY_PORT } else { "8787" }
+$studioRoot = if ($env:CODEX_CONTEXT_STUDIO_ROOT) { $env:CODEX_CONTEXT_STUDIO_ROOT } else { Join-Path $env:USERPROFILE ".codex-context-studio" }
+$studioProfile = if ($env:CODEX_CONTEXT_STUDIO_PROFILE -eq "development") { "development" } else { "production" }
+$profileRoot = Join-Path $studioRoot $studioProfile
 
 function Get-LogDir {
-  $logDir = Join-Path $hashContextHome "logs"
+  $logDir = Join-Path $profileRoot "logs"
   New-Item -ItemType Directory -Force -Path $logDir | Out-Null
   return $logDir
 }

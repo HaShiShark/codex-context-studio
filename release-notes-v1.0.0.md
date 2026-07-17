@@ -1,4 +1,4 @@
-# Codex Context Proxy v1.0.0
+# Codex Context Studio v1.0.0
 
 大重构更新。
 

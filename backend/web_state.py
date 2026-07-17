@@ -339,7 +339,7 @@ class AppState:
                 "conversations": conversations,
                 "context_workbench_histories": context_workbench_histories,
                 "runtime": {
-                    "proxy_port": read_runtime_port("HASH_CONTEXT_PROXY_PORT", 8787),
+                    "proxy_port": read_runtime_port("CODEX_CONTEXT_STUDIO_PROXY_PORT", 8787),
                     "proxy_realtime_path": "/api/proxy/ws",
                 },
             }

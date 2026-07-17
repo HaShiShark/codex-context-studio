@@ -17,6 +17,7 @@ from backend.proxy_core import (  # noqa: E402
     handle_response_completed,
 )
 from backend.compact_controller import (  # noqa: E402
+    AUTO_LOCAL_COMPACT_PROMPT,
     LOCAL_COMPACT_PROMPT_PREFIX,
     LOCAL_COMPACT_SUMMARY_PREFIX,
     MANUAL_LOCAL_COMPACT_PROMPT,
@@ -508,7 +509,7 @@ def test_compact_metadata_sets_pending_and_uses_prompt_replacement_hook() -> Non
     state = ProxyState()
     body = {
         "client_metadata": {
-            "x-codex-turn-metadata": '{"request_kind":"compaction","trigger":"manual"}',
+            "x-codex-turn-metadata": '{"request_kind":"compaction","compaction":{"trigger":"manual","phase":"pre_turn"}}',
         },
         "input": [
             message("user", "keep me"),
@@ -549,7 +550,7 @@ def test_compact_metadata_without_controller_does_not_remote_compact() -> None:
         "client_metadata": {
             "x-codex-turn-metadata": {
                 "request_kind": "compaction",
-                "trigger": "auto",
+                "compaction": {"trigger": "auto", "phase": "mid_turn"},
             },
         },
         "input": copy.deepcopy(original_input),
@@ -582,7 +583,7 @@ def test_auto_loaded_compact_controller_replaces_prompt_and_simulates_success() 
     built_in_prompt = f"{LOCAL_COMPACT_PROMPT_PREFIX}\nSummarize the conversation."
     body = {
         "client_metadata": {
-            "x-codex-turn-metadata": '{"request_kind":"compaction","trigger":"manual"}',
+            "x-codex-turn-metadata": '{"request_kind":"compaction","compaction":{"trigger":"manual","phase":"pre_turn"}}',
         },
         "input": [
             message("developer", "developer context"),
@@ -620,6 +621,114 @@ def test_auto_loaded_compact_controller_replaces_prompt_and_simulates_success() 
     assert state.codex_input_cursor == expected_items
 
 
+def test_auto_mid_turn_compact_simulates_current_user_as_cursor_prefix() -> None:
+    state = ProxyState()
+    built_in_prompt = f"{LOCAL_COMPACT_PROMPT_PREFIX}\nSummarize the active turn."
+    compact_body = {
+        "client_metadata": {
+            "x-codex-turn-metadata": {
+                "request_kind": "compaction",
+                "compaction": {"trigger": "auto", "phase": "mid_turn"},
+            },
+        },
+        "input": [
+            message("user", "active request"),
+            message("assistant", "partial response before compact"),
+            message("user", built_in_prompt),
+        ],
+    }
+
+    forwarded = handle_request(state, compact_body)
+    assert state.compact_kind == "auto"
+    assert forwarded["input"][-1]["content"] == AUTO_LOCAL_COMPACT_PROMPT
+
+    handle_response_completed(state, [message("assistant", "compact summary")])
+    expected_summary = typed_message(
+        "user",
+        f"{LOCAL_COMPACT_SUMMARY_PREFIX}\n\ncompact summary",
+    )
+    simulated_input = [message("user", "active request"), expected_summary]
+    assert state.codex_input_cursor == simulated_input
+    assert transcript_to_input_items(state.transcript) == simulated_input
+    assert not any(node["role"] == "assistant" for node in state.transcript)
+
+    continuation_input = copy.deepcopy(simulated_input)
+    transcript_before_continuation = copy.deepcopy(state.transcript)
+    forwarded_continuation = handle_request(state, {"input": continuation_input})
+    assert forwarded_continuation["input"] == continuation_input
+    assert state.transcript == transcript_before_continuation
+    assert state.tail_conflict is False
+
+    handle_response_completed(state, [message("assistant", "final response after compact")])
+
+    assistant_nodes = [node for node in state.transcript if node["role"] == "assistant"]
+    assert len(assistant_nodes) == 1
+    assert transcript_to_input_items(state.transcript) == [
+        message("user", "active request"),
+        expected_summary,
+        message("assistant", "final response after compact"),
+    ]
+
+
+def test_lite_compact_prefix_matches_when_stable_and_full_pop_recovers_when_changed() -> None:
+    state = ProxyState()
+    built_in_prompt = f"{LOCAL_COMPACT_PROMPT_PREFIX}\nSummarize the active turn."
+    tools_v1 = {
+        "type": "additional_tools",
+        "role": "developer",
+        "tools": [{"type": "function", "name": "exec", "description": "v1"}],
+    }
+    base_developer = typed_message("developer", "Codex base instructions")
+    runtime_developer = typed_message("developer", "permissions and skills")
+    compact_body = {
+        "client_metadata": {
+            "x-codex-turn-metadata": {
+                "request_kind": "compaction",
+                "compaction": {"trigger": "auto", "phase": "mid_turn"},
+            },
+        },
+        "input": [
+            tools_v1,
+            base_developer,
+            runtime_developer,
+            message("user", "active request"),
+            message("assistant", "partial response before compact"),
+            message("user", built_in_prompt),
+        ],
+    }
+
+    handle_request(state, compact_body)
+    handle_response_completed(state, [message("assistant", "compact summary")])
+    expected_summary = typed_message(
+        "user",
+        f"{LOCAL_COMPACT_SUMMARY_PREFIX}\n\ncompact summary",
+    )
+    simulated_input = [
+        tools_v1,
+        base_developer,
+        runtime_developer,
+        message("user", "active request"),
+        expected_summary,
+    ]
+    assert state.codex_input_cursor == simulated_input
+    assert transcript_to_input_items(state.transcript) == simulated_input
+
+    stable_transcript = copy.deepcopy(state.transcript)
+    handle_request(state, {"input": copy.deepcopy(simulated_input)})
+    assert state.transcript == stable_transcript
+    assert state.tail_conflict is False
+
+    tools_v2 = copy.deepcopy(tools_v1)
+    tools_v2["tools"][0]["description"] = "v2"
+    rebuilt_input = [tools_v2, *simulated_input[1:]]
+    forwarded = handle_request(state, {"input": rebuilt_input})
+
+    assert forwarded["input"] == rebuilt_input
+    assert state.codex_input_cursor == rebuilt_input
+    assert transcript_to_input_items(state.transcript) == rebuilt_input
+    assert state.tail_conflict is False
+
+
 def main() -> None:
     tests = [
         test_new_thread_empty_cursor_appends_full_input,
@@ -638,6 +747,8 @@ def main() -> None:
         test_compact_metadata_sets_pending_and_uses_prompt_replacement_hook,
         test_compact_metadata_without_controller_does_not_remote_compact,
         test_auto_loaded_compact_controller_replaces_prompt_and_simulates_success,
+        test_auto_mid_turn_compact_simulates_current_user_as_cursor_prefix,
+        test_lite_compact_prefix_matches_when_stable_and_full_pop_recovers_when_changed,
     ]
     for test in tests:
         test()

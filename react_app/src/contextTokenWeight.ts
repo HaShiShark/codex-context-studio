@@ -1,5 +1,6 @@
 import type { MessageRecord } from './types';
 import { countTokens } from './utils';
+import { additionalToolsWeightSource } from './additionalToolsDisplay';
 
 export type ContextTokenWeightClass = 'light' | 'medium' | 'heavy';
 
@@ -185,6 +186,11 @@ export function getContextImageTokenEstimate(message: MessageRecord) {
 }
 
 export function getContextWeightSource(message: MessageRecord) {
+  const rawAdditionalTools = additionalToolsWeightSource(message.providerItems || []);
+  if (rawAdditionalTools) {
+    return rawAdditionalTools;
+  }
+
   const parts: string[] = [];
 
   if (message.blocks.length) {

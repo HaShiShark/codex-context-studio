@@ -1,11 +1,11 @@
-# Codex Context Proxy 发布说明
+# Codex Context Studio 发布说明
 
 这是给官方 Codex 使用的本地代理和上下文窗口，不是 Codex 的替代品。
 
 它提供：
 - Codex CLI 代理入口：`http://127.0.0.1:8787/v1`
 - 本地上下文窗口：`http://127.0.0.1:8765/react/`
-- Electron 桌面窗口：`Codex Context Proxy`
+- Electron 桌面窗口：`Codex Context Studio`
 
 ## 打包
 
@@ -17,14 +17,14 @@ npm run package:win
 生成的安装包在：
 
 ```text
-release/Codex Context Proxy Setup 1.1.2.exe
+release/Codex Context Studio Setup 1.1.3.exe
 ```
 
 安装包会带上 Electron 前端、React 构建产物、`backend/web_server.py`、`backend/proxy_fastapi.py` 以及打包后的 Python exe。用户不需要自己安装 Node 或 Python。
 
 ## 用户怎么用
 
-用户安装 `Codex Context Proxy Setup 1.1.2.exe` 后，安装器会自动安装 `codex ctx proxy ...` 控制命令，但不会默认打开代理。
+用户安装 `Codex Context Studio Setup 1.1.3.exe` 后，安装器会自动安装 `codex ctx proxy ...` 控制命令，但不会默认打开代理。
 
 安装完成后，重新打开一个终端，然后使用：
 
@@ -69,7 +69,7 @@ codex ctx proxy uninstall
 如果用户是在安装官方 Codex CLI 之前安装了这个代理，可以在装好官方 Codex CLI 后重新运行安装包，或者执行一次兜底命令：
 
 ```powershell
-& "$env:LOCALAPPDATA\Programs\Codex Context Proxy\resources\app\scripts\codex-ctx-proxy.ps1" install
+& "$env:LOCALAPPDATA\Programs\Codex Context Studio\resources\app\scripts\codex-ctx-proxy.ps1" install
 ```
 
 然后重新打开终端，再运行：
@@ -103,7 +103,7 @@ codex ctx desktop status
 把下面这个文件上传到 GitHub Releases、网盘或下载页即可：
 
 ```text
-release/Codex Context Proxy Setup 1.1.2.exe
+release/Codex Context Studio Setup 1.1.3.exe
 ```
 
-旧的 `hashcode Setup ...exe` 是历史产物，不要发布。
+安装器文件名必须以 `Codex Context Studio` 开头，其他名称不要发布。

@@ -132,7 +132,7 @@ const ContextMapNodeRow = memo(function ContextMapNodeRow({
             <div className="context-map-expanded-content">
               {isExpanded ? (
                 <div className="context-map-expanded-body">
-                  <MemoizedMessageContent record={message} variant="context-map" />
+                  <MemoizedMessageContent record={message} uiLocale={uiLocale} variant="context-map" />
                 </div>
               ) : null}
             </div>

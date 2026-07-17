@@ -235,6 +235,43 @@ function testImageDataUrlsDoNotEnterContextWeightText(): void {
   );
 }
 
+function testAdditionalToolsUseReadableDisplayProjection(): void {
+  const conversation = normalizeConversation([
+    node('node-additional-tools', 'developer', [
+      {
+        type: 'additional_tools',
+        role: 'developer',
+        tools: [
+          { type: 'custom', name: 'exec', description: 'long internal description' },
+          { type: 'function', name: 'request_user_input', description: 'long schema description' },
+          {
+            type: 'namespace',
+            name: 'collaboration',
+            description: 'namespace description',
+            tools: [
+              { type: 'function', name: 'followup_task' },
+              { type: 'function', name: 'wait_agent' },
+            ],
+          },
+        ],
+      },
+    ]),
+  ]);
+
+  const additionalTools = conversation[0];
+  assertIncludes(additionalTools.text, 'additional_tools (3)', 'shows the provider item type and tool count');
+  assertIncludes(additionalTools.text, 'request_user_input', 'preserves tool-name underscores');
+  assertIncludes(additionalTools.text, 'followup_task', 'summarizes namespaced tools');
+  assert(!additionalTools.text.includes('long internal description'), 'does not dump full tool descriptions');
+  assert(!additionalTools.text.includes('"tools"'), 'does not render the raw provider JSON');
+  assertEqual(additionalTools.providerItems?.length, 1, 'keeps the original provider item unchanged');
+  const weightSource = getContextWeightSource(additionalTools);
+  assertIncludes(weightSource, 'long internal description', 'counts the complete custom tool description');
+  assertIncludes(weightSource, 'long schema description', 'counts the complete function tool description');
+  assertIncludes(weightSource, 'followup_task', 'counts namespace child definitions');
+  assert(weightSource.length > additionalTools.text.length, 'uses raw provider content instead of display text for weight');
+}
+
 function testContextMapNodeLocksDriveDisplayNumbers(): void {
   const conversation = normalizeConversation([
     node('node-dev', 'developer', [
@@ -285,6 +322,7 @@ function main(): void {
   testProviderItemTypesAreCaseAndSeparatorSensitive();
   testNormalizeConversationSupportsSubagentNodes();
   testImageDataUrlsDoNotEnterContextWeightText();
+  testAdditionalToolsUseReadableDisplayProjection();
   testContextMapNodeLocksDriveDisplayNumbers();
   console.log('ok - normalizeConversation contract tests passed');
 }

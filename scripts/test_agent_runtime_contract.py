@@ -60,7 +60,7 @@ def test_canonical_items_keep_tools_and_opaque_provider_payloads() -> None:
         type="tool_call",
         name="lookup",
         call_id="call_1",
-        arguments={"query": "hash context"},
+        arguments={"query": "context studio"},
     )
     tool_result = CanonicalItem(
         type="tool_result",
@@ -74,7 +74,7 @@ def test_canonical_items_keep_tools_and_opaque_provider_payloads() -> None:
     )
 
     assert tool_call.role is None
-    assert tool_call.arguments == {"query": "hash context"}
+    assert tool_call.arguments == {"query": "context studio"}
     assert tool_result.output == {"ok": True}
     assert tool_result.provider_raw is not None
     assert tool_result.provider_raw.payload == {

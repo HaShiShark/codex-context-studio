@@ -15,11 +15,15 @@ from simple_agent.codex_tool_registry import normalize_tool_settings
 
 MODULE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = MODULE_DIR.parent
-DEFAULT_DATA_DIR = Path.home() / ".hash-context-codex"
+DEFAULT_DATA_DIR = Path.home() / ".codex-context-studio" / "shared"
 
 
 def _resolve_data_dir() -> Path:
-    raw_data_dir = str(os.getenv("HASH_CONFIG_DIR") or os.getenv("HASH_DATA_DIR") or "").strip()
+    raw_data_dir = str(
+        os.getenv("CODEX_CONTEXT_STUDIO_CONFIG_DIR")
+        or os.getenv("CODEX_CONTEXT_STUDIO_DATA_DIR")
+        or ""
+    ).strip()
     if not raw_data_dir:
         return DEFAULT_DATA_DIR
 
@@ -31,17 +35,21 @@ DATA_DIR = _resolve_data_dir()
 SETTINGS_FILE = DATA_DIR / "openai_settings.json"
 CODEX_PROXY_PROVIDER_ID = "codex-proxy"
 CODEX_PROXY_BASE_URL = (
-    f"http://{os.getenv('HASH_CONTEXT_PROXY_HOST', os.getenv('HASH_CONTEXT_HOST', 'localhost'))}:"
-    f"{os.getenv('HASH_CONTEXT_PROXY_PORT', '8787')}/v1"
+    f"http://{os.getenv('CODEX_CONTEXT_STUDIO_PROXY_HOST', os.getenv('CODEX_CONTEXT_STUDIO_HOST', 'localhost'))}:"
+    f"{os.getenv('CODEX_CONTEXT_STUDIO_PROXY_PORT', '8787')}/v1"
 )
 DEFAULT_CODEX_PROXY_MODELS: tuple[dict[str, str], ...] = (
+    {"id": "gpt-5.6-sol", "label": "gpt-5.6-sol", "group": "Codex", "provider": "Codex"},
+    {"id": "gpt-5.6-terra", "label": "gpt-5.6-terra", "group": "Codex", "provider": "Codex"},
+    {"id": "gpt-5.6-luna", "label": "gpt-5.6-luna", "group": "Codex", "provider": "Codex"},
     {"id": "gpt-5.5", "label": "gpt-5.5", "group": "Codex", "provider": "Codex"},
     {"id": "gpt-5.4-mini", "label": "gpt-5.4-mini", "group": "Codex", "provider": "Codex"},
     {"id": "gpt-5.4", "label": "gpt-5.4", "group": "Codex", "provider": "Codex"},
     {"id": "gpt-5.2", "label": "gpt-5.2", "group": "Codex", "provider": "Codex"},
 )
 DEFAULT_CONTEXT_WORKBENCH_PROVIDER_ID = CODEX_PROXY_PROVIDER_ID
-DEFAULT_CONTEXT_WORKBENCH_MODEL = "gpt-5.5"
+DEFAULT_CONTEXT_WORKBENCH_MODEL = "gpt-5.6-sol"
+DEFAULT_CONTEXT_REVIEW_INTERVAL_MINUTES = 10
 
 DEFAULT_RESPONSE_PROVIDERS: tuple[dict[str, object], ...] = (
     {
@@ -62,7 +70,7 @@ DEFAULT_RESPONSE_PROVIDERS: tuple[dict[str, object], ...] = (
         "supports_model_fetch": True,
         "supports_responses": True,
         "api_base_url": CODEX_PROXY_BASE_URL,
-        "default_model": "gpt-5.5",
+        "default_model": "gpt-5.6-sol",
         "models": DEFAULT_CODEX_PROXY_MODELS,
     },
     {
@@ -447,6 +455,8 @@ class Settings:
     tool_settings: list[dict[str, Any]]
     response_providers: list[dict[str, Any]]
     active_provider_id: str
+    context_review_auto_enabled: bool = True
+    context_review_interval_minutes: int = DEFAULT_CONTEXT_REVIEW_INTERVAL_MINUTES
     assistant_name: str = DEFAULT_ASSISTANT_NAME
     assistant_greeting: str = DEFAULT_ASSISTANT_GREETING
     assistant_prompt: str = DEFAULT_ASSISTANT_PROMPT
@@ -506,7 +516,7 @@ def load_settings() -> Settings:
     default_reasoning_effort = _normalize_reasoning_effort(stored.get("default_reasoning_effort"))
     raw_context_workbench_model = (
         _clean_string(stored.get("context_workbench_model"))
-        or _clean_string(os.getenv("HASH_CONTEXT_WORKBENCH_MODEL"))
+        or _clean_string(os.getenv("CODEX_CONTEXT_STUDIO_WORKBENCH_MODEL"))
     )
     context_token_warning_threshold, context_token_critical_threshold = _normalize_context_token_thresholds(
         stored.get("context_token_warning_threshold"),
@@ -537,7 +547,7 @@ def load_settings() -> Settings:
     )
     context_workbench_provider_id = _normalize_provider_id(
         stored.get("context_workbench_provider_id")
-        or os.getenv("HASH_CONTEXT_WORKBENCH_PROVIDER_ID"),
+        or os.getenv("CODEX_CONTEXT_STUDIO_WORKBENCH_PROVIDER_ID"),
         response_providers,
         fallback_provider_id=DEFAULT_CONTEXT_WORKBENCH_PROVIDER_ID,
     )
@@ -566,6 +576,13 @@ def load_settings() -> Settings:
         or _clean_string(context_provider.get("default_model"))
         or DEFAULT_CONTEXT_WORKBENCH_MODEL
         or model
+    )
+    context_review_auto_enabled = bool(stored.get("context_review_auto_enabled", True))
+    context_review_interval_minutes = _normalize_bounded_int(
+        stored.get("context_review_interval_minutes"),
+        min_value=1,
+        max_value=1440,
+        fallback=DEFAULT_CONTEXT_REVIEW_INTERVAL_MINUTES,
     )
     tool_settings = normalize_tool_settings(stored.get("tool_settings"))
 
@@ -614,6 +631,8 @@ def load_settings() -> Settings:
         default_reasoning_effort=default_reasoning_effort,
         context_workbench_model=context_workbench_model,
         context_workbench_provider_id=context_workbench_provider_id,
+        context_review_auto_enabled=context_review_auto_enabled,
+        context_review_interval_minutes=context_review_interval_minutes,
         project_root=project_root,
         max_tool_rounds=max_tool_rounds,
         tool_settings=tool_settings,
@@ -656,6 +675,8 @@ def save_settings(
     default_reasoning_effort: str | None = None,
     context_workbench_model: str | None = None,
     context_workbench_provider_id: str | None = None,
+    context_review_auto_enabled: bool | None = None,
+    context_review_interval_minutes: int | None = None,
     context_token_warning_threshold: int | None = None,
     context_token_critical_threshold: int | None = None,
     openai_base_url: str | None = None,
@@ -871,6 +892,20 @@ def save_settings(
             or loaded.model
         )
     current["context_workbench_model"] = next_context_workbench_model
+
+    if context_review_auto_enabled is not None:
+        current["context_review_auto_enabled"] = bool(context_review_auto_enabled)
+    elif "context_review_auto_enabled" not in current:
+        current["context_review_auto_enabled"] = loaded.context_review_auto_enabled
+    if context_review_interval_minutes is not None:
+        current["context_review_interval_minutes"] = _normalize_bounded_int(
+            context_review_interval_minutes,
+            min_value=1,
+            max_value=1440,
+            fallback=loaded.context_review_interval_minutes,
+        )
+    elif "context_review_interval_minutes" not in current:
+        current["context_review_interval_minutes"] = loaded.context_review_interval_minutes
 
     next_context_token_warning_threshold, next_context_token_critical_threshold = _normalize_context_token_thresholds(
         (

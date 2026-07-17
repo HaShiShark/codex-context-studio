@@ -358,6 +358,8 @@ html[data-workbench-window-moving] {
 }
 
 .workbench-window-shell .right-panel {
+  display: flex;
+  flex-direction: row;
   background: var(--bg-main);
   border: 0;
   border-radius: var(--panel-radius);
@@ -365,6 +367,8 @@ html[data-workbench-window-moving] {
 }
 
 .workbench-window-shell .context-map-pane {
+  display: flex;
+  flex-direction: column;
   background: var(--bg-main);
 }
 
@@ -447,6 +451,8 @@ html[data-workbench-window-moving] {
 }
 
 .workbench-window-shell .context-map-list {
+  flex: 1;
+  min-height: 0;
   grid-template-columns: minmax(0, 1fr) 82px;
   gap: 10px;
   padding: 12px 8px 14px;
@@ -528,13 +534,17 @@ html[data-workbench-window-moving] {
   outline-offset: 2px;
 }
 
-.workbench-window-shell .context-map-item.expanded,
-.workbench-window-shell .context-node-row.selected .context-map-item-button,
-.workbench-window-shell .context-node-row.selected .context-map-item.expanded {
-  background: rgba(184, 105, 78, 0.07);
+.workbench-window-shell .context-map-item.expanded {
+  background: var(--paper-raised);
   border-radius: var(--card-radius);
   box-shadow: none;
   overflow: hidden;
+}
+
+.workbench-window-shell .context-node-row.selected .context-map-item:not(.expanded) .context-map-item-button {
+  background: rgba(184, 105, 78, 0.07);
+  border-radius: var(--card-radius);
+  box-shadow: none;
 }
 
 .workbench-window-shell .context-map-item.expanded {
@@ -546,7 +556,7 @@ html[data-workbench-window-moving] {
 .workbench-window-shell .context-node-row.selected .context-map-item.expanded .context-map-item-button,
 .workbench-window-shell .context-map-expanded-shell.open,
 .workbench-window-shell .context-map-expanded-content {
-  background: var(--paper-raised);
+  background: transparent;
 }
 
 .workbench-window-shell .context-map-item.expanded .context-map-item-button {
@@ -557,12 +567,6 @@ html[data-workbench-window-moving] {
 .workbench-window-shell .context-map-expanded-shell {
   border-bottom-left-radius: inherit;
   border-bottom-right-radius: inherit;
-}
-
-.workbench-window-shell .context-node-row.selected .context-map-item-button,
-.workbench-window-shell .context-node-row.selected .context-map-item.expanded .context-map-item-button {
-  background: rgba(184, 105, 78, 0.07);
-  box-shadow: none;
 }
 
 .workbench-window-shell .context-map-item.assistant .map-bubble {
@@ -757,6 +761,60 @@ html[data-workbench-window-moving] {
   justify-content: flex-end;
 }
 
+.workbench-window-shell .context-review-setting-switch {
+  position: relative;
+  width: 38px;
+  height: 22px;
+  padding: 2px;
+  border: 1px solid rgba(127, 95, 80, 0.18);
+  border-radius: 11px;
+  background: var(--bg-main);
+  cursor: pointer;
+}
+
+.workbench-window-shell .context-review-setting-switch span {
+  display: block;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+  transform: translateX(0);
+}
+
+.workbench-window-shell .context-review-setting-switch.is-on {
+  border-color: var(--an-theme);
+  background: var(--an-theme);
+}
+
+.workbench-window-shell .context-review-setting-switch.is-on span {
+  background: #ffffff;
+  transform: translateX(16px);
+}
+
+.workbench-window-shell .context-review-setting-switch:focus-visible {
+  outline: 2px solid var(--an-theme);
+  outline-offset: 2px;
+}
+
+.workbench-window-shell .context-review-setting-switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.workbench-window-shell .context-review-interval-control {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  color: var(--text-secondary);
+}
+
+.workbench-window-shell .context-review-interval-control .settings-input-small {
+  width: 86px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
 .workbench-window-shell .workbench-settings-row + .workbench-settings-row {
   border-top: 1px solid rgba(127, 95, 80, 0.1);
 }
@@ -777,6 +835,124 @@ html[data-workbench-window-moving] {
 .workbench-window-shell .workbench-setting-feedback {
   margin-top: 14px;
   background: transparent;
+}
+
+.workbench-window-shell .context-review-preview-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 8px 8px;
+  padding: 10px 12px;
+  border-radius: var(--card-radius);
+  background: rgba(184, 105, 78, 0.1);
+  color: var(--text-primary);
+}
+
+.workbench-window-shell .context-review-preview-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.workbench-window-shell .context-review-preview-title {
+  font-size: var(--ui-font-size-sm);
+  font-weight: 650;
+}
+
+.workbench-window-shell .context-review-preview-summary {
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: var(--ui-font-size-xs);
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workbench-window-shell .context-review-preview-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--control-radius);
+  background: rgba(255, 253, 249, 0.58);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.workbench-window-shell .context-review-preview-close:hover {
+  color: var(--accent-strong);
+  background: rgba(184, 105, 78, 0.12);
+}
+
+.workbench-window-shell .context-review-card,
+.workbench-window-shell .context-review-empty {
+  margin-top: 18px;
+  padding: 18px;
+}
+
+.workbench-window-shell .context-review-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.workbench-window-shell .context-review-status {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border-radius: var(--control-radius);
+  background: rgba(184, 105, 78, 0.1);
+  color: var(--accent-strong);
+  font-size: var(--ui-font-size-xs);
+  font-weight: 650;
+}
+
+.workbench-window-shell .context-review-summary {
+  margin-top: 14px;
+  color: var(--text-primary);
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.workbench-window-shell .context-review-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.workbench-window-shell .context-review-stat {
+  min-width: 0;
+  padding: 12px;
+  border-radius: var(--card-radius);
+  background: var(--paper-soft);
+}
+
+.workbench-window-shell .context-review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.workbench-window-shell .context-review-primary,
+.workbench-window-shell .context-review-apply {
+  color: #ffffff;
+  background: var(--an-theme);
+}
+
+.workbench-window-shell .context-review-primary:hover,
+.workbench-window-shell .context-review-apply:hover {
+  color: #ffffff;
+  background: var(--accent-strong);
+}
+
+.workbench-window-shell .context-review-actions .tool-btn-capsule:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
 }
 
 .workbench-window-shell .settings-input {
@@ -907,7 +1083,7 @@ html[data-workbench-window-moving] {
   top: calc(100% + 8px);
   bottom: auto;
   max-height: none;
-  overflow-y: visible;
+  overflow: hidden;
 }
 
 .workbench-window-shell .workbench-provider-picker-trigger + .dropdown-menu .dropdown-item-left small,
@@ -1170,6 +1346,12 @@ html[data-workbench-window-moving] {
   background: transparent;
 }
 
+.workbench-window-shell .workbench-prompt-editor-description {
+  color: var(--text-secondary);
+  font-size: var(--ui-font-size-xs);
+  line-height: 1.5;
+}
+
 .workbench-window-shell .workbench-setting-feedback.error,
 .workbench-window-shell .workbench-window-error,
 .workbench-window-shell .markdown-mermaid-error {
@@ -1413,31 +1595,17 @@ html[data-theme-mode="dark"] .workbench-window-control-btn:hover {
 }
 
 html[data-theme-mode="dark"] .workbench-window-shell .context-map-item.expanded,
-html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.selected .context-map-item-button,
 html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.selected .context-map-item.expanded,
-html[data-theme-mode="dark"] .workbench-window-shell .context-map-item.expanded .context-map-item-button,
-html[data-theme-mode="dark"] .workbench-window-shell .context-map-item.expanded .context-map-item-button:hover,
-html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.selected .context-map-item.expanded .context-map-item-button,
-html[data-theme-mode="dark"] .workbench-window-shell .context-map-expanded-shell.open,
-html[data-theme-mode="dark"] .workbench-window-shell .context-map-expanded-content,
 html[data-theme-mode="dark"] .workbench-window-shell .context-map-item.assistant .map-bubble,
 html[data-theme-mode="dark"] .workbench-window-shell .context-map-item.user .map-bubble,
 html[data-theme-mode="dark"] .workbench-window-shell .context-map-item.developer .map-bubble,
 html[data-theme-mode="dark"] .workbench-window-shell .context-map-item.system .map-bubble {
   background: var(--paper-raised);
   color: var(--text-primary);
-  box-shadow: 0 8px 20px rgba(11, 8, 6, 0.2);
-}
-
-html[data-theme-mode="dark"] .workbench-window-shell .context-map-item.assistant .map-bubble,
-html[data-theme-mode="dark"] .workbench-window-shell .context-map-item.user .map-bubble,
-html[data-theme-mode="dark"] .workbench-window-shell .context-map-item.developer .map-bubble,
-html[data-theme-mode="dark"] .workbench-window-shell .context-map-item.system .map-bubble {
   box-shadow: none;
 }
 
-html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.selected .context-map-item-button,
-html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.selected .context-map-item.expanded {
+html[data-theme-mode="dark"] .workbench-window-shell .context-node-row.selected .context-map-item:not(.expanded) .context-map-item-button {
   background: var(--item-hover);
   box-shadow: none;
 }
@@ -1580,6 +1748,31 @@ html[data-theme-mode="dark"] .workbench-window-shell .workbench-setting-feedback
   background: transparent;
 }
 
+html[data-theme-mode="dark"] .workbench-window-shell .context-review-preview-banner,
+html[data-theme-mode="dark"] .workbench-window-shell .context-review-status {
+  background: rgba(184, 121, 98, 0.14);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .context-review-preview-close {
+  color: var(--text-secondary);
+  background: rgba(58, 50, 43, 0.72);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .context-review-preview-close:hover {
+  color: var(--accent-strong);
+  background: rgba(184, 121, 98, 0.16);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .context-review-stat {
+  background: var(--paper-soft);
+}
+
+html[data-theme-mode="dark"] .workbench-window-shell .context-review-primary,
+html[data-theme-mode="dark"] .workbench-window-shell .context-review-apply {
+  color: #fff6ee;
+  background: var(--an-theme);
+}
+
 html[data-theme-mode="dark"] .workbench-window-shell .workbench-field-feedback {
   color: #a9c09a;
 }
@@ -1719,6 +1912,10 @@ html[data-theme-mode="dark"] .workbench-window-control-btn.close:hover {
 
   .workbench-window-shell .extended-tab span {
     display: none;
+  }
+
+  .workbench-window-shell .context-review-stats {
+    grid-template-columns: 1fr;
   }
 }
 

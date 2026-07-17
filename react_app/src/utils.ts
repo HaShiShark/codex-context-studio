@@ -107,7 +107,7 @@ export const DEFAULT_REASONING_OPTIONS: ReasoningOption[] = [
 
 type ProviderItemRecord = Record<string, unknown>;
 
-const NON_DICT_PROVIDER_ITEM_MARKER = '__hash_context_non_dict_provider_item__';
+const NON_DICT_PROVIDER_ITEM_MARKER = '__codex_context_studio_non_dict_provider_item__';
 
 type CodexItemRegistryContract = {
   schema_version: number;
@@ -115,6 +115,7 @@ type CodexItemRegistryContract = {
   tool_output_item_types: string[];
   paired_tool_output_types_by_call_type: Record<string, string[]>;
   compaction_item_types: string[];
+  developer_context_item_types?: string[];
   display_hints_by_item_type?: Record<string, { title?: string; event_name?: string }>;
 };
 
@@ -126,6 +127,7 @@ const PAIRED_TOOL_OUTPUT_TYPES_BY_CALL_TYPE = exactTypeSetMap(
   CODEX_ITEM_REGISTRY.paired_tool_output_types_by_call_type,
 );
 const COMPACTION_ITEM_TYPES = exactTypeSet(CODEX_ITEM_REGISTRY.compaction_item_types);
+const DEVELOPER_CONTEXT_ITEM_TYPES = exactTypeSet(CODEX_ITEM_REGISTRY.developer_context_item_types || []);
 const ITEM_DISPLAY_HINTS_BY_TYPE = exactDisplayHints(
   CODEX_ITEM_REGISTRY.display_hints_by_item_type || {},
 );
@@ -591,6 +593,29 @@ function fallbackProviderItemText(item: ProviderItemRecord): string {
   return payload ? `${itemType}\n${payload}` : itemType;
 }
 
+function developerContextTextFromProviderItem(item: ProviderItemRecord): string {
+  const itemType = providerItemType(item) || 'developer_context';
+  const tools = Array.isArray(item.tools) ? item.tools.filter(isRecord) : [];
+  if (!tools.length) {
+    return itemType;
+  }
+
+  const lines = [`${itemType} (${tools.length})`];
+  tools.forEach((tool) => {
+    const name = String(tool.name || tool.type || 'tool').trim() || 'tool';
+    const type = String(tool.type || 'tool').trim() || 'tool';
+    const nestedTools = Array.isArray(tool.tools) ? tool.tools.filter(isRecord) : [];
+    const nestedNames = nestedTools
+      .map((nestedTool) => String(nestedTool.name || nestedTool.type || '').trim())
+      .filter(Boolean);
+    const nestedSummary = nestedNames.length
+      ? `; ${nestedNames.length} tools: ${nestedNames.join(', ')}`
+      : '';
+    lines.push(`- \`${name}\` · ${type}${nestedSummary}`);
+  });
+  return lines.join('\n');
+}
+
 function readableTextFromProviderItem(item: ProviderItem): string {
   const itemRecord = item as ProviderItemRecord;
   const itemType = providerItemType(itemRecord);
@@ -606,6 +631,9 @@ function readableTextFromProviderItem(item: ProviderItem): string {
   }
   if (COMPACTION_ITEM_TYPES.has(itemType)) {
     return compactionTextFromProviderItem(itemRecord);
+  }
+  if (DEVELOPER_CONTEXT_ITEM_TYPES.has(itemType)) {
+    return developerContextTextFromProviderItem(itemRecord);
   }
   if (TOOL_OUTPUT_ITEM_TYPES.has(itemType)) {
     return toolOutputTextFromProviderItem(itemRecord);

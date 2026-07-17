@@ -23,7 +23,7 @@ class TranscriptNode(TypedDict):
     source_map: dict[str, str]
 
 
-NON_DICT_PROVIDER_ITEM_MARKER = "__hash_context_non_dict_provider_item__"
+NON_DICT_PROVIDER_ITEM_MARKER = "__codex_context_studio_non_dict_provider_item__"
 
 _MESSAGE_TYPE = "message"
 _AGENT_MESSAGE_TYPES = CODEX_ITEM_REGISTRY.subagent_message_item_types

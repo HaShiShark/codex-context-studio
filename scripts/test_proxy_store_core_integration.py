@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
 from fastapi.testclient import TestClient  # noqa: E402
 
 from backend import proxy_fastapi  # noqa: E402
+from backend.codex_request_protocol import apply_base_instructions_override  # noqa: E402
 from backend.compact_controller import (  # noqa: E402
     LOCAL_COMPACT_PROMPT_PREFIX,
     LOCAL_COMPACT_SUMMARY_PREFIX,
@@ -51,6 +52,30 @@ def new_store(temp_dir: str) -> ProxyStore:
 
 def proxy_items(session: ProxySession) -> list[Any]:
     return transcript_to_input_items(session.proxy_state.transcript)
+
+
+def review_payload(
+    review_id: str,
+    base_version: int,
+    items: list[Any],
+    *,
+    cancel_revision: int | None = None,
+) -> dict[str, Any]:
+    payload = {
+        "id": review_id,
+        "session_id": SESSION_ID,
+        "status": "pending",
+        "source": "test",
+        "base_transcript_version": base_version,
+        "created_at": "2026-07-08T00:00:00+00:00",
+        "summary": "test review",
+        "before": {"node_count": 2, "token_count": 20},
+        "after": {"node_count": len(items), "token_count": 10},
+        "proposed_transcript": input_items_to_transcript(items),
+    }
+    if cancel_revision is not None:
+        payload["base_context_review_cancel_revision"] = cancel_revision
+    return payload
 
 
 def message_text(item: Any) -> str:
@@ -106,6 +131,38 @@ def test_begin_request_and_complete_response_use_proxy_state() -> None:
         assert session.transcript == session.proxy_state.transcript
         assert session.status == "mirror"
         assert_no_legacy_payload_fields(store.get_session(SESSION_ID) or {})
+
+
+def test_lite_prompt_override_enters_transcript_and_cursor_without_changing_raw_log() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        store = new_store(temp_dir)
+        raw_body = {
+            "model": "gpt-5.6-sol",
+            "input": [
+                {"type": "additional_tools", "role": "developer", "tools": []},
+                typed_message("developer", "official prompt"),
+                typed_message("developer", "permissions and skills"),
+                typed_message("user", "hello"),
+            ],
+            "tool_choice": "auto",
+        }
+        effective_body = apply_base_instructions_override(raw_body, "custom prompt")
+
+        session, forwarded = store.begin_request(
+            SESSION_ID,
+            raw_body,
+            {"x-codex-session-id": SESSION_ID},
+            effective_body=effective_body,
+        )
+
+        assert "instructions" not in forwarded
+        assert "tools" not in forwarded
+        assert forwarded["tool_choice"] == "auto"
+        assert forwarded["input"][1]["content"][0]["text"] == "custom prompt"
+        assert forwarded["input"][2] == raw_body["input"][2]
+        assert proxy_items(session) == forwarded["input"]
+        assert session.proxy_state.codex_input_cursor == forwarded["input"]
+        assert session.request_log[-1]["body"] == raw_body
 
 
 def test_legacy_override_status_no_longer_drives_main_request_path() -> None:
@@ -378,7 +435,7 @@ def test_compact_request_is_handled_by_proxy_core_state() -> None:
         body = {
             "previous_response_id": "resp_compact_should_survive",
             "client_metadata": {
-                "x-codex-turn-metadata": '{"request_kind":"compaction","trigger":"manual"}',
+                "x-codex-turn-metadata": '{"request_kind":"compaction","compaction":{"trigger":"manual","phase":"pre_turn"}}',
             },
             "input": [
                 message("developer", "developer context"),
@@ -440,7 +497,7 @@ def test_compact_failure_rolls_back_transcript_and_cursor() -> None:
             SESSION_ID,
             {
                 "client_metadata": {
-                    "x-codex-turn-metadata": '{"request_kind":"compaction","trigger":"manual"}',
+                    "x-codex-turn-metadata": '{"request_kind":"compaction","compaction":{"trigger":"manual","phase":"pre_turn"}}',
                 },
                 "input": [*copy.deepcopy(original_items), message("user", compact_prompt)],
             },
@@ -598,6 +655,179 @@ def test_node_lock_allows_main_running_but_rejects_context_runs() -> None:
         assert payload["node_lock_revision"] == 2
 
 
+def test_pending_context_review_metadata_and_apply_replace_transcript() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        store = new_store(temp_dir)
+        original_input = [
+            message("developer", "keep instructions"),
+            message("user", "long old context"),
+        ]
+        store.begin_request(
+            SESSION_ID,
+            {"input": copy.deepcopy(original_input)},
+            {"x-codex-session-id": SESSION_ID},
+        )
+        base_version = store.sessions[SESSION_ID].transcript_version
+        proposed_input = [
+            message("developer", "keep instructions"),
+            message("user", "compressed context"),
+        ]
+
+        payload = store.set_pending_context_review(
+            SESSION_ID,
+            review_payload("review-1", base_version, proposed_input),
+        )
+
+        assert payload["pending_context_review"]["id"] == "review-1"
+        assert payload["pending_context_review"]["proposed_transcript"]
+        listed_review = store.list_sessions()["sessions"][0]["pending_context_review"]
+        assert listed_review["id"] == "review-1"
+        assert "proposed_transcript" not in listed_review
+
+        applied = store.apply_pending_context_review(SESSION_ID, "review-1")
+        assert applied["changed"] is True
+        assert applied["pending_context_review"] is None
+        assert applied["transcript_version"] == base_version + 1
+        assert proxy_items(store.sessions[SESSION_ID]) == proposed_input
+
+
+def test_pending_context_review_stale_apply_clears_review() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        store = new_store(temp_dir)
+        original_input = [message("user", "original")]
+        store.begin_request(
+            SESSION_ID,
+            {"input": copy.deepcopy(original_input)},
+            {"x-codex-session-id": SESSION_ID},
+        )
+        store.replace_transcript(SESSION_ID, input_items_to_transcript([message("user", "new live text")]))
+        base_version = store.sessions[SESSION_ID].transcript_version
+        store.set_pending_context_review(
+            SESSION_ID,
+            review_payload("review-stale", base_version, [message("user", "proposal")]),
+        )
+        store.sessions[SESSION_ID].transcript_version += 1
+
+        try:
+            store.apply_pending_context_review(SESSION_ID, "review-stale")
+        except RuntimeError as exc:
+            assert str(exc) == "context_review_stale"
+        else:
+            raise AssertionError("stale context review should not apply")
+
+        assert store.sessions[SESSION_ID].pending_context_review is None
+        assert proxy_items(store.sessions[SESSION_ID]) == [message("user", "new live text")]
+
+
+def test_pending_context_review_survives_restart_until_same_session_requests() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        store = new_store(temp_dir)
+        store.begin_request(
+            SESSION_ID,
+            {"input": [message("user", "hello")]},
+            {"x-codex-session-id": SESSION_ID},
+        )
+        session = store.sessions[SESSION_ID]
+        first_request_at = session.last_proxy_request_at
+        store.set_pending_context_review(
+            SESSION_ID,
+            review_payload(
+                "review-persisted",
+                session.transcript_version,
+                [message("user", "compressed")],
+                cancel_revision=session.context_review_cancel_revision,
+            ),
+        )
+
+        reloaded = new_store(temp_dir)
+        restored = reloaded.get_session(SESSION_ID) or {}
+        assert restored["pending_context_review"]["id"] == "review-persisted"
+        assert restored["last_proxy_request_at"] == first_request_at
+
+        reloaded.begin_request(
+            SESSION_ID,
+            {"input": [message("user", "hello"), message("user", "continue")]},
+            {"x-codex-session-id": SESSION_ID},
+        )
+        continued = reloaded.get_session(SESSION_ID) or {}
+        assert continued["pending_context_review"] is None
+        assert continued["context_review_cancel_revision"] > restored["context_review_cancel_revision"]
+
+
+def test_legacy_review_copy_is_not_restored() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        store = new_store(temp_dir)
+        store.begin_request(
+            SESSION_ID,
+            {"input": [message("user", "hello")]},
+            {"x-codex-session-id": SESSION_ID},
+        )
+        session = store.sessions[SESSION_ID]
+        store.set_pending_context_review(
+            SESSION_ID,
+            review_payload(
+                "review-old-copy",
+                session.transcript_version,
+                [message("user", "compressed")],
+            ),
+        )
+        metadata_path = store.storage.session_json_path(SESSION_ID)
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["pending_context_review"].pop("review_schema_version", None)
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+        reloaded = new_store(temp_dir)
+        payload = reloaded.get_session(SESSION_ID) or {}
+        assert payload["pending_context_review"] is None
+
+
+def test_late_review_is_rejected_after_main_turn_cancellation() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        store = new_store(temp_dir)
+        store.begin_request(
+            SESSION_ID,
+            {"input": [message("user", "hello")]},
+            {"x-codex-session-id": SESSION_ID},
+        )
+        session = store.sessions[SESSION_ID]
+        review = review_payload(
+            "review-late",
+            session.transcript_version,
+            [message("user", "compressed")],
+            cancel_revision=session.context_review_cancel_revision,
+        )
+        store.set_main_turn_state(SESSION_ID, "turn-next", True)
+        store.set_main_turn_state(SESSION_ID, "turn-next", False)
+
+        try:
+            store.set_pending_context_review(SESSION_ID, review)
+        except RuntimeError as exc:
+            assert str(exc) == "context_review_cancelled"
+        else:
+            raise AssertionError("cancelled automatic review should not be persisted")
+
+
+def test_pending_context_review_is_cleared_when_main_turn_starts() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        store = new_store(temp_dir)
+        store.begin_request(
+            SESSION_ID,
+            {"input": [message("user", "hello")]},
+            {"x-codex-session-id": SESSION_ID},
+        )
+        base_version = store.sessions[SESSION_ID].transcript_version
+        store.set_pending_context_review(
+            SESSION_ID,
+            review_payload("review-main-turn", base_version, [message("user", "proposal")]),
+        )
+
+        payload = store.set_main_turn_state(SESSION_ID, "turn-1", True)
+
+        assert payload["is_main_turn_running"] is True
+        assert payload["pending_context_review"] is None
+        assert store.sessions[SESSION_ID].pending_context_review is None
+
+
 def test_persisted_running_status_is_not_treated_as_live_request() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         store = new_store(temp_dir)
@@ -659,6 +889,7 @@ def test_main_turn_finish_does_not_create_empty_session() -> None:
 def main() -> None:
     tests = [
         test_begin_request_and_complete_response_use_proxy_state,
+        test_lite_prompt_override_enters_transcript_and_cursor_without_changing_raw_log,
         test_legacy_override_status_no_longer_drives_main_request_path,
         test_replace_transcript_updates_proxy_state_without_legacy_payload_fields,
         test_workbench_edit_keeps_cursor_and_tail_conflict_preserves_edit,
@@ -674,6 +905,12 @@ def main() -> None:
         test_node_locks_persist_and_cleanup_with_transcript,
         test_node_locks_store_only_default_overrides,
         test_node_lock_allows_main_running_but_rejects_context_runs,
+        test_pending_context_review_metadata_and_apply_replace_transcript,
+        test_pending_context_review_stale_apply_clears_review,
+        test_pending_context_review_is_cleared_when_main_turn_starts,
+        test_pending_context_review_survives_restart_until_same_session_requests,
+        test_legacy_review_copy_is_not_restored,
+        test_late_review_is_rejected_after_main_turn_cancellation,
         test_persisted_running_status_is_not_treated_as_live_request,
         test_main_turn_state_survives_request_boundaries_but_not_restart,
         test_main_turn_finish_does_not_create_empty_session,

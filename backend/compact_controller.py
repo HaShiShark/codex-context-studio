@@ -1,7 +1,7 @@
 """Pure data helpers for Codex local compact handling.
 
 This module implements only the local compact path described in
-``docs/proxy-design.md``.  It has no HTTP, persistence, or frontend knowledge.
+``docs/architecture/proxy-core.md``.  It has no HTTP, persistence, or frontend knowledge.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from .codex_request_protocol import responses_lite_prefix_items
 from .codex_input_cursor import fingerprint_provider_item
 from .transcript_codec import input_items_to_transcript, transcript_to_input_items
 from simple_agent.config import load_settings
@@ -221,12 +222,14 @@ class CompactController:
         compact_kind: str,
         *,
         max_user_tokens: int = LOCAL_COMPACT_USER_MESSAGE_MAX_TOKENS,
+        request_input_items: Sequence[Any] | None = None,
     ) -> CompactSuccessResult:
         return compact_success_from_response_items(
             transcript,
             response_items,
             compact_kind,
             max_user_tokens=max_user_tokens,
+            request_input_items=request_input_items,
         )
 
 
@@ -254,6 +257,7 @@ def on_compact_success(
         state.transcript,
         summary_source,
         compact_kind,
+        request_input_items=state.codex_input_cursor,
     )
     state.transcript = result.new_transcript
     state.codex_input_cursor = copy.deepcopy(result.new_cursor)
@@ -279,7 +283,11 @@ def parse_compact_turn_metadata(body: Mapping[str, Any] | None) -> CompactTurnMe
     if metadata.get("request_kind") != COMPACT_REQUEST_KIND:
         return None
 
-    trigger = str(metadata.get("trigger") or "").strip().lower()
+    compaction = metadata.get("compaction")
+    if not isinstance(compaction, Mapping):
+        return None
+
+    trigger = str(compaction.get("trigger") or "").strip().lower()
     if trigger not in COMPACT_TRIGGERS:
         trigger = DEFAULT_COMPACT_TRIGGER
     return CompactTurnMetadata(trigger=trigger, raw=copy.deepcopy(metadata))
@@ -351,6 +359,7 @@ def compact_success_from_response_items(
     compact_kind: str,
     *,
     max_user_tokens: int = LOCAL_COMPACT_USER_MESSAGE_MAX_TOKENS,
+    request_input_items: Sequence[Any] | None = None,
 ) -> CompactSuccessResult:
     """Build the simulated compact transcript/cursor from provider response items."""
 
@@ -359,6 +368,7 @@ def compact_success_from_response_items(
         summary_text_from_response_items(response_items),
         compact_kind,
         max_user_tokens=max_user_tokens,
+        request_input_items=request_input_items,
     )
 
 
@@ -368,18 +378,21 @@ def compact_success_from_summary(
     compact_kind: str,
     *,
     max_user_tokens: int = LOCAL_COMPACT_USER_MESSAGE_MAX_TOKENS,
+    request_input_items: Sequence[Any] | None = None,
 ) -> CompactSuccessResult:
-    """Build ``[retained user messages + summary user message]`` state."""
+    """Build the canonical compact simulation for the active transport."""
 
-    exclude_in_progress_user = compact_kind == "auto"
+    source_items = request_input_items
+    if source_items is None:
+        source_items = transcript_to_input_items(transcript)
+    lite_prefix = responses_lite_prefix_items(source_items)
     retained_user_items = collect_user_message_items(
         transcript,
-        exclude_last_user=exclude_in_progress_user,
         max_user_tokens=max_user_tokens,
     )
     summary_text = build_local_compact_summary_text(assistant_summary_text)
     summary_item = provider_message("user", summary_text)
-    new_cursor = [*retained_user_items, summary_item]
+    new_cursor = [*lite_prefix, *retained_user_items, summary_item]
     new_transcript = input_items_to_transcript(new_cursor)
 
     return CompactSuccessResult(
@@ -394,7 +407,6 @@ def compact_success_from_summary(
 def collect_user_message_items(
     transcript: Sequence[Mapping[str, Any]],
     *,
-    exclude_last_user: bool = False,
     max_user_tokens: int = LOCAL_COMPACT_USER_MESSAGE_MAX_TOKENS,
 ) -> list[dict[str, Any]]:
     """Collect user message provider items eligible for simulated compact state."""
@@ -409,9 +421,6 @@ def collect_user_message_items(
         if is_local_compact_summary_text(text) or is_local_compact_prompt_text(text):
             continue
         user_items.append(copy.deepcopy(item))
-
-    if exclude_last_user and user_items:
-        user_items = user_items[:-1]
 
     return _select_user_items_by_token_budget(user_items, max_user_tokens)
 

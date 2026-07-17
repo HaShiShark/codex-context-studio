@@ -1,6 +1,6 @@
 # Long Context 15-Task Benchmark Protocol
 
-这个实验用于轻量对比原生 Codex 与 Hash Context 手动压缩在长会话编码任务中的表现。目标不是做严肃论文级 benchmark，而是得到一组适合简历和公开说明的量化结果。
+这个实验用于轻量对比原生 Codex 与 Codex Context Studio 手动压缩在长会话编码任务中的表现。目标不是做严肃论文级 benchmark，而是得到一组适合简历和公开说明的量化结果。
 
 ## Experiment Goal
 
@@ -11,7 +11,7 @@
 | Group | Description |
 | --- | --- |
 | Native Codex | 原生 Codex，连续执行 15 个任务，不进行手动上下文编辑。 |
-| Hash Context | 通过 Hash Context Proxy 执行同样 15 个任务，并在 T05 和 T10 后进行手动上下文压缩。 |
+| Codex Context Studio | 通过 Codex Context Studio 执行同样 15 个任务，并在 T05 和 T10 后进行手动上下文压缩。 |
 
 ## Shared Rules
 
@@ -22,9 +22,9 @@
 - 最终只在全部 15 个任务结束后运行一次统一验收。
 - 最终成本直接从 usage 面板记录总成本即可，不记录每轮 token。
 
-## Hash Context Compression Rules
+## Codex Context Studio Compression Rules
 
-Hash Context 组只在以下时间点进行手动压缩：
+Codex Context Studio 组只在以下时间点进行手动压缩：
 
 - T05 完成后压缩一次。
 - T10 完成后压缩一次。

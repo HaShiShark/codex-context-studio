@@ -2,44 +2,46 @@ $ErrorActionPreference = "Stop"
 
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
 
-$proxyPort = $env:HASH_CONTEXT_PROXY_PORT
+$proxyPort = $env:CODEX_CONTEXT_STUDIO_PROXY_PORT
 if (-not $proxyPort) {
   $proxyPort = "8787"
 }
 
-$controlPort = $env:HASH_CONTEXT_CONTROL_PORT
+$controlPort = $env:CODEX_CONTEXT_STUDIO_CONTROL_PORT
 if (-not $controlPort) {
   $controlPort = "8790"
 }
-$backendPort = $env:HASH_WEB_PORT
+$backendPort = $env:CODEX_CONTEXT_STUDIO_WEB_PORT
 if (-not $backendPort) {
   $backendPort = "8765"
 }
-$frontendPort = $env:HASH_CONTEXT_FRONTEND_PORT
+$frontendPort = $env:CODEX_CONTEXT_STUDIO_FRONTEND_PORT
 if (-not $frontendPort) {
   $frontendPort = "5174"
 }
-$loopbackHost = if ($env:HASH_CONTEXT_HOST) { $env:HASH_CONTEXT_HOST } else { "localhost" }
+$loopbackHost = if ($env:CODEX_CONTEXT_STUDIO_HOST) { $env:CODEX_CONTEXT_STUDIO_HOST } else { "localhost" }
 $serviceProbeHost = if ($loopbackHost -eq "localhost") { "127.0.0.1" } else { $loopbackHost }
-$hashContextHome = Join-Path $env:USERPROFILE ".hash-context-codex"
+$studioRoot = if ($env:CODEX_CONTEXT_STUDIO_ROOT) { $env:CODEX_CONTEXT_STUDIO_ROOT } else { Join-Path $env:USERPROFILE ".codex-context-studio" }
+$studioProfile = if ($env:CODEX_CONTEXT_STUDIO_PROFILE -eq "development") { "development" } else { "production" }
+$profileRoot = Join-Path $studioRoot $studioProfile
 
-$topBeginManaged = "# BEGIN HASH_CONTEXT_DESKTOP_TOP"
-$topEndManaged = "# END HASH_CONTEXT_DESKTOP_TOP"
-$providerBeginManaged = "# BEGIN HASH_CONTEXT_DESKTOP_PROVIDER"
-$providerEndManaged = "# END HASH_CONTEXT_DESKTOP_PROVIDER"
+$topBeginManaged = "# BEGIN CODEX_CONTEXT_STUDIO_DESKTOP_TOP"
+$topEndManaged = "# END CODEX_CONTEXT_STUDIO_DESKTOP_TOP"
+$providerBeginManaged = "# BEGIN CODEX_CONTEXT_STUDIO_DESKTOP_PROVIDER"
+$providerEndManaged = "# END CODEX_CONTEXT_STUDIO_DESKTOP_PROVIDER"
 
-function Get-HashContextLogDir {
-  $logDir = Join-Path $hashContextHome "logs"
+function Get-CodexContextStudioLogDir {
+  $logDir = Join-Path $profileRoot "logs"
   New-Item -ItemType Directory -Force -Path $logDir | Out-Null
   return $logDir
 }
 
 function Get-CodexUpstreamInfo {
-  $configPath = if ($env:HASH_CONTEXT_DESKTOP_CONFIG) { $env:HASH_CONTEXT_DESKTOP_CONFIG } else { Join-Path $env:USERPROFILE ".codex\config.toml" }
+  $configPath = if ($env:CODEX_CONTEXT_STUDIO_DESKTOP_CONFIG) { $env:CODEX_CONTEXT_STUDIO_DESKTOP_CONFIG } else { Join-Path $env:USERPROFILE ".codex\config.toml" }
 
   if (-not (Test-Path $configPath)) {
-    Write-Host "[hash-context] Codex config not found: $configPath" -ForegroundColor Red
-    Write-Host "[hash-context] Please run 'codex' first to login (codex login) or configure a third-party API provider." -ForegroundColor Red
+    Write-Host "[codex-context-studio] Codex config not found: $configPath" -ForegroundColor Red
+    Write-Host "[codex-context-studio] Please run 'codex' first to login (codex login) or configure a third-party API provider." -ForegroundColor Red
     throw "Codex config file not found."
   }
 
@@ -53,8 +55,8 @@ function Get-CodexUpstreamInfo {
   $content = [regex]::Replace($content, "(?ms)\r?\n?$escapedProviderBegin\r?\n.*?\r?\n$escapedProviderEnd\r?\n?", "`r`n")
 
   if (-not $content.Trim()) {
-    Write-Host "[hash-context] Codex config is empty." -ForegroundColor Red
-    Write-Host "[hash-context] Please run 'codex' first to login (codex login) or configure a third-party API provider." -ForegroundColor Red
+    Write-Host "[codex-context-studio] Codex config is empty." -ForegroundColor Red
+    Write-Host "[codex-context-studio] Please run 'codex' first to login (codex login) or configure a third-party API provider." -ForegroundColor Red
     throw "Codex config file is empty."
   }
 
@@ -154,7 +156,7 @@ function Get-CodexUpstreamInfo {
   }
 
   if (-not $upstreamKind) {
-    Write-Host "[hash-context] $errorMessage" -ForegroundColor Red
+    Write-Host "[codex-context-studio] $errorMessage" -ForegroundColor Red
     throw $errorMessage
   }
 
@@ -172,13 +174,13 @@ function Stop-ProjectProcessOnPort {
       continue
     }
     $commandLine = [string] $process.CommandLine
-    if ($commandLine -like "*hash-context-codex-lab*" -or
-        $commandLine -like "*Codex Context Proxy*" -or
+    if ($commandLine -like "*codex-context-studio*" -or
+        $commandLine -like "*Codex Context Studio*" -or
         $commandLine -like "*proxy_fastapi.py*" -or
         $commandLine -like "*web_server.py*" -or
         $commandLine -like "*backend.proxy_fastapi*" -or
         $commandLine -like "*backend.web_server*") {
-      Write-Host "[hash-context] stopping stale local service on port $Port pid=$($process.ProcessId)" -ForegroundColor DarkYellow
+      Write-Host "[codex-context-studio] stopping stale local service on port $Port pid=$($process.ProcessId)" -ForegroundColor DarkYellow
       & taskkill /pid $process.ProcessId /t /f | Out-Null
     }
   }
@@ -187,8 +189,8 @@ function Stop-ProjectProcessOnPort {
 function Get-PackagedWindowExe {
   $installRoot = [System.IO.Path]::GetFullPath((Join-Path $root.Path "..\.."))
   $candidates = @(
-    (Join-Path $installRoot "Codex Context Proxy.exe"),
-    (Join-Path $installRoot "hashcode.exe")
+    (Join-Path $installRoot "Codex Context Studio.exe"),
+    (Join-Path $installRoot "codex-context-studio.exe")
   )
   foreach ($candidate in $candidates) {
     if (Test-Path $candidate) {
@@ -199,7 +201,7 @@ function Get-PackagedWindowExe {
 }
 
 function Start-ContextWindow {
-  $logDir = Get-HashContextLogDir
+  $logDir = Get-CodexContextStudioLogDir
   $packagedExe = Get-PackagedWindowExe
   if ($packagedExe) {
     return Start-Process `
@@ -225,17 +227,17 @@ $upstreamInfo = Get-CodexUpstreamInfo
 $requiresAuth = if ($upstreamInfo.kind -eq "third_party") { "false" } else { "true" }
 
 $hookCommand = (Join-Path $root "scripts\codex-context-hook.cmd").Replace("\", "/")
-$hookConfig = "hooks.UserPromptSubmit=[{matcher='*',hooks=[{type='command',command='$hookCommand',timeout=10,statusMessage='HashContext'}]}]"
+$hookConfig = "hooks.UserPromptSubmit=[{matcher='*',hooks=[{type='command',command='$hookCommand',timeout=10,statusMessage='CodexContextStudio'}]}]"
 $notifyCommand = (Join-Path $root "scripts\codex-turn-ended-notify.cmd").Replace("\", "/")
 $notifyConfig = "notify=['$notifyCommand']"
 
 $configArgs = @(
-  "-c", "model_providers.hash-context.name=Hash Context",
-  "-c", "model_providers.hash-context.base_url=http://${loopbackHost}:$proxyPort/v1",
-  "-c", "model_providers.hash-context.requires_openai_auth=$requiresAuth",
-  "-c", "model_providers.hash-context.wire_api=responses",
-  "-c", "model_providers.hash-context.supports_websockets=false",
-  "-c", "model_provider=hash-context",
+  "-c", "model_providers.codex-context-studio.name=Codex Context Studio",
+  "-c", "model_providers.codex-context-studio.base_url=http://${loopbackHost}:$proxyPort/v1",
+  "-c", "model_providers.codex-context-studio.requires_openai_auth=$requiresAuth",
+  "-c", "model_providers.codex-context-studio.wire_api=responses",
+  "-c", "model_providers.codex-context-studio.supports_websockets=false",
+  "-c", "model_provider=codex-context-studio",
   "-c", "features.hooks=true",
   "-c", $hookConfig,
   "-c", $notifyConfig
@@ -245,11 +247,11 @@ if ($upstreamInfo.kind -eq "third_party") {
   $configArgs += @("-c", "model_context_window=200000")
 }
 
-$autoCompactTokenLimit = $env:HASH_CONTEXT_AUTO_COMPACT_TOKEN_LIMIT
+$autoCompactTokenLimit = $env:CODEX_CONTEXT_STUDIO_AUTO_COMPACT_TOKEN_LIMIT
 if ($autoCompactTokenLimit) {
   $autoCompactTokenLimit = $autoCompactTokenLimit.Trim()
   if ($autoCompactTokenLimit -notmatch '^\d+$') {
-    throw "HASH_CONTEXT_AUTO_COMPACT_TOKEN_LIMIT must be an integer token count."
+    throw "CODEX_CONTEXT_STUDIO_AUTO_COMPACT_TOKEN_LIMIT must be an integer token count."
   }
   $configArgs += @("-c", "model_auto_compact_token_limit=$autoCompactTokenLimit")
 }
@@ -355,12 +357,12 @@ function Get-CommandPath {
 }
 
 function Resolve-RealCodexCommand {
-  if ($env:HASH_CONTEXT_REAL_CODEX -and (Test-Path $env:HASH_CONTEXT_REAL_CODEX)) {
-    return (ConvertTo-FullPath $env:HASH_CONTEXT_REAL_CODEX)
+  if ($env:CODEX_CONTEXT_STUDIO_REAL_CODEX -and (Test-Path $env:CODEX_CONTEXT_STUDIO_REAL_CODEX)) {
+    return (ConvertTo-FullPath $env:CODEX_CONTEXT_STUDIO_REAL_CODEX)
   }
 
-  $defaultShimDir = Join-Path $env:USERPROFILE ".hash-context-codex\bin"
-  $shimDir = if ($env:HASH_CONTEXT_SHIM_DIR) { $env:HASH_CONTEXT_SHIM_DIR } else { $defaultShimDir }
+  $defaultShimDir = Join-Path $env:USERPROFILE ".codex-context-studio\bin"
+  $shimDir = if ($env:CODEX_CONTEXT_STUDIO_SHIM_DIR) { $env:CODEX_CONTEXT_STUDIO_SHIM_DIR } else { $defaultShimDir }
   $commands = @(Get-Command codex -All -ErrorAction SilentlyContinue)
   foreach ($commandInfo in $commands) {
     $candidate = Get-CommandPath $commandInfo
@@ -392,30 +394,30 @@ Stop-ProjectProcessOnPort -Port ([int] $backendPort)
 Stop-ProjectProcessOnPort -Port ([int] $frontendPort)
 Stop-ProjectProcessOnPort -Port ([int] $controlPort)
 
-Write-Host "[hash-context] starting local services and hidden context window..." -ForegroundColor Cyan
-$previousStartHidden = $env:HASH_CONTEXT_START_HIDDEN
-$previousControlPort = $env:HASH_CONTEXT_CONTROL_PORT
-$previousForceUrl = $env:HASH_CONTEXT_FORCE_UPSTREAM_BASE_URL
-$previousForceKey = $env:HASH_CONTEXT_FORCE_UPSTREAM_API_KEY
-$env:HASH_CONTEXT_START_HIDDEN = "1"
-$env:HASH_CONTEXT_CONTROL_PORT = $controlPort
+Write-Host "[codex-context-studio] starting local services and hidden context window..." -ForegroundColor Cyan
+$previousStartHidden = $env:CODEX_CONTEXT_STUDIO_START_HIDDEN
+$previousControlPort = $env:CODEX_CONTEXT_STUDIO_CONTROL_PORT
+$previousForceUrl = $env:CODEX_CONTEXT_STUDIO_FORCE_UPSTREAM_BASE_URL
+$previousForceKey = $env:CODEX_CONTEXT_STUDIO_FORCE_UPSTREAM_API_KEY
+$env:CODEX_CONTEXT_STUDIO_START_HIDDEN = "1"
+$env:CODEX_CONTEXT_STUDIO_CONTROL_PORT = $controlPort
 if ($upstreamInfo.kind -eq "third_party") {
-  $env:HASH_CONTEXT_FORCE_UPSTREAM_BASE_URL = $upstreamInfo.effective_base_url
-  $env:HASH_CONTEXT_FORCE_UPSTREAM_API_KEY = $upstreamInfo.api_key
+  $env:CODEX_CONTEXT_STUDIO_FORCE_UPSTREAM_BASE_URL = $upstreamInfo.effective_base_url
+  $env:CODEX_CONTEXT_STUDIO_FORCE_UPSTREAM_API_KEY = $upstreamInfo.api_key
 }
 $usesPackagedWindow = [bool](Get-PackagedWindowExe)
 $windowProcess = Start-ContextWindow
 if ($null -eq $previousStartHidden) {
-  Remove-Item Env:\HASH_CONTEXT_START_HIDDEN -ErrorAction SilentlyContinue
+  Remove-Item Env:\CODEX_CONTEXT_STUDIO_START_HIDDEN -ErrorAction SilentlyContinue
 } else {
-  $env:HASH_CONTEXT_START_HIDDEN = $previousStartHidden
+  $env:CODEX_CONTEXT_STUDIO_START_HIDDEN = $previousStartHidden
 }
 if ($null -eq $previousControlPort) {
-  Remove-Item Env:\HASH_CONTEXT_CONTROL_PORT -ErrorAction SilentlyContinue
+  Remove-Item Env:\CODEX_CONTEXT_STUDIO_CONTROL_PORT -ErrorAction SilentlyContinue
 } else {
-  $env:HASH_CONTEXT_CONTROL_PORT = $previousControlPort
+  $env:CODEX_CONTEXT_STUDIO_CONTROL_PORT = $previousControlPort
 }
-Write-Host "[hash-context] launcher pid: $($windowProcess.Id)"
+Write-Host "[codex-context-studio] launcher pid: $($windowProcess.Id)"
 
 Wait-HttpOk -Name "proxy" -Url "http://${serviceProbeHost}:$proxyPort/api/proxy/health" -TimeoutSeconds 30
 Wait-HttpOk -Name "backend" -Url "http://${serviceProbeHost}:$backendPort/api/health" -TimeoutSeconds 30
@@ -426,15 +428,15 @@ if ($usesPackagedWindow) {
 }
 Wait-HttpOk -Name "window-control" -Url "http://${loopbackHost}:$controlPort/health" -TimeoutSeconds 90
 
-Write-Host "[hash-context] starting Codex through local proxy..." -ForegroundColor Cyan
-Write-Host "[hash-context] base_url=http://${loopbackHost}:$proxyPort/v1"
+Write-Host "[codex-context-studio] starting Codex through local proxy..." -ForegroundColor Cyan
+Write-Host "[codex-context-studio] base_url=http://${loopbackHost}:$proxyPort/v1"
 if ($upstreamInfo.kind -eq "third_party") {
-  Write-Host "[hash-context] upstream: $($upstreamInfo.effective_base_url) (third-party)" -ForegroundColor Cyan
+  Write-Host "[codex-context-studio] upstream: $($upstreamInfo.effective_base_url) (third-party)" -ForegroundColor Cyan
 }
-Write-Host "[hash-context] type context or ctx inside Codex to open the workbench"
-Write-Host "[hash-context] if Codex says hooks need review, run /hooks and approve HashContext once"
-$electronLogPath = Join-Path (Get-HashContextLogDir) "electron-window.log"
-Write-Host "[hash-context] logs: $electronLogPath"
+Write-Host "[codex-context-studio] type context or ctx inside Codex to open the workbench"
+Write-Host "[codex-context-studio] if Codex says hooks need review, run /hooks and approve CodexContextStudio once"
+$electronLogPath = Join-Path (Get-CodexContextStudioLogDir) "electron-window.log"
+Write-Host "[codex-context-studio] logs: $electronLogPath"
 Write-Host ""
 
 $codexExitCode = 0
@@ -448,14 +450,14 @@ try {
     & taskkill /pid $windowProcess.Id /t /f | Out-Null
   }
   if ($null -eq $previousForceUrl) {
-    Remove-Item Env:\HASH_CONTEXT_FORCE_UPSTREAM_BASE_URL -ErrorAction SilentlyContinue
+    Remove-Item Env:\CODEX_CONTEXT_STUDIO_FORCE_UPSTREAM_BASE_URL -ErrorAction SilentlyContinue
   } else {
-    $env:HASH_CONTEXT_FORCE_UPSTREAM_BASE_URL = $previousForceUrl
+    $env:CODEX_CONTEXT_STUDIO_FORCE_UPSTREAM_BASE_URL = $previousForceUrl
   }
   if ($null -eq $previousForceKey) {
-    Remove-Item Env:\HASH_CONTEXT_FORCE_UPSTREAM_API_KEY -ErrorAction SilentlyContinue
+    Remove-Item Env:\CODEX_CONTEXT_STUDIO_FORCE_UPSTREAM_API_KEY -ErrorAction SilentlyContinue
   } else {
-    $env:HASH_CONTEXT_FORCE_UPSTREAM_API_KEY = $previousForceKey
+    $env:CODEX_CONTEXT_STUDIO_FORCE_UPSTREAM_API_KEY = $previousForceKey
   }
 }
 

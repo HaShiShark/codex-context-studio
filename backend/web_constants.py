@@ -13,10 +13,10 @@ from backend.codex_item_registry import CODEX_ITEM_REGISTRY
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REACT_DIST_DIR = REPO_ROOT / "react_app" / "dist"
 DEFAULT_PAGE = REACT_DIST_DIR / "index.html"
-DEFAULT_DATA_DIR = Path.home() / ".hash-context-codex"
-RAW_STATE_DIR = Path(os.getenv("HASH_DATA_DIR", str(DEFAULT_DATA_DIR))).expanduser()
+DEFAULT_DATA_DIR = Path.home() / ".codex-context-studio" / "shared"
+RAW_STATE_DIR = Path(os.getenv("CODEX_CONTEXT_STUDIO_DATA_DIR", str(DEFAULT_DATA_DIR))).expanduser()
 STATE_DIR = RAW_STATE_DIR if RAW_STATE_DIR.is_absolute() else (REPO_ROOT / RAW_STATE_DIR).resolve()
-STATE_FILE = STATE_DIR / "hash_web_state.json"
+STATE_FILE = STATE_DIR / "codex_context_studio_web_state.json"
 CODEX_LOCAL_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
 CONTEXT_REQUEST_DEBUG_FILE = STATE_DIR / "context_request_debug.ndjson"
 CONTEXT_EDIT_MARKERS_FILE = STATE_DIR / "context_edit_markers.json"

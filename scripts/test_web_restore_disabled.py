@@ -48,11 +48,11 @@ def _assert_bootstrap_has_no_restore_fields(payload: dict[str, object]) -> None:
 
 
 def main() -> None:
-    with tempfile.TemporaryDirectory(prefix="hash-web-restore-disabled-") as raw_tmp_dir:
+    with tempfile.TemporaryDirectory(prefix="studio-web-restore-disabled-") as raw_tmp_dir:
         tmp_dir = Path(raw_tmp_dir)
-        os.environ["HASH_DATA_DIR"] = str(tmp_dir / "state")
+        os.environ["CODEX_CONTEXT_STUDIO_DATA_DIR"] = str(tmp_dir / "state")
 
-        from backend.web_handler import HashHTTPRequestHandler
+        from backend.web_handler import StudioHTTPRequestHandler
         from backend.web_state import AppState
 
         app_state = AppState(_settings(tmp_dir))
@@ -99,7 +99,7 @@ def main() -> None:
         if not (session_dir / "workbench.jsonl").exists():
             raise AssertionError("workbench history file was not written")
 
-        routes = HashHTTPRequestHandler.__new__(HashHTTPRequestHandler)._post_routes()
+        routes = StudioHTTPRequestHandler.__new__(StudioHTTPRequestHandler)._post_routes()
         stale_routes = sorted(
             {
                 "/api/context-restore",
@@ -109,11 +109,11 @@ def main() -> None:
         )
         if stale_routes:
             raise AssertionError(f"stale routes are still registered: {stale_routes}")
-        if hasattr(HashHTTPRequestHandler, "_handle_context_restore_post"):
+        if hasattr(StudioHTTPRequestHandler, "_handle_context_restore_post"):
             raise AssertionError("context restore handler still exists")
-        if hasattr(HashHTTPRequestHandler, "_handle_context_undo_restore_post"):
+        if hasattr(StudioHTTPRequestHandler, "_handle_context_undo_restore_post"):
             raise AssertionError("context undo restore handler still exists")
-        if hasattr(HashHTTPRequestHandler, "_handle_proxy_session_reset_post"):
+        if hasattr(StudioHTTPRequestHandler, "_handle_proxy_session_reset_post"):
             raise AssertionError("proxy session reset handler still exists")
 
     print("web restore/revision disabled checks passed")

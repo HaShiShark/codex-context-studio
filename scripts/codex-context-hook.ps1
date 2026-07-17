@@ -8,14 +8,16 @@ try {
 } catch {
 }
 
-$loopbackHost = if ($env:HASH_CONTEXT_HOST) { $env:HASH_CONTEXT_HOST } else { "localhost" }
+$loopbackHost = if ($env:CODEX_CONTEXT_STUDIO_HOST) { $env:CODEX_CONTEXT_STUDIO_HOST } else { "localhost" }
 $serviceProbeHost = if ($loopbackHost -eq "localhost") { "127.0.0.1" } else { $loopbackHost }
-$proxyPort = if ($env:HASH_CONTEXT_PROXY_PORT) { $env:HASH_CONTEXT_PROXY_PORT } else { "8787" }
-$backendPort = if ($env:HASH_WEB_PORT) { $env:HASH_WEB_PORT } else { "8765" }
-$hashContextHome = Join-Path $env:USERPROFILE ".hash-context-codex"
+$proxyPort = if ($env:CODEX_CONTEXT_STUDIO_PROXY_PORT) { $env:CODEX_CONTEXT_STUDIO_PROXY_PORT } else { "8787" }
+$backendPort = if ($env:CODEX_CONTEXT_STUDIO_WEB_PORT) { $env:CODEX_CONTEXT_STUDIO_WEB_PORT } else { "8765" }
+$studioRoot = if ($env:CODEX_CONTEXT_STUDIO_ROOT) { $env:CODEX_CONTEXT_STUDIO_ROOT } else { Join-Path $env:USERPROFILE ".codex-context-studio" }
+$studioProfile = if ($env:CODEX_CONTEXT_STUDIO_PROFILE -eq "development") { "development" } else { "production" }
+$profileRoot = Join-Path $studioRoot $studioProfile
 
-function Get-HashContextLogDir {
-  $logDir = Join-Path $hashContextHome "logs"
+function Get-CodexContextStudioLogDir {
+  $logDir = Join-Path $profileRoot "logs"
   New-Item -ItemType Directory -Force -Path $logDir | Out-Null
   return $logDir
 }
@@ -32,7 +34,7 @@ function Write-HookLog {
     [string] $Message
   )
   try {
-    $logDir = Get-HashContextLogDir
+    $logDir = Get-CodexContextStudioLogDir
     Add-Content -Path (Join-Path $logDir "codex-context-hook.log") -Value "$((Get-Date).ToUniversalTime().ToString("o")) $Message" -Encoding UTF8
   } catch {
   }
@@ -40,7 +42,7 @@ function Write-HookLog {
 
 function Get-MainTurnStatePath {
   try {
-    $logDir = Get-HashContextLogDir
+    $logDir = Get-CodexContextStudioLogDir
     return (Join-Path $logDir "codex-main-turn.json")
   } catch {
     return ""
@@ -343,7 +345,7 @@ function Start-LocalCodexSessionSync {
   }
 
   try {
-    $logDir = Get-HashContextLogDir
+    $logDir = Get-CodexContextStudioLogDir
     $logPath = Join-Path $logDir "codex-context-hook.log"
     $escapedSessionId = $SessionId.Replace("'", "''")
     $escapedLogPath = $logPath.Replace("'", "''")
@@ -445,7 +447,7 @@ if ($commands -notcontains $prompt) {
   exit 0
 }
 
-$controlPort = $env:HASH_CONTEXT_CONTROL_PORT
+$controlPort = $env:CODEX_CONTEXT_STUDIO_CONTROL_PORT
 if (-not $controlPort) {
   $controlPort = "8790"
 }
@@ -469,12 +471,12 @@ try {
   Write-HookJson @{
     continue = $false
     decision = "block"
-    reason = "Opened Hash Context Workbench"
+    reason = "Opened Codex Context Studio Workbench"
     suppressOutput = $true
-    stopReason = "Opened Hash Context Workbench"
+    stopReason = "Opened Codex Context Studio Workbench"
   }
 } catch {
-  $reason = "Hash Context Workbench is not running: $($_.Exception.Message)"
+  $reason = "Codex Context Studio Workbench is not running: $($_.Exception.Message)"
   Write-HookJson @{
     continue = $false
     decision = "block"

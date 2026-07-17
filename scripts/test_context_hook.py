@@ -29,8 +29,8 @@ class ShowHandler(BaseHTTPRequestHandler):
 
 def run_hook(payload: dict[str, Any], *, port: int) -> dict[str, Any]:
     env = os.environ.copy()
-    env["HASH_CONTEXT_CONTROL_PORT"] = str(port)
-    env["HASH_CONTEXT_HOST"] = "127.0.0.1"
+    env["CODEX_CONTEXT_STUDIO_CONTROL_PORT"] = str(port)
+    env["CODEX_CONTEXT_STUDIO_HOST"] = "127.0.0.1"
     with tempfile.TemporaryDirectory() as temp_home:
         env["USERPROFILE"] = temp_home
         result = subprocess.run(

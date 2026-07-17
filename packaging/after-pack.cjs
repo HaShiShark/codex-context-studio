@@ -25,11 +25,11 @@ module.exports = async function afterPack(context) {
 
   const projectDir = context.packager.projectDir;
   const appInfo = context.packager.appInfo;
-  const productName = appInfo.productName || 'Codex Context Proxy';
+  const productName = appInfo.productName || 'Codex Context Studio';
   const productFilename = appInfo.productFilename || productName;
   const version = appInfo.version;
   const exePath = path.join(context.appOutDir, `${productFilename}.exe`);
-  const iconPath = path.join(projectDir, 'electron', 'assets', 'hash-icon.ico');
+  const iconPath = path.join(projectDir, 'electron', 'assets', 'codex-context-studio.ico');
   const rceditPath = path.join(projectDir, 'node_modules', 'electron-winstaller', 'vendor', 'rcedit.exe');
 
   assertFile(exePath, 'Packaged executable');

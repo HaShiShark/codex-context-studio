@@ -1017,51 +1017,17 @@ def context_record_overview(record: dict[str, object], *, node_number: int, sele
         "full_text": sanitize_text(record.get("text") or "") if role != "assistant" else "",
     }
 
-def context_workbench_suggestions_payload(session: SessionState) -> dict[str, object]:
-    nodes: list[dict[str, object]] = []
-    transcript = normalize_context_records(session.transcript)
-    node_locks = normalize_node_locks(getattr(session, "node_locks", {}))
-    locked_indexes = context_node_locked_indexes(transcript, node_locks)
-    display_number_by_raw_index = {
-        int(entry["raw_index"]): int(entry["node_number"])
-        for entry in editable_context_node_entries(transcript, node_locks)
-    }
-    stats_total_token_count = 0
-    stats_tool_token_count = 0
-
-    for index, record in enumerate(transcript):
-        node_number = display_number_by_raw_index.get(index, index + 1)
-        overview = context_record_overview(record, node_number=node_number)
-        token_count = int(overview.get("token_estimate") or 0)
-        tool_token_count = int(overview.get("tool_token_estimate") or 0)
-        stats_total_token_count += token_count
-        stats_tool_token_count += tool_token_count
-        if index in locked_indexes:
-            continue
-        nodes.append(
-            {
-                "node_index": index,
-                "node_number": node_number,
-                "role": sanitize_text(overview.get("role") or "").strip() or "assistant",
-                "token_count": token_count,
-                "tool_token_count": tool_token_count,
-                "preview": sanitize_text(overview.get("preview") or "").strip(),
-            }
-        )
-
-    nodes.sort(
-        key=lambda item: (
-            -int(item.get("token_count") or 0),
-            int(item.get("node_number") or 0),
-        )
-    )
-
+def context_review_transcript_stats(transcript: list[dict[str, object]]) -> dict[str, object]:
+    records = normalize_context_records(normalize_transcript(transcript))
+    token_count = 0
+    tool_token_count = 0
+    for record in records:
+        token_count += estimate_token_count(record_context_weight_source(record))
+        tool_token_count += estimate_token_count(record_context_tool_weight_source(record))
     return {
-        "stats": {
-            "total_token_count": stats_total_token_count,
-            "tool_token_count": stats_tool_token_count,
-        },
-        "nodes": sanitize_value(nodes),
+        "node_count": len(records),
+        "token_count": token_count,
+        "tool_token_count": tool_token_count,
     }
 
 def extract_text_from_provider_message_content(content: Any) -> str:
@@ -2231,16 +2197,25 @@ class ContextWorkbenchToolRegistry:
         self,
         draft: ContextWorkbenchDraft,
         session_title: str = "",
+        *,
+        review_mode: bool = False,
     ) -> None:
         self.draft = draft
         self._session_title = session_title
-        self._tools = {
-            definition.name: definition
-            for definition in [
+        self.review_mode = review_mode
+        self.review_rationale = ""
+        definitions = (
+            [self._build_write_nodes_tool()]
+            if review_mode
+            else [
                 self._build_get_nodes_tool(),
                 self._build_write_nodes_tool(),
                 self._build_write_items_tool(),
             ]
+        )
+        self._tools = {
+            definition.name: definition
+            for definition in definitions
         }
 
     @property
@@ -2321,6 +2296,14 @@ class ContextWorkbenchToolRegistry:
                     display_title="Write Nodes", display_detail="nothing to do",
                     display_result="Provide delete and/or inserts.", status="error",
                 )
+            if self.review_mode:
+                self.review_rationale = sanitize_text(arguments.get("review_rationale") or "").strip()
+                if not self.review_rationale:
+                    return ToolExecution(
+                        output_text='{"error":"review_rationale is required"}',
+                        display_title="Write Nodes", display_detail="missing review rationale",
+                        display_result="review_rationale is required for context review.", status="error",
+                    )
             result = self.draft.apply_write_nodes(delete_numbers, inserts)
             new_snapshot = self.draft.build_draft_snapshot_text(self._session_title)
             return ToolExecution(
@@ -2332,6 +2315,10 @@ class ContextWorkbenchToolRegistry:
         return ContextWorkbenchToolDefinition(
             name="write_nodes", label="Write Nodes",
             description=(
+                "Submit the complete selective-compression edit in one call. "
+                "All node numbers reference the initial transcript for this turn."
+                if self.review_mode
+                else
                 "Delete and/or insert nodes in the working snapshot. "
                 "All node numbers reference the initial snapshot for this turn. "
                 "Returns updated_snapshot — use it to confirm the result to the user."
@@ -2356,7 +2343,18 @@ class ContextWorkbenchToolRegistry:
                         },
                         "description": "Nodes to insert. Each is independent of deletions; after references the initial snapshot.",
                     },
+                    **(
+                        {
+                            "review_rationale": {
+                                "type": "string",
+                                "description": "User-facing proposal rationale: why this consolidation is useful, why it should not affect the current task, what important information remains, and any material risk. Use proposal language. Never mention node numbers, token counts, tools, or draft mechanics.",
+                            }
+                        }
+                        if self.review_mode
+                        else {}
+                    ),
                 },
+                "required": ["review_rationale"] if self.review_mode else [],
                 "additionalProperties": False,
             },
             handler=handler,
@@ -2544,7 +2542,17 @@ def attachment_inputs_from_records(attachments: list[dict[str, object]]) -> list
     return inputs
 
 def model_options(default_model: str, configured_models: list[str] | None = None) -> list[str]:
-    ordered = [default_model, *(configured_models or []), "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.2"]
+    ordered = [
+        default_model,
+        *(configured_models or []),
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.2",
+    ]
     unique_models: list[str] = []
     for model in ordered:
         safe_model = sanitize_text(model).strip()

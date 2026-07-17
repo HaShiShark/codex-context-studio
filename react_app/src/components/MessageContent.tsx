@@ -1,9 +1,16 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useState } from 'react';
 
+import AdditionalToolsContent from './AdditionalToolsContent';
 import MarkdownRenderer from './MarkdownRenderer';
+import {
+  buildAssistantRenderSegments,
+  projectActivityBlockTools,
+  type AssistantActivitySegment,
+} from '../assistantActivityDisplay';
 import type { AttachmentRecord, MessageBlock, MessageRecord, ToolEvent } from '../types';
 import type { UiLocale } from '../i18n';
 import { formatBytes } from '../utils';
+import { additionalToolsFromProviderItems } from '../additionalToolsDisplay';
 
 export type MessageContentVariant = 'default' | 'context-map';
 
@@ -110,6 +117,12 @@ function isShellToolEvent(event: ToolEvent) {
   return event.name === 'shell_command' || event.name === 'exec_command' || event.name === 'write_stdin';
 }
 
+function isCommandActivityEvent(event: ToolEvent) {
+  return isShellToolEvent(event)
+    || event.name === 'exec'
+    || event.metadata?.display_projection === 'exec_nested_call';
+}
+
 function parseWebSearchAction(event: ToolEvent): WebSearchAction | null {
   const { arguments: eventArguments } = event;
   let value: unknown = eventArguments;
@@ -197,7 +210,7 @@ function webSearchActionJson(action: WebSearchAction | null, detail: string) {
 }
 
 function toolGroupLabel(events: ToolEvent[], uiLocale: UiLocale) {
-  const allShellEvents = events.every(isShellToolEvent);
+  const allCommandEvents = events.every(isCommandActivityEvent);
   const allWebSearchEvents = events.every((event) => isWebSearchEvent(event));
 
   if (allWebSearchEvents) {
@@ -207,7 +220,7 @@ function toolGroupLabel(events: ToolEvent[], uiLocale: UiLocale) {
     return `网页搜索 ${events.length} 次`;
   }
 
-  if (allShellEvents) {
+  if (allCommandEvents) {
     if (uiLocale !== 'zh-CN') {
       return `Ran ${events.length} command${events.length === 1 ? '' : 's'}`;
     }
@@ -227,6 +240,12 @@ function shouldOpenToolGroupInitially(events: ToolEvent[]) {
   });
 }
 
+function shouldOpenActivityInitially(segment: AssistantActivitySegment) {
+  return shouldOpenToolGroupInitially(segment.toolEvents) || segment.blocks.some(
+    (block) => block.kind === 'thinking' || (block.kind === 'reasoning' && block.status === 'streaming'),
+  );
+}
+
 function normalizePreviewWhitespace(value: string) {
   return value.replace(/\r?\n+/g, ' ').replace(/\s+/g, ' ').trim();
 }
@@ -242,7 +261,7 @@ function stripMarkdownSyntax(value: string) {
       .replace(/^#{1,6}\s+/gm, '')
       .replace(/^\s*[-*+]\s+/gm, '')
       .replace(/^\s*\d+\.\s+/gm, '')
-      .replace(/[*_~]+/g, '')
+      .replace(/[*~]+/g, '')
       .replace(/\|/g, ' ')
       .replace(/---+/g, ' ')
       .replace(/<[^>]+>/g, ' '),
@@ -394,8 +413,10 @@ function ReasoningBlock({ block }: { block: Extract<MessageBlock, { kind: 'reaso
 
 function ToolInvocationItem({
   event,
+  uiLocale,
 }: {
   event: ToolEvent;
+  uiLocale: UiLocale;
 }) {
   const [isDetailOpen, setIsDetailOpen] = useState(false);
   const title = event.display_title || humanizeToolName(event.name);
@@ -405,7 +426,14 @@ function ToolInvocationItem({
   const isWebSearch = isWebSearchEvent(event, webSearchAction);
   const { prettyJson, shellOutput, exitCode } = parseToolOutput(event);
   const shellStatusText = event.status === 'error' ? '失败' : '成功';
-  const safeShellOutput = shellOutput || event.display_result || '命令已执行，但没有输出。';
+  const aggregateOutputOnly = event.metadata?.aggregate_output_only === true;
+  const safeShellOutput = shellOutput || event.display_result || (aggregateOutputOnly
+    ? uiLocale === 'zh-CN'
+      ? '单条输出未写入 transcript；结果由外层 exec 汇总。'
+      : 'Per-command output is not present in the transcript; the outer exec contains the aggregate result.'
+    : uiLocale === 'zh-CN'
+      ? '命令已执行，但没有输出。'
+      : 'The command completed without output.');
   const shellPreview = truncateSingleLine(detail);
   const webSearchDetail = webSearchDetailText(event, webSearchAction);
   const webSearchPreview = truncateSingleLine(webSearchDetail);
@@ -466,17 +494,29 @@ function ToolInvocationItem({
   );
 }
 
-function ToolInvocationGroup({
-  events,
+function AssistantActivityGroup({
+  segment,
   uiLocale,
   variant = 'default',
 }: {
-  events: ToolEvent[];
+  segment: AssistantActivitySegment;
   uiLocale: UiLocale;
   variant?: MessageContentVariant;
 }) {
-  const [isGroupOpen, setIsGroupOpen] = useState(() => shouldOpenToolGroupInitially(events));
+  const [isGroupOpen, setIsGroupOpen] = useState(() => shouldOpenActivityInitially(segment));
   const compactClassName = variant === 'context-map' ? ' inline-tool-block-compact' : '';
+
+  if (!segment.toolEvents.length) {
+    return segment.blocks.map((block, index) => {
+      if (block.kind === 'reasoning') {
+        return <ReasoningBlock block={block} key={`reasoning-${segment.startIndex}-${index}`} />;
+      }
+      if (block.kind === 'thinking') {
+        return <ThinkingBlock key={`thinking-${segment.startIndex}-${index}`} />;
+      }
+      return null;
+    });
+  }
 
   return (
     <div className={`inline-tool-block${compactClassName}`}>
@@ -485,18 +525,27 @@ function ToolInvocationGroup({
         type="button"
         onClick={() => setIsGroupOpen((previous) => !previous)}
       >
-        <span>{toolGroupLabel(events, uiLocale)}</span>
+        <span>{toolGroupLabel(segment.toolEvents, uiLocale)}</span>
         <i className="ph-light ph-caret-right inline-tool-group-chevron" />
       </button>
 
       <div className={`inline-tool-group-panel ${isGroupOpen ? 'open' : ''}`}>
         <div className="inline-tool-group-inner">
-          {events.map((event, index) => (
-            <ToolInvocationItem
-              event={event}
-              key={event.call_id || `${event.name || 'tool'}-${index}`}
-            />
-          ))}
+          {segment.blocks.flatMap((block, blockIndex) => {
+            if (block.kind === 'reasoning') {
+              return [<ReasoningBlock block={block} key={`reasoning-${segment.startIndex}-${blockIndex}`} />];
+            }
+            if (block.kind === 'thinking') {
+              return [<ThinkingBlock key={`thinking-${segment.startIndex}-${blockIndex}`} />];
+            }
+            return projectActivityBlockTools(block).map((event, eventIndex) => (
+              <ToolInvocationItem
+                event={event}
+                key={event.call_id || `${event.name || 'tool'}-${blockIndex}-${eventIndex}`}
+                uiLocale={uiLocale}
+              />
+            ));
+          })}
         </div>
       </div>
     </div>
@@ -505,54 +554,16 @@ function ToolInvocationGroup({
 
 function renderAssistantBlocks(record: MessageRecord, variant: MessageContentVariant, uiLocale: UiLocale) {
   if (record.blocks.length > 0) {
-    const renderedBlocks: ReactNode[] = [];
-    let pendingToolEvents: ToolEvent[] = [];
-    let pendingToolStartIndex = 0;
-
-    const flushToolEvents = () => {
-      if (!pendingToolEvents.length) {
-        return;
-      }
-
-      renderedBlocks.push(
-        <ToolInvocationGroup
-          events={pendingToolEvents}
-          key={`tool-group-${pendingToolStartIndex}-${pendingToolEvents.length}`}
+    return buildAssistantRenderSegments(record.blocks).map((segment) => segment.kind === 'text'
+      ? <MarkdownRenderer content={segment.block.text} key={`text-${segment.index}`} />
+      : (
+        <AssistantActivityGroup
+          key={`activity-${segment.startIndex}`}
+          segment={segment}
           uiLocale={uiLocale}
           variant={variant}
-        />,
-      );
-      pendingToolEvents = [];
-    };
-
-    record.blocks.forEach((block, index) => {
-      if (block.kind === 'tool') {
-        if (!pendingToolEvents.length) {
-          pendingToolStartIndex = index;
-        }
-        pendingToolEvents.push(block.tool_event);
-        return;
-      }
-
-      flushToolEvents();
-
-      if (block.kind === 'text') {
-        renderedBlocks.push(<MarkdownRenderer content={block.text} key={`text-${index}`} />);
-        return;
-      }
-
-      if (block.kind === 'reasoning') {
-        renderedBlocks.push(<ReasoningBlock block={block} key={`reasoning-${index}`} />);
-        return;
-      }
-
-      if (block.kind === 'thinking') {
-        renderedBlocks.push(<ThinkingBlock key={`thinking-${index}`} />);
-      }
-    });
-
-    flushToolEvents();
-    return renderedBlocks;
+        />
+      ));
   }
 
   if (record.text.trim()) {
@@ -590,6 +601,20 @@ export default function MessageContent({
   variant = 'default',
 }: MessageContentProps) {
   const isAssistant = record.role === 'an';
+  const additionalToolsItems = variant === 'context-map'
+    ? additionalToolsFromProviderItems(record.providerItems || [])
+    : [];
+
+  if (additionalToolsItems.length) {
+    return (
+      <>
+        {renderAttachments(record.attachments)}
+        {additionalToolsItems.map((item, index) => (
+          <AdditionalToolsContent item={item} key={`additional-tools-${index}`} uiLocale={uiLocale} />
+        ))}
+      </>
+    );
+  }
 
   return (
     <>

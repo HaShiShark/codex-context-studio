@@ -1,6 +1,6 @@
 {
-  "appId": "dev.codex-context.proxy",
-  "productName": "Codex Context Proxy",
+  "appId": "dev.codex-context.studio",
+  "productName": "Codex Context Studio",
   "asar": false,
   "directories": {
     "output": "release"
@@ -28,7 +28,7 @@
     }
   ],
   "win": {
-    "icon": "electron/assets/hash-icon.ico",
+    "icon": "electron/assets/codex-context-studio.ico",
     "target": [
       {
         "target": "nsis",
@@ -45,8 +45,8 @@
     "oneClick": false,
     "perMachine": false,
     "allowToChangeInstallationDirectory": true,
-    "installerIcon": "electron/assets/hash-icon.ico",
-    "uninstallerIcon": "electron/assets/hash-icon.ico",
+    "installerIcon": "electron/assets/codex-context-studio.ico",
+    "uninstallerIcon": "electron/assets/codex-context-studio.ico",
     "include": "packaging/windows/installer.nsh"
   }
 }

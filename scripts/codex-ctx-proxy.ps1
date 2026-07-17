@@ -9,12 +9,27 @@ param(
 $ErrorActionPreference = "Stop"
 
 $projectRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
-$defaultHome = Join-Path $env:USERPROFILE ".hash-context-codex"
-$shimDir = if ($env:HASH_CONTEXT_SHIM_DIR) { $env:HASH_CONTEXT_SHIM_DIR } else { Join-Path $defaultHome "bin" }
-$statePath = if ($env:HASH_CONTEXT_PROXY_SWITCH_STATE) { $env:HASH_CONTEXT_PROXY_SWITCH_STATE } else { Join-Path $defaultHome "codex-ctx-proxy.json" }
-$skipPathUpdate = ($env:HASH_CONTEXT_SKIP_PATH_UPDATE -eq "1")
-$proxyPort = if ($env:HASH_CONTEXT_PROXY_PORT) { $env:HASH_CONTEXT_PROXY_PORT } else { "8787" }
-$loopbackHost = if ($env:HASH_CONTEXT_HOST) { $env:HASH_CONTEXT_HOST } else { "localhost" }
+$defaultHome = Join-Path $env:USERPROFILE ".codex-context-studio"
+$requestedDevelopment = (
+  $env:CODEX_CONTEXT_STUDIO_PROFILE -eq "development" -or
+  ($Rest.Count -gt 0 -and $Rest[-1] -eq "dev")
+)
+$profile = if ($requestedDevelopment) { "development" } else { "production" }
+$profileSuffix = if ($requestedDevelopment) { " dev" } else { "" }
+$profileRoot = Join-Path $defaultHome $profile
+$registrationDir = Join-Path $defaultHome "registrations"
+$registrationPath = Join-Path $registrationDir "$profile.json"
+$providerId = "codex-context-studio"
+$hookName = if ($requestedDevelopment) { "codex-context-studio-hook-dev" } else { "codex-context-studio-hook" }
+$notifyName = if ($requestedDevelopment) { "codex-context-studio-notify-dev" } else { "codex-context-studio-notify" }
+$commandShimDir = if ($env:CODEX_CONTEXT_STUDIO_COMMAND_SHIM_DIR) { $env:CODEX_CONTEXT_STUDIO_COMMAND_SHIM_DIR } else { Join-Path $defaultHome "bin" }
+$shimDir = if ($env:CODEX_CONTEXT_STUDIO_SHIM_DIR) { $env:CODEX_CONTEXT_STUDIO_SHIM_DIR } else { Join-Path $profileRoot "bin" }
+$statePath = if ($env:CODEX_CONTEXT_STUDIO_PROXY_SWITCH_STATE) { $env:CODEX_CONTEXT_STUDIO_PROXY_SWITCH_STATE } else { Join-Path $profileRoot "state\codex-ctx-proxy.json" }
+$skipPathUpdate = ($env:CODEX_CONTEXT_STUDIO_SKIP_PATH_UPDATE -eq "1")
+$proxyPort = if ($env:CODEX_CONTEXT_STUDIO_PROXY_PORT) { $env:CODEX_CONTEXT_STUDIO_PROXY_PORT } else { "8787" }
+$loopbackHost = if ($env:CODEX_CONTEXT_STUDIO_HOST) { $env:CODEX_CONTEXT_STUDIO_HOST } else { "localhost" }
+$env:CODEX_CONTEXT_STUDIO_PROFILE = $profile
+$env:CODEX_CONTEXT_STUDIO_ROOT = $defaultHome
 
 function ConvertTo-FullPath {
   param([string] $Path)
@@ -49,12 +64,9 @@ function Test-ManagedShimPath {
     return $false
   }
 
-  if (Test-PathUnder -Path $Path -Parent $shimDir) {
-    return $true
-  }
-
-  $defaultShimDir = Join-Path $defaultHome "bin"
-  if (Test-PathUnder -Path $Path -Parent $defaultShimDir) {
+  if ((Test-PathUnder -Path $Path -Parent $commandShimDir) -or
+      (Test-PathUnder -Path $Path -Parent (Join-Path $defaultHome "production\bin")) -or
+      (Test-PathUnder -Path $Path -Parent (Join-Path $defaultHome "development\bin"))) {
     return $true
   }
 
@@ -77,7 +89,7 @@ function Read-SwitchState {
   try {
     return (Get-Content -Raw -Path $statePath | ConvertFrom-Json)
   } catch {
-    Write-Host "[hash-context] ignoring invalid switch state: $statePath" -ForegroundColor DarkYellow
+    Write-Host "[codex-context-studio] ignoring invalid switch state: $statePath" -ForegroundColor DarkYellow
     return $null
   }
 }
@@ -144,7 +156,7 @@ function Add-ShimDirToPath {
     return
   }
 
-  $fullShimDir = ConvertTo-FullPath $shimDir
+  $fullShimDir = ConvertTo-FullPath $commandShimDir
   $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
   $entries = @()
   if ($userPath) {
@@ -182,7 +194,7 @@ function Remove-ShimDirFromPath {
     return
   }
 
-  $fullShimDir = ConvertTo-FullPath $shimDir
+  $fullShimDir = ConvertTo-FullPath $commandShimDir
   $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
   if ($userPath) {
     $entries = @($userPath -split ";" | Where-Object {
@@ -197,93 +209,120 @@ function Remove-ShimDirFromPath {
   $env:Path = ($processEntries -join ";")
 }
 
-function Write-Shims {
-  New-Item -ItemType Directory -Force -Path $shimDir | Out-Null
-  $managerScript = (Join-Path $projectRoot.Path "scripts\codex-ctx-proxy.ps1")
-  $escapedManagerScript = $managerScript.Replace("'", "''")
-  Set-Content -Path (Join-Path $shimDir "current-project-root.txt") -Value $projectRoot.Path -Encoding UTF8
+function Save-ProfileRegistration {
+  New-Item -ItemType Directory -Force -Path $registrationDir | Out-Null
+  [ordered]@{
+    version = 1
+    profile = $profile
+    project_root = $projectRoot.Path
+    updated_at = (Get-Date).ToUniversalTime().ToString("o")
+  } | ConvertTo-Json -Depth 3 | Set-Content -Path $registrationPath -Encoding UTF8
+}
 
-  $psShim = @"
+function Write-Shims {
+  New-Item -ItemType Directory -Force -Path $commandShimDir | Out-Null
+  New-Item -ItemType Directory -Force -Path $shimDir | Out-Null
+  Save-ProfileRegistration
+
+  $routerShim = @'
+$ErrorActionPreference = "Stop"
+$studioHome = Join-Path $env:USERPROFILE ".codex-context-studio"
+$registrationDir = Join-Path $studioHome "registrations"
+$forwardArgs = @($args)
+$isControl = $forwardArgs.Count -ge 3 -and $forwardArgs[0] -eq "ctx" -and $forwardArgs[1] -in @("desktop", "proxy")
+$isDevelopment = $isControl -and $forwardArgs[-1] -eq "dev"
+$selectedProfile = if ($isDevelopment) { "development" } else { "production" }
+
+if ($isDevelopment) {
+  $forwardArgs = @($forwardArgs[0..($forwardArgs.Count - 2)])
+}
+
+function Read-Registration([string] $Profile) {
+  $path = Join-Path $registrationDir "$Profile.json"
+  if (-not (Test-Path -LiteralPath $path)) { return $null }
+  try { return Get-Content -Raw -LiteralPath $path | ConvertFrom-Json } catch { return $null }
+}
+
+if ($isControl -and $isDevelopment -and -not (Read-Registration "development")) {
+  $candidateRoot = (Get-Location).Path
+  $managerCandidate = Join-Path $candidateRoot "scripts\codex-ctx-proxy.ps1"
+  $packageCandidate = Join-Path $candidateRoot "package.json"
+  if ((Test-Path -LiteralPath $managerCandidate) -and (Test-Path -LiteralPath $packageCandidate)) {
+    try {
+      $package = Get-Content -Raw -LiteralPath $packageCandidate | ConvertFrom-Json
+      if ([string] $package.name -eq "codex-context-studio") {
+        New-Item -ItemType Directory -Force -Path $registrationDir | Out-Null
+        [ordered]@{ version = 1; profile = "development"; project_root = $candidateRoot; updated_at = (Get-Date).ToUniversalTime().ToString("o") } |
+          ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $registrationDir "development.json") -Encoding UTF8
+      }
+    } catch {}
+  }
+}
+
+if (-not $isControl) {
+  foreach ($candidateProfile in @("development", "production")) {
+    $candidateState = Join-Path $studioHome "$candidateProfile\state\codex-ctx-proxy.json"
+    if (Test-Path -LiteralPath $candidateState) {
+      try {
+        $candidatePayload = Get-Content -Raw -LiteralPath $candidateState | ConvertFrom-Json
+        if ([bool] $candidatePayload.enabled) { $selectedProfile = $candidateProfile; break }
+      } catch {}
+    }
+  }
+}
+
+$registration = Read-Registration $selectedProfile
+if (-not $registration -and -not $isControl) {
+  $registration = Read-Registration "production"
+  if (-not $registration) { $registration = Read-Registration "development"; $selectedProfile = "development" }
+}
+if (-not $registration) {
+  throw "Codex Context Studio $selectedProfile project is not registered. Run the matching install command from that project first."
+}
+
+$projectRoot = ([string] $registration.project_root).Trim()
+$manager = Join-Path $projectRoot "scripts\codex-ctx-proxy.ps1"
+if (-not (Test-Path -LiteralPath $manager)) {
+  throw "Codex Context Studio $selectedProfile project root is unavailable: $projectRoot"
+}
+
+$env:CODEX_CONTEXT_STUDIO_PROFILE = $selectedProfile
+$env:CODEX_CONTEXT_STUDIO_ROOT = $studioHome
+& powershell -NoProfile -ExecutionPolicy Bypass -File $manager __dispatch @forwardArgs
+exit $LASTEXITCODE
+'@
+  Set-Content -Path (Join-Path $commandShimDir "codex.ps1") -Value $routerShim -Encoding UTF8
+
+  $cmdShim = @'
+@echo off
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0codex.ps1" %*
+exit /b %ERRORLEVEL%
+'@
+  Set-Content -Path (Join-Path $commandShimDir "codex.cmd") -Value $cmdShim -Encoding ASCII
+
+  Set-Content -Path (Join-Path $shimDir "current-project-root.txt") -Value $projectRoot.Path -Encoding UTF8
+  $hookPsShim = @"
 `$ErrorActionPreference = "Stop"
-`$manager = '$escapedManagerScript'
-& powershell -NoProfile -ExecutionPolicy Bypass -File `$manager __dispatch @args
+`$env:CODEX_CONTEXT_STUDIO_PROFILE = '$profile'
+`$env:CODEX_CONTEXT_STUDIO_ROOT = '$($defaultHome.Replace("'", "''"))'
+`$env:CODEX_CONTEXT_STUDIO_DATA_DIR = '$((Join-Path $defaultHome "shared").Replace("'", "''"))'
+& '$($projectRoot.Path.Replace("'", "''"))\scripts\codex-context-hook.ps1'
 exit `$LASTEXITCODE
 "@
-  Set-Content -Path (Join-Path $shimDir "codex.ps1") -Value $psShim -Encoding UTF8
+  Set-Content -Path (Join-Path $shimDir "$hookName.ps1") -Value $hookPsShim -Encoding UTF8
+  Set-Content -Path (Join-Path $shimDir "$hookName.cmd") -Value "@echo off`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"%~dp0$hookName.ps1`"`r`nexit /b %ERRORLEVEL%`r`n" -Encoding ASCII
 
-  $cmdShim = @"
-@echo off
-powershell -NoProfile -ExecutionPolicy Bypass -File "$managerScript" __dispatch %*
-exit /b %ERRORLEVEL%
+  $notifyPsShim = @"
+param([Parameter(ValueFromRemainingArguments = `$true)][string[]] `$ForwardArgs)
+`$ErrorActionPreference = "Stop"
+`$env:CODEX_CONTEXT_STUDIO_PROFILE = '$profile'
+`$env:CODEX_CONTEXT_STUDIO_ROOT = '$($defaultHome.Replace("'", "''"))'
+`$env:CODEX_CONTEXT_STUDIO_DATA_DIR = '$((Join-Path $defaultHome "shared").Replace("'", "''"))'
+& '$($projectRoot.Path.Replace("'", "''"))\scripts\codex-turn-ended-notify.ps1' @ForwardArgs
+exit `$LASTEXITCODE
 "@
-  Set-Content -Path (Join-Path $shimDir "codex.cmd") -Value $cmdShim -Encoding ASCII
-
-  $hookPsShim = @'
-$ErrorActionPreference = "Stop"
-$rootFile = Join-Path $PSScriptRoot "current-project-root.txt"
-$statePath = if ($env:HASH_CONTEXT_PROXY_SWITCH_STATE) { $env:HASH_CONTEXT_PROXY_SWITCH_STATE } else { Join-Path $env:USERPROFILE ".hash-context-codex\codex-ctx-proxy.json" }
-$projectRoot = ""
-if (Test-Path -LiteralPath $rootFile) {
-  $projectRoot = (Get-Content -Raw -LiteralPath $rootFile).Trim()
-}
-if (-not $projectRoot -and (Test-Path -LiteralPath $statePath)) {
-  try {
-    $state = Get-Content -Raw -LiteralPath $statePath | ConvertFrom-Json
-    $projectRoot = ([string] $state.project_root).Trim()
-  } catch {
-  }
-}
-if (-not $projectRoot) {
-  throw "Hash Context project root was not found. Reinstall the codex ctx proxy shim."
-}
-$target = Join-Path $projectRoot "scripts\codex-context-hook.ps1"
-& $target
-exit $LASTEXITCODE
-'@
-  Set-Content -Path (Join-Path $shimDir "codex-context-hook.ps1") -Value $hookPsShim -Encoding UTF8
-
-  $hookCmdShim = @'
-@echo off
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0codex-context-hook.ps1"
-exit /b %ERRORLEVEL%
-'@
-  Set-Content -Path (Join-Path $shimDir "codex-context-hook.cmd") -Value $hookCmdShim -Encoding ASCII
-
-  $notifyPsShim = @'
-param(
-  [Parameter(ValueFromRemainingArguments = $true)]
-  [string[]] $ForwardArgs
-)
-
-$ErrorActionPreference = "Stop"
-$rootFile = Join-Path $PSScriptRoot "current-project-root.txt"
-$statePath = if ($env:HASH_CONTEXT_PROXY_SWITCH_STATE) { $env:HASH_CONTEXT_PROXY_SWITCH_STATE } else { Join-Path $env:USERPROFILE ".hash-context-codex\codex-ctx-proxy.json" }
-$projectRoot = ""
-if (Test-Path -LiteralPath $rootFile) {
-  $projectRoot = (Get-Content -Raw -LiteralPath $rootFile).Trim()
-}
-if (-not $projectRoot -and (Test-Path -LiteralPath $statePath)) {
-  try {
-    $state = Get-Content -Raw -LiteralPath $statePath | ConvertFrom-Json
-    $projectRoot = ([string] $state.project_root).Trim()
-  } catch {
-  }
-}
-if (-not $projectRoot) {
-  throw "Hash Context project root was not found. Reinstall the codex ctx proxy shim."
-}
-$target = Join-Path $projectRoot "scripts\codex-turn-ended-notify.ps1"
-& $target @ForwardArgs
-exit $LASTEXITCODE
-'@
-  Set-Content -Path (Join-Path $shimDir "codex-turn-ended-notify.ps1") -Value $notifyPsShim -Encoding UTF8
-
-  $notifyCmdShim = @'
-@echo off
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0codex-turn-ended-notify.ps1" %*
-exit /b %ERRORLEVEL%
-'@
-  Set-Content -Path (Join-Path $shimDir "codex-turn-ended-notify.cmd") -Value $notifyCmdShim -Encoding ASCII
+  Set-Content -Path (Join-Path $shimDir "$notifyName.ps1") -Value $notifyPsShim -Encoding UTF8
+  Set-Content -Path (Join-Path $shimDir "$notifyName.cmd") -Value "@echo off`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"%~dp0$notifyName.ps1`" %*`r`nexit /b %ERRORLEVEL%`r`n" -Encoding ASCII
 }
 
 function Ensure-Installed {
@@ -307,8 +346,8 @@ function Ensure-ControlShimInstalled {
   try {
     $realCodex = Find-RealCodex -Preferred $preferred
   } catch {
-    Write-Host "[hash-context] official Codex CLI was not found yet; control commands were installed anyway." -ForegroundColor DarkYellow
-    Write-Host "[hash-context] install the official Codex CLI before running: codex ctx proxy on" -ForegroundColor DarkYellow
+    Write-Host "[codex-context-studio] official Codex CLI was not found yet; control commands were installed anyway." -ForegroundColor DarkYellow
+    Write-Host "[codex-context-studio] install the official Codex CLI before running: codex ctx proxy on" -ForegroundColor DarkYellow
   }
   Write-Shims
   Save-SwitchState -Enabled $Enabled -RealCodex $realCodex
@@ -328,20 +367,22 @@ function Show-Status {
   $firstCodex = Get-Command codex -ErrorAction SilentlyContinue
   $firstCodexPath = if ($firstCodex) { Get-CommandPath $firstCodex } else { "" }
 
-  Write-Host "[hash-context] proxy switch: $(if ($enabled) { 'on' } else { 'off' })"
-  Write-Host "[hash-context] shim dir: $shimDir"
-  Write-Host "[hash-context] state: $statePath"
+  Write-Host "[codex-context-studio] profile: $profile"
+  Write-Host "[codex-context-studio] project root: $($projectRoot.Path)"
+  Write-Host "[codex-context-studio] proxy switch: $(if ($enabled) { 'on' } else { 'off' })"
+  Write-Host "[codex-context-studio] shim dir: $shimDir"
+  Write-Host "[codex-context-studio] state: $statePath"
   if ($realCodex) {
-    Write-Host "[hash-context] real codex: $realCodex"
+    Write-Host "[codex-context-studio] real codex: $realCodex"
   }
   if ($firstCodexPath) {
-    Write-Host "[hash-context] current codex resolves to: $firstCodexPath"
+    Write-Host "[codex-context-studio] current codex resolves to: $firstCodexPath"
   }
 }
 
 function Write-PathRefreshHint {
   if (-not $skipPathUpdate) {
-    Write-Host "[hash-context] open a new terminal for bare 'codex' commands to pick up the shim." -ForegroundColor DarkYellow
+    Write-Host "[codex-context-studio] open a new terminal for bare 'codex' commands to pick up the shim." -ForegroundColor DarkYellow
   }
 }
 
@@ -355,7 +396,7 @@ function Invoke-RealCodex {
 }
 
 function Test-DesktopHookConfigInstalled {
-  $desktopConfigPath = if ($env:HASH_CONTEXT_DESKTOP_CONFIG) { $env:HASH_CONTEXT_DESKTOP_CONFIG } else { Join-Path $env:USERPROFILE ".codex\config.toml" }
+  $desktopConfigPath = if ($env:CODEX_CONTEXT_STUDIO_DESKTOP_CONFIG) { $env:CODEX_CONTEXT_STUDIO_DESKTOP_CONFIG } else { Join-Path $env:USERPROFILE ".codex\config.toml" }
   if (-not (Test-Path $desktopConfigPath)) {
     return $false
   }
@@ -364,7 +405,7 @@ function Test-DesktopHookConfigInstalled {
     $configText = Get-Content -Raw -Path $desktopConfigPath
     return (
       $configText.Contains("hooks.UserPromptSubmit") -and
-      $configText.Contains("codex-context-hook.cmd")
+      $configText.Contains("$hookName.cmd")
     )
   } catch {
     return $false
@@ -372,17 +413,17 @@ function Test-DesktopHookConfigInstalled {
 }
 
 
-$topBeginManaged = "# BEGIN HASH_CONTEXT_DESKTOP_TOP"
-$topEndManaged = "# END HASH_CONTEXT_DESKTOP_TOP"
-$providerBeginManaged = "# BEGIN HASH_CONTEXT_DESKTOP_PROVIDER"
-$providerEndManaged = "# END HASH_CONTEXT_DESKTOP_PROVIDER"
+$topBeginManaged = "# BEGIN CODEX_CONTEXT_STUDIO_DESKTOP_TOP"
+$topEndManaged = "# END CODEX_CONTEXT_STUDIO_DESKTOP_TOP"
+$providerBeginManaged = "# BEGIN CODEX_CONTEXT_STUDIO_DESKTOP_PROVIDER"
+$providerEndManaged = "# END CODEX_CONTEXT_STUDIO_DESKTOP_PROVIDER"
 
 function Get-CodexUpstreamInfo {
-  $configPath = if ($env:HASH_CONTEXT_DESKTOP_CONFIG) { $env:HASH_CONTEXT_DESKTOP_CONFIG } else { Join-Path $env:USERPROFILE ".codex\config.toml" }
+  $configPath = if ($env:CODEX_CONTEXT_STUDIO_DESKTOP_CONFIG) { $env:CODEX_CONTEXT_STUDIO_DESKTOP_CONFIG } else { Join-Path $env:USERPROFILE ".codex\config.toml" }
 
   if (-not (Test-Path $configPath)) {
-    Write-Host "[hash-context] Codex config not found: $configPath" -ForegroundColor Red
-    Write-Host "[hash-context] Please run 'codex' first to login (codex login) or configure a third-party API provider." -ForegroundColor Red
+    Write-Host "[codex-context-studio] Codex config not found: $configPath" -ForegroundColor Red
+    Write-Host "[codex-context-studio] Please run 'codex' first to login (codex login) or configure a third-party API provider." -ForegroundColor Red
     throw "Codex config file not found."
   }
 
@@ -396,8 +437,8 @@ function Get-CodexUpstreamInfo {
   $content = [regex]::Replace($content, "(?ms)\r?\n?$escapedProviderBegin\r?\n.*?\r?\n$escapedProviderEnd\r?\n?", "`r`n")
 
   if (-not $content.Trim()) {
-    Write-Host "[hash-context] Codex config is empty after stripping managed blocks." -ForegroundColor Red
-    Write-Host "[hash-context] Please run 'codex' first to login (codex login) or configure a third-party API provider." -ForegroundColor Red
+    Write-Host "[codex-context-studio] Codex config is empty after stripping managed blocks." -ForegroundColor Red
+    Write-Host "[codex-context-studio] Please run 'codex' first to login (codex login) or configure a third-party API provider." -ForegroundColor Red
     throw "Codex config file is empty."
   }
 
@@ -428,7 +469,7 @@ function Get-CodexUpstreamInfo {
     $sectionPattern = "\[model_providers\.$escapedId\][\s\S]*?(?=\[\s*model_providers\.|\z)"
     $sectionMatch = [regex]::Match($content, $sectionPattern)
     if (-not $sectionMatch.Success) {
-      Write-Host "[hash-context] model_provider '$modelProvider' has no [model_providers.$modelProvider] section." -ForegroundColor Red
+      Write-Host "[codex-context-studio] model_provider '$modelProvider' has no [model_providers.$modelProvider] section." -ForegroundColor Red
       throw "Provider section [model_providers.$modelProvider] not found."
     }
 
@@ -548,7 +589,7 @@ function Get-CodexUpstreamInfo {
   }
 
   if (-not $upstreamKind) {
-    Write-Host "[hash-context] $errorMessage" -ForegroundColor Red
+    Write-Host "[codex-context-studio] $errorMessage" -ForegroundColor Red
     throw $errorMessage
   }
 
@@ -561,7 +602,7 @@ function Get-CodexUpstreamInfo {
   }
 }
 
-function Get-HashContextCodexArgs {
+function Get-CodexContextStudioCodexArgs {
   param([hashtable] $UpstreamInfo = $null)
 
   $requiresAuth = "true"
@@ -570,18 +611,18 @@ function Get-HashContextCodexArgs {
   }
 
   Write-Shims
-  $hookCommand = (Join-Path $shimDir "codex-context-hook.cmd").Replace("\", "/")
-  $hookConfig = "hooks.UserPromptSubmit=[{matcher='*',hooks=[{type='command',command='$hookCommand',timeout=10,statusMessage='HashContext'}]}]"
-  $notifyCommand = (Join-Path $shimDir "codex-turn-ended-notify.cmd").Replace("\", "/")
+  $hookCommand = (Join-Path $shimDir "$hookName.cmd").Replace("\", "/")
+  $hookConfig = "hooks.UserPromptSubmit=[{matcher='*',hooks=[{type='command',command='$hookCommand',timeout=10,statusMessage='CodexContextStudio'}]}]"
+  $notifyCommand = (Join-Path $shimDir "$notifyName.cmd").Replace("\", "/")
   $notifyConfig = "notify=['$notifyCommand']"
 
   $configArgs = @(
-    "-c", "model_providers.hash-context.name=Hash Context",
-    "-c", "model_providers.hash-context.base_url=http://${loopbackHost}:$proxyPort/v1",
-    "-c", "model_providers.hash-context.requires_openai_auth=$requiresAuth",
-    "-c", "model_providers.hash-context.wire_api=responses",
-    "-c", "model_providers.hash-context.supports_websockets=false",
-    "-c", "model_provider=hash-context",
+    "-c", "model_providers.$providerId.name=Codex Context Studio",
+    "-c", "model_providers.$providerId.base_url=http://${loopbackHost}:$proxyPort/v1",
+    "-c", "model_providers.$providerId.requires_openai_auth=$requiresAuth",
+    "-c", "model_providers.$providerId.wire_api=responses",
+    "-c", "model_providers.$providerId.supports_websockets=false",
+    "-c", "model_provider=$providerId",
     "-c", $notifyConfig
   )
 
@@ -596,11 +637,11 @@ function Get-HashContextCodexArgs {
     )
   }
 
-  $autoCompactTokenLimit = $env:HASH_CONTEXT_AUTO_COMPACT_TOKEN_LIMIT
+  $autoCompactTokenLimit = $env:CODEX_CONTEXT_STUDIO_AUTO_COMPACT_TOKEN_LIMIT
   if ($autoCompactTokenLimit) {
     $autoCompactTokenLimit = $autoCompactTokenLimit.Trim()
     if ($autoCompactTokenLimit -notmatch '^\d+$') {
-      throw "HASH_CONTEXT_AUTO_COMPACT_TOKEN_LIMIT must be an integer token count."
+      throw "CODEX_CONTEXT_STUDIO_AUTO_COMPACT_TOKEN_LIMIT must be an integer token count."
     }
     $configArgs += @("-c", "model_auto_compact_token_limit=$autoCompactTokenLimit")
   }
@@ -618,17 +659,17 @@ function Invoke-DesktopProxyCommand {
   return [int] $LASTEXITCODE
 }
 
-function Invoke-HashContextCodex {
+function Invoke-CodexContextStudioCodex {
   param([string[]] $ForwardArgs)
   $state = Read-SwitchState
   $preferred = if ($state -and $state.real_codex) { [string] $state.real_codex } else { "" }
   $realCodex = Find-RealCodex -Preferred $preferred
 
   $upstreamInfo = Get-CodexUpstreamInfo
-  $configArgs = Get-HashContextCodexArgs -UpstreamInfo $upstreamInfo
+  $configArgs = Get-CodexContextStudioCodexArgs -UpstreamInfo $upstreamInfo
 
-  $previousForceUrl = $env:HASH_CONTEXT_FORCE_UPSTREAM_BASE_URL
-  $previousForceKey = $env:HASH_CONTEXT_FORCE_UPSTREAM_API_KEY
+  $previousForceUrl = $env:CODEX_CONTEXT_STUDIO_FORCE_UPSTREAM_BASE_URL
+  $previousForceKey = $env:CODEX_CONTEXT_STUDIO_FORCE_UPSTREAM_API_KEY
 
   $localNoProxy = "$loopbackHost,localhost,127.0.0.1,::1"
   $previousNoProxy = $env:NO_PROXY
@@ -637,9 +678,9 @@ function Invoke-HashContextCodex {
   $env:no_proxy = if ($env:no_proxy) { "$localNoProxy,$env:no_proxy" } else { $localNoProxy }
 
   if ($upstreamInfo.kind -eq "third_party") {
-    $env:HASH_CONTEXT_FORCE_UPSTREAM_BASE_URL = $upstreamInfo.effective_base_url
-    $env:HASH_CONTEXT_FORCE_UPSTREAM_API_KEY = $upstreamInfo.api_key
-    Write-Host "[hash-context] upstream: $($upstreamInfo.effective_base_url) (third-party)" -ForegroundColor Cyan
+    $env:CODEX_CONTEXT_STUDIO_FORCE_UPSTREAM_BASE_URL = $upstreamInfo.effective_base_url
+    $env:CODEX_CONTEXT_STUDIO_FORCE_UPSTREAM_API_KEY = $upstreamInfo.api_key
+    Write-Host "[codex-context-studio] upstream: $($upstreamInfo.effective_base_url) (third-party)" -ForegroundColor Cyan
   }
 
   try {
@@ -647,14 +688,14 @@ function Invoke-HashContextCodex {
     exit $LASTEXITCODE
   } finally {
     if ($null -eq $previousForceUrl) {
-      Remove-Item Env:\HASH_CONTEXT_FORCE_UPSTREAM_BASE_URL -ErrorAction SilentlyContinue
+      Remove-Item Env:\CODEX_CONTEXT_STUDIO_FORCE_UPSTREAM_BASE_URL -ErrorAction SilentlyContinue
     } else {
-      $env:HASH_CONTEXT_FORCE_UPSTREAM_BASE_URL = $previousForceUrl
+      $env:CODEX_CONTEXT_STUDIO_FORCE_UPSTREAM_BASE_URL = $previousForceUrl
     }
     if ($null -eq $previousForceKey) {
-      Remove-Item Env:\HASH_CONTEXT_FORCE_UPSTREAM_API_KEY -ErrorAction SilentlyContinue
+      Remove-Item Env:\CODEX_CONTEXT_STUDIO_FORCE_UPSTREAM_API_KEY -ErrorAction SilentlyContinue
     } else {
-      $env:HASH_CONTEXT_FORCE_UPSTREAM_API_KEY = $previousForceKey
+      $env:CODEX_CONTEXT_STUDIO_FORCE_UPSTREAM_API_KEY = $previousForceKey
     }
     if ($null -eq $previousNoProxy) {
       Remove-Item Env:\NO_PROXY -ErrorAction SilentlyContinue
@@ -669,6 +710,30 @@ function Invoke-HashContextCodex {
   }
 }
 
+function Remove-ProfileInstallation {
+  $desktopStatePath = Join-Path $profileRoot "state\desktop.json"
+  $desktopEnabled = $false
+  if (Test-Path -LiteralPath $desktopStatePath) {
+    try {
+      $desktopState = Get-Content -Raw -LiteralPath $desktopStatePath | ConvertFrom-Json
+      $desktopEnabled = [bool] $desktopState.enabled
+    } catch {}
+  }
+  if ($desktopEnabled) {
+    Invoke-DesktopProxyCommand -DesktopCommand "off" | Out-Null
+  }
+  Remove-Item -LiteralPath $profileRoot -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $registrationPath -Force -ErrorAction SilentlyContinue
+
+  $remainingRegistrations = @(Get-ChildItem -LiteralPath $registrationDir -Filter "*.json" -File -ErrorAction SilentlyContinue)
+  if ($remainingRegistrations.Count -eq 0) {
+    Remove-Item -LiteralPath $commandShimDir -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-ShimDirFromPath
+  }
+
+  Write-Host "[codex-context-studio] removed $profile registration and shims"
+}
+
 function Invoke-Dispatch {
   param([string[]] $ForwardArgs)
 
@@ -680,9 +745,9 @@ function Invoke-Dispatch {
         if ($desktopExitCode -ne 0) {
           exit $desktopExitCode
         }
-        Write-Host "[hash-context] codex ctx proxy on"
-        Write-Host "[hash-context] persistent proxy services are running"
-        Write-Host "[hash-context] real codex: $realCodex"
+        Write-Host "[codex-context-studio] codex ctx proxy on"
+        Write-Host "[codex-context-studio] persistent proxy services are running"
+        Write-Host "[codex-context-studio] real codex: $realCodex"
         exit 0
       }
       "off" {
@@ -691,9 +756,9 @@ function Invoke-Dispatch {
         if ($desktopExitCode -ne 0) {
           exit $desktopExitCode
         }
-        Write-Host "[hash-context] codex ctx proxy off"
-        Write-Host "[hash-context] persistent proxy services are stopped"
-        Write-Host "[hash-context] codex now passes through to: $realCodex"
+        Write-Host "[codex-context-studio] codex ctx proxy off"
+        Write-Host "[codex-context-studio] persistent proxy services are stopped"
+        Write-Host "[codex-context-studio] codex now passes through to: $realCodex"
         exit 0
       }
       "status" {
@@ -701,28 +766,28 @@ function Invoke-Dispatch {
         exit 0
       }
       "uninstall" {
-        Invoke-DesktopProxyCommand -DesktopCommand "off" | Out-Null
-        Remove-Item -Path $shimDir -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item -Path $statePath -Force -ErrorAction SilentlyContinue
-        Remove-ShimDirFromPath
-        Write-Host "[hash-context] codex ctx proxy shim removed"
+        Remove-ProfileInstallation
         exit 0
       }
       default {
-        Write-Host "Usage: codex ctx proxy <on|off|status|uninstall>" -ForegroundColor Red
+        Write-Host "Usage: codex ctx proxy <on|off|status|uninstall>$profileSuffix" -ForegroundColor Red
         exit 2
       }
     }
   }
 
   if ($ForwardArgs.Count -ge 3 -and $ForwardArgs[0] -eq "ctx" -and $ForwardArgs[1] -eq "desktop") {
+    if ($ForwardArgs[2] -eq "uninstall") {
+      Remove-ProfileInstallation
+      exit 0
+    }
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $projectRoot.Path "scripts\codex-desktop-proxy.ps1") $ForwardArgs[2]
     exit $LASTEXITCODE
   }
 
   $state = Read-SwitchState
   if ($state -and [bool] $state.enabled) {
-    Invoke-HashContextCodex -ForwardArgs $ForwardArgs
+    Invoke-CodexContextStudioCodex -ForwardArgs $ForwardArgs
   }
 
   Invoke-RealCodex -ForwardArgs $ForwardArgs
@@ -733,12 +798,12 @@ switch ($Command) {
     $state = Read-SwitchState
     $enabled = if ($state) { [bool] $state.enabled } else { $false }
     $realCodex = Ensure-ControlShimInstalled -Enabled $enabled
-    Write-Host "[hash-context] installed codex ctx proxy shim"
+    Write-Host "[codex-context-studio] installed $profile codex ctx proxy shim"
     if ($realCodex) {
-      Write-Host "[hash-context] real codex: $realCodex"
+      Write-Host "[codex-context-studio] real codex: $realCodex"
     }
-    Write-Host "[hash-context] after opening a new terminal, run: codex ctx proxy on"
-    Write-Host "[hash-context] proxy stays off until you enable it."
+    Write-Host "[codex-context-studio] after opening a new terminal, run: codex ctx proxy on$profileSuffix"
+    Write-Host "[codex-context-studio] proxy stays off until you enable it."
     Write-PathRefreshHint
     break
   }
@@ -748,9 +813,9 @@ switch ($Command) {
     if ($desktopExitCode -ne 0) {
       exit $desktopExitCode
     }
-    Write-Host "[hash-context] codex ctx proxy on"
-    Write-Host "[hash-context] persistent proxy services are running"
-    Write-Host "[hash-context] real codex: $realCodex"
+    Write-Host "[codex-context-studio] codex ctx proxy on"
+    Write-Host "[codex-context-studio] persistent proxy services are running"
+    Write-Host "[codex-context-studio] real codex: $realCodex"
     Write-PathRefreshHint
     break
   }
@@ -760,9 +825,9 @@ switch ($Command) {
     if ($desktopExitCode -ne 0) {
       exit $desktopExitCode
     }
-    Write-Host "[hash-context] codex ctx proxy off"
-    Write-Host "[hash-context] persistent proxy services are stopped"
-    Write-Host "[hash-context] codex now passes through to: $realCodex"
+    Write-Host "[codex-context-studio] codex ctx proxy off"
+    Write-Host "[codex-context-studio] persistent proxy services are stopped"
+    Write-Host "[codex-context-studio] codex now passes through to: $realCodex"
     break
   }
   "status" {
@@ -770,11 +835,7 @@ switch ($Command) {
     break
   }
   "uninstall" {
-    Invoke-DesktopProxyCommand -DesktopCommand "off" | Out-Null
-    Remove-Item -Path $shimDir -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item -Path $statePath -Force -ErrorAction SilentlyContinue
-    Remove-ShimDirFromPath
-    Write-Host "[hash-context] codex ctx proxy shim removed"
+    Remove-ProfileInstallation
     break
   }
   "__dispatch" {
@@ -782,8 +843,8 @@ switch ($Command) {
     break
   }
   default {
-    Write-Host "Usage: codex-ctx-proxy.ps1 <install|on|off|status|uninstall>" -ForegroundColor Red
-    Write-Host "After install, use: codex ctx proxy <on|off|status|uninstall>"
+    Write-Host "Usage: codex-ctx-proxy.ps1 <install|on|off|status|uninstall>$profileSuffix" -ForegroundColor Red
+    Write-Host "After install, use: codex ctx proxy <on|off|status|uninstall>$profileSuffix"
     exit 2
   }
 }
