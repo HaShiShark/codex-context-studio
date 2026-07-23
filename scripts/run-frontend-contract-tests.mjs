@@ -28,16 +28,19 @@ const compile = spawnSync(
     outDir,
     'react_app/src/utils.ts',
     'react_app/src/contextTokenWeight.ts',
+    'react_app/src/conversationTokenCounts.ts',
     'react_app/src/additionalToolsDisplay.ts',
     'react_app/src/types.ts',
     'react_app/src/api.ts',
     'react_app/src/execToolDisplay.ts',
     'react_app/src/assistantActivityDisplay.ts',
+    'react_app/src/components/ContextWorkbench.helpers.ts',
     'react_app/src/api.contract.test.ts',
     'react_app/src/execToolDisplay.contract.test.ts',
     'react_app/src/assistantActivityDisplay.contract.test.ts',
     'react_app/src/additionalToolsDisplay.contract.test.ts',
     'react_app/src/utils.contract.test.ts',
+    'react_app/src/components/ContextWorkbench.helpers.contract.test.ts',
   ],
   { stdio: 'inherit', shell: false },
 );
@@ -66,6 +69,19 @@ if (runApi.error) {
 }
 if ((runApi.status ?? 1) !== 0) {
   process.exit(runApi.status ?? 1);
+}
+
+const runContextWorkbenchHelpers = spawnSync(
+  'node',
+  [`${outDir}/react_app/src/components/ContextWorkbench.helpers.contract.test.js`],
+  { stdio: 'inherit', shell: false },
+);
+if (runContextWorkbenchHelpers.error) {
+  console.error(runContextWorkbenchHelpers.error.message);
+  process.exit(1);
+}
+if ((runContextWorkbenchHelpers.status ?? 1) !== 0) {
+  process.exit(runContextWorkbenchHelpers.status ?? 1);
 }
 
 const runAssistantActivity = spawnSync(

@@ -7,6 +7,7 @@ import {
   getContextWeightSource,
 } from './contextTokenWeight';
 import type { ProviderItem, TranscriptNode } from './types';
+import { enrichConversationTokenCounts } from './conversationTokenCounts';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -316,7 +317,40 @@ function testContextMapNodeLocksDriveDisplayNumbers(): void {
   assertEqual(lockedUserMeta[2].displayNodeNumber, 1, 'unlocked nodes are renumbered after a locked normal node');
 }
 
-function main(): void {
+async function testExactTokenCountsReplaceLocalEstimatesByNodeId(): Promise<void> {
+  const conversation = normalizeConversation([
+    node('node-user', 'user', [{ type: 'message', role: 'user', content: 'hello' }]),
+    node('node-assistant', 'assistant', [{ type: 'message', role: 'assistant', content: 'world' }]),
+  ]);
+  const originalFetch = globalThis.fetch;
+  let requestBody = '';
+  globalThis.fetch = async (_input, init) => {
+    requestBody = String(init?.body || '');
+    return new Response(
+      JSON.stringify({
+        items: [
+          { id: 'node-assistant', tokens: 23, tool_tokens: 7 },
+          { id: 'node-user', tokens: 11, tool_tokens: 0 },
+        ],
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    );
+  };
+
+  try {
+    const enriched = await enrichConversationTokenCounts(conversation);
+    const sentItems = JSON.parse(requestBody).items as Array<{ id: string }>;
+    assertEqual(sentItems[0].id, 'node-user', 'sends stable transcript node ids to the backend');
+    assertEqual(enriched[0].tokenEstimate, 11, 'maps exact text tokens back by node id');
+    assertEqual(enriched[1].tokenEstimate, 23, 'does not depend on response ordering');
+    assertEqual(enriched[1].toolTokenEstimate, 7, 'keeps exact tool token counts');
+    assertEqual(getContextTokenCount(enriched[0]), 11, 'context weight prefers the exact backend count');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+async function main(): Promise<void> {
   testNormalizeConversationKeepsProviderItemContract();
   testProviderItemRegistryDrivesToolPairingAndDisplayHints();
   testProviderItemTypesAreCaseAndSeparatorSensitive();
@@ -324,7 +358,11 @@ function main(): void {
   testImageDataUrlsDoNotEnterContextWeightText();
   testAdditionalToolsUseReadableDisplayProjection();
   testContextMapNodeLocksDriveDisplayNumbers();
+  await testExactTokenCountsReplaceLocalEstimatesByNodeId();
   console.log('ok - normalizeConversation contract tests passed');
 }
 
-main();
+main().catch((error) => {
+  console.error(error);
+  throw error;
+});

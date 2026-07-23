@@ -66,7 +66,7 @@ Cursor 是代理与 Codex 下一轮 input 计算差异的机器锚点。它需�
 - 前端围绕当前 transcript 数据模型设计，不兼容已移除的旧状态 API。
 - 上下文地图必须忠实展示消息、reasoning、工具调用、工具输出、additional tools 和未知 provider item。
 - 为可读性生成的分组、摘要和结构化视图只是展示投影，绝不写回 provider item。
-- Token 权重以原始 provider item 为依据，不以展示摘要为依据。
+- Token 权重以原始 provider item 为依据，不以展示摘要为依据。前端可先显示轻量估算，但最终权重由 Python 后端的统一 tokenizer 批量校正，避免浏览器和代理产生两套计数事实。
 
 ## 启动、配置和存储
 

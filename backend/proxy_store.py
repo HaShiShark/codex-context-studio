@@ -192,6 +192,14 @@ def first_usage_int(record: dict[str, Any], *keys: str) -> int:
     return 0
 
 
+def usage_mapping(record: dict[str, Any], *keys: str) -> dict[str, Any]:
+    for key in keys:
+        value = record.get(key)
+        if isinstance(value, dict):
+            return value
+    return {}
+
+
 GPT56_SOL_INPUT_USD_PER_MILLION = 5.0
 GPT56_SOL_CACHED_INPUT_USD_PER_MILLION = 0.5
 GPT56_SOL_OUTPUT_USD_PER_MILLION = 30.0
@@ -217,6 +225,7 @@ def empty_usage_bucket() -> dict[str, Any]:
         "request_count": 0,
         "input_tokens": 0,
         "cached_input_tokens": 0,
+        "cache_write_tokens": 0,
         "non_cached_input_tokens": 0,
         "output_tokens": 0,
         "reasoning_tokens": 0,
@@ -227,40 +236,156 @@ def empty_usage_bucket() -> dict[str, Any]:
     }
 
 
-def normalize_usage_payload(raw_usage: Any) -> dict[str, Any] | None:
+def normalize_usage_payload(
+    raw_usage: Any,
+    *,
+    provider_type: str = "",
+) -> dict[str, Any] | None:
     if not isinstance(raw_usage, dict):
         return None
 
-    input_details = raw_usage.get("input_tokens_details") or raw_usage.get("prompt_tokens_details")
-    if not isinstance(input_details, dict):
-        input_details = {}
-    output_details = raw_usage.get("output_tokens_details") or raw_usage.get("completion_tokens_details")
-    if not isinstance(output_details, dict):
-        output_details = {}
-
-    input_tokens = first_usage_int(raw_usage, "input_tokens", "prompt_tokens")
-    output_tokens = first_usage_int(raw_usage, "output_tokens", "completion_tokens")
-    cached_input_tokens = first_usage_int(
+    normalized_provider_type = provider_type.strip().lower().replace("-", "_")
+    input_details = usage_mapping(
         raw_usage,
-        "cached_input_tokens",
-        "cache_read_input_tokens",
-        "cached_tokens",
+        "input_tokens_details",
+        "prompt_tokens_details",
+        "inputTokensDetails",
+        "promptTokensDetails",
+    )
+    output_details = usage_mapping(
+        raw_usage,
+        "output_tokens_details",
+        "completion_tokens_details",
+        "outputTokensDetails",
+        "completionTokensDetails",
+    )
+
+    if normalized_provider_type in {"claude", "anthropic"}:
+        # Anthropic reports uncached, cache-write, and cache-read input as
+        # separate counters. Their sum is the effective input seen by the
+        # model; only cache reads use the cached-input reference rate.
+        cache_creation_tokens = first_usage_int(
+            raw_usage,
+            "cache_creation_input_tokens",
+            "cacheCreationInputTokens",
+        )
+        cached_input_tokens = first_usage_int(
+            raw_usage,
+            "cache_read_input_tokens",
+            "cacheReadInputTokens",
+        )
+        input_tokens = (
+            first_usage_int(raw_usage, "input_tokens", "inputTokens")
+            + cache_creation_tokens
+            + cached_input_tokens
+        )
+        output_tokens = first_usage_int(raw_usage, "output_tokens", "outputTokens")
+        reasoning_tokens = first_usage_int(
+            raw_usage,
+            "reasoning_tokens",
+            "reasoningTokens",
+        ) or first_usage_int(
+            output_details,
+            "thinking_tokens",
+            "thinkingTokens",
+        )
+        total_tokens = first_usage_int(raw_usage, "total_tokens", "totalTokens") or input_tokens + output_tokens
+    elif normalized_provider_type in {"gemini", "google", "google_gemini"}:
+        prompt_tokens = first_usage_int(
+            raw_usage,
+            "prompt_token_count",
+            "promptTokenCount",
+        )
+        candidate_tokens = first_usage_int(
+            raw_usage,
+            "candidates_token_count",
+            "candidatesTokenCount",
+        )
+        reasoning_tokens = first_usage_int(
+            raw_usage,
+            "thoughts_token_count",
+            "thoughtsTokenCount",
+        )
+        output_tokens = candidate_tokens + reasoning_tokens
+        total_tokens = first_usage_int(
+            raw_usage,
+            "total_token_count",
+            "totalTokenCount",
+        ) or prompt_tokens + output_tokens
+        # toolUsePromptTokenCount is an observation breakdown; the official
+        # total remains prompt + thoughts + candidates, so it must not be
+        # added to the billable input a second time.
+        input_tokens = prompt_tokens
+        cached_input_tokens = first_usage_int(
+            raw_usage,
+            "cached_content_token_count",
+            "cachedContentTokenCount",
+        )
+    else:
+        # OpenAI Responses and Chat Completions use the two pairs below.
+        # Keeping both spellings also supports SDK objects converted to dicts
+        # and OpenAI-compatible endpoints that emit camelCase JSON.
+        input_tokens = first_usage_int(
+            raw_usage,
+            "input_tokens",
+            "prompt_tokens",
+            "inputTokens",
+            "promptTokens",
+        )
+        output_tokens = first_usage_int(
+            raw_usage,
+            "output_tokens",
+            "completion_tokens",
+            "outputTokens",
+            "completionTokens",
+        )
+        cached_input_tokens = first_usage_int(
+            raw_usage,
+            "cached_input_tokens",
+            "cache_read_input_tokens",
+            "cached_tokens",
+            "cachedInputTokens",
+            "cacheReadInputTokens",
+            "cachedTokens",
+        ) or first_usage_int(
+            input_details,
+            "cached_tokens",
+            "cached_input_tokens",
+            "cache_read_input_tokens",
+            "cachedTokens",
+            "cachedInputTokens",
+            "cacheReadInputTokens",
+        )
+        reasoning_tokens = first_usage_int(
+            raw_usage,
+            "reasoning_tokens",
+            "reasoning_output_tokens",
+            "reasoningTokens",
+            "reasoningOutputTokens",
+        ) or first_usage_int(
+            output_details,
+            "reasoning_tokens",
+            "reasoning_output_tokens",
+            "reasoningTokens",
+            "reasoningOutputTokens",
+        )
+        total_tokens = first_usage_int(
+            raw_usage,
+            "total_tokens",
+            "totalTokens",
+        ) or input_tokens + output_tokens
+
+    cache_write_tokens = first_usage_int(
+        raw_usage,
+        "cache_creation_input_tokens",
+        "cacheCreationInputTokens",
+        "cache_write_tokens",
+        "cacheWriteTokens",
     ) or first_usage_int(
         input_details,
-        "cached_tokens",
-        "cached_input_tokens",
-        "cache_read_input_tokens",
+        "cache_write_tokens",
+        "cacheWriteTokens",
     )
-    reasoning_tokens = first_usage_int(
-        raw_usage,
-        "reasoning_tokens",
-        "reasoning_output_tokens",
-    ) or first_usage_int(
-        output_details,
-        "reasoning_tokens",
-        "reasoning_output_tokens",
-    )
-    total_tokens = first_usage_int(raw_usage, "total_tokens") or input_tokens + output_tokens
     if not any((input_tokens, output_tokens, cached_input_tokens, reasoning_tokens, total_tokens)):
         return None
 
@@ -269,6 +394,7 @@ def normalize_usage_payload(raw_usage: Any) -> dict[str, Any] | None:
         {
             "input_tokens": input_tokens,
             "cached_input_tokens": min(cached_input_tokens, input_tokens) if input_tokens else cached_input_tokens,
+            "cache_write_tokens": cache_write_tokens,
             "output_tokens": output_tokens,
             "reasoning_tokens": reasoning_tokens,
             "total_tokens": total_tokens,
@@ -287,14 +413,24 @@ def normalize_usage_payload(raw_usage: Any) -> dict[str, Any] | None:
     return bucket
 
 
-def usage_event(kind: str, model: str, raw_usage: Any) -> dict[str, Any] | None:
-    usage = normalize_usage_payload(raw_usage)
+def usage_event(
+    kind: str,
+    model: str,
+    raw_usage: Any,
+    *,
+    provider_id: str = "",
+    provider_type: str = "",
+) -> dict[str, Any] | None:
+    usage = normalize_usage_payload(raw_usage, provider_type=provider_type)
     if usage is None:
         return None
     return {
         "created_at": utc_timestamp(),
         "kind": kind,
         "model": model.strip() or "unknown",
+        "provider_id": provider_id.strip(),
+        "provider_type": provider_type.strip(),
+        "provider_raw": copy.deepcopy(raw_usage),
         "usage": usage,
     }
 
@@ -304,12 +440,13 @@ def add_usage_to_bucket(bucket: dict[str, Any], usage: dict[str, Any], created_a
     for key in (
         "input_tokens",
         "cached_input_tokens",
+        "cache_write_tokens",
         "non_cached_input_tokens",
         "output_tokens",
         "reasoning_tokens",
         "total_tokens",
     ):
-        bucket[key] += usage_int(usage.get(key))
+        bucket[key] = usage_int(bucket.get(key)) + usage_int(usage.get(key))
     bucket["known_cost_usd"] += estimate_gpt56_sol_cost_usd(
         usage_int(usage.get("input_tokens")),
         usage_int(usage.get("cached_input_tokens")),
@@ -876,10 +1013,25 @@ class ProxyStore:
             session.updated_at = utc_timestamp()
             self.save(session.id)
 
-    def record_usage(self, session_id: str, kind: str, model: str, raw_usage: Any) -> None:
-        event = usage_event(kind, model, raw_usage)
+    def record_usage(
+        self,
+        session_id: str,
+        kind: str,
+        model: str,
+        raw_usage: Any,
+        *,
+        provider_id: str = "",
+        provider_type: str = "",
+    ) -> bool:
+        event = usage_event(
+            kind,
+            model,
+            raw_usage,
+            provider_id=provider_id,
+            provider_type=provider_type,
+        )
         if event is None:
-            return
+            return False
         with self.lock:
             session = self.sessions.get(session_id)
             if session is None:
@@ -892,6 +1044,7 @@ class ProxyStore:
             session.usage_summary_cache = usage_summary_with_event(session.id, session.usage_summary_cache, event)
             session.updated_at = utc_timestamp()
             self.save(session.id)
+        return True
 
     def all_usage(self) -> dict[str, Any]:
         with self.lock:

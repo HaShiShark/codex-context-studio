@@ -666,6 +666,39 @@ async def reset_usage(session_id: str) -> Response:
     return JSONResponse(payload)
 
 
+@app.post("/api/proxy/sessions/{session_id:path}/usage")
+async def record_session_usage(session_id: str, request: Request) -> Response:
+    try:
+        payload = await _read_json_body(request)
+    except json.JSONDecodeError:
+        return _json_error("request body must be JSON", HTTPStatus.BAD_REQUEST)
+    except ValueError as exc:
+        return _json_error(str(exc), HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
+
+    raw_usage = payload.get("usage")
+    if not isinstance(raw_usage, dict):
+        return _json_error("usage must be an object", HTTPStatus.BAD_REQUEST)
+
+    recorded = STORE.record_usage(
+        session_id,
+        str(payload.get("kind") or "context_workbench"),
+        str(payload.get("model") or ""),
+        raw_usage,
+        provider_id=str(payload.get("provider_id") or ""),
+        provider_type=str(payload.get("provider_type") or ""),
+    )
+    if recorded:
+        await _publish_usage(session_id)
+        await HUB.publish(session_list_update(STORE.list_sessions()))
+    usage = STORE.session_usage(session_id)
+    return JSONResponse(
+        {
+            "recorded": recorded,
+            "summary": (usage or {}).get("summary") or {},
+        }
+    )
+
+
 @app.get("/v1/models")
 async def models(request: Request) -> Response:
     headers = _headers_dict(request)

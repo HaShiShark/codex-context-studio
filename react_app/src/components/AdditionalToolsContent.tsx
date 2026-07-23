@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 
-import MarkdownRenderer from './MarkdownRenderer';
+import MarkdownRenderer from './LazyMarkdownRenderer';
 import {
   collectToolDefinitionPaths,
   extractExecDeclaredToolNames,

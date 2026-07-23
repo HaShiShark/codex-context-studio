@@ -9,83 +9,20 @@ import type {
 } from './types';
 import codexItemRegistry from '../../shared/codex-item-registry.json';
 
-type TokenEncoder = {
-  encode(text: string): unknown[];
-};
-
-let encoding: TokenEncoder | null = null;
-let encoderLoadPromise: Promise<TokenEncoder | null> | null = null;
-let encoderUnavailable = false;
-
-const _tokenResults = new Map<string, { exact: boolean; value: number }>();
+const _tokenResults = new Map<string, number>();
 const _TOKEN_CACHE_LIMIT = 4096;
-const _TOKEN_ENCODER_LOAD_THRESHOLD = 2000;
 
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 3.5);
 }
 
-function shouldLoadPreciseEncoder(text: string): boolean {
-  return text.length >= _TOKEN_ENCODER_LOAD_THRESHOLD;
-}
-
-function loadEncoder(): Promise<TokenEncoder | null> {
-  if (encoding || encoderUnavailable) {
-    return Promise.resolve(encoding);
-  }
-
-  if (!encoderLoadPromise) {
-    encoderLoadPromise = import('js-tiktoken')
-      .then(({ getEncoding }) => {
-        encoding = getEncoding('cl100k_base');
-        _tokenResults.clear();
-        return encoding;
-      })
-      .catch(() => {
-        encoderUnavailable = true;
-        return null;
-      })
-      .finally(() => {
-        encoderLoadPromise = null;
-      });
-  }
-
-  return encoderLoadPromise;
-}
-
 export function countTokens(text: string): number {
-  if (!text) {
-    return 0;
-  }
-
+  if (!text) return 0;
   const cached = _tokenResults.get(text);
-  if (cached && (cached.exact || !encoding)) {
-    if (!encoding && shouldLoadPreciseEncoder(text)) {
-      void loadEncoder();
-    }
-    return cached.value;
-  }
-
-  let result = 0;
-  let exact = false;
-  if (encoding) {
-    try {
-      result = encoding.encode(text).length;
-      exact = true;
-    } catch {
-      result = estimateTokens(text);
-    }
-  } else {
-    result = estimateTokens(text);
-    if (shouldLoadPreciseEncoder(text)) {
-      void loadEncoder();
-    }
-  }
-
-  if (_tokenResults.size >= _TOKEN_CACHE_LIMIT) {
-    _tokenResults.clear();
-  }
-  _tokenResults.set(text, { exact, value: result });
+  if (cached !== undefined) return cached;
+  const result = estimateTokens(text);
+  if (_tokenResults.size >= _TOKEN_CACHE_LIMIT) _tokenResults.clear();
+  _tokenResults.set(text, result);
   return result;
 }
 

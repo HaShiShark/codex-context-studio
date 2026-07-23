@@ -96,6 +96,8 @@ export interface MessageRecord {
   providerItems?: ProviderItem[];
   pending: boolean;
   sourceText: string;
+  tokenEstimate?: number;
+  toolTokenEstimate?: number;
 }
 
 export interface ReasoningOption {
@@ -108,6 +110,7 @@ export interface ResponseProviderModel {
   label: string;
   group: string;
   provider?: string;
+  source?: 'provider' | 'configured';
 }
 
 export type ResponseProviderType = 'responses' | 'chat_completion' | 'claude' | 'gemini';
@@ -120,11 +123,11 @@ export interface ContextWorkbenchProvider {
   supports_model_fetch: boolean;
   supports_responses: boolean;
   api_base_url: string;
+  api_key: string;
   default_model: string;
   models: ResponseProviderModel[];
   last_sync_at?: string;
   last_sync_error?: string;
-  has_api_key?: boolean;
 }
 
 export interface ContextWorkbenchChatMessage {
@@ -138,6 +141,7 @@ export interface ProxyUsageBucket {
   request_count: number;
   input_tokens: number;
   cached_input_tokens: number;
+  cache_write_tokens?: number;
   non_cached_input_tokens: number;
   output_tokens: number;
   reasoning_tokens: number;
@@ -193,6 +197,7 @@ export interface InitPayload {
 }
 
 export interface ContextWorkbenchSettingsResponse {
+  scope: 'global';
   settings: {
     context_workbench_model: string;
     context_workbench_provider_id: string;
@@ -211,7 +216,6 @@ export interface ContextWorkbenchSettingsResponse {
     auto_local_compact_prompt: string;
     auto_local_compact_prompt_default: string;
   };
-  models: ResponseProviderModel[];
   providers: ContextWorkbenchProvider[];
 }
 
@@ -257,7 +261,13 @@ export interface ContextChatStreamDoneEvent {
   conversation: TranscriptEntry[];
 }
 
+export interface ContextChatStreamStartedEvent {
+  type: 'started';
+  request_id: string;
+}
+
 export type ContextChatStreamEvent =
+  | ContextChatStreamStartedEvent
   | StreamDeltaEvent
   | StreamResetEvent
   | StreamReasoningStartEvent

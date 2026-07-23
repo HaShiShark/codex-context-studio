@@ -3,16 +3,19 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import asdict, is_dataclass
 from typing import Any
 
 from agent_runtime.adapters.base import (
     BaseAdapter,
     ProviderRequestContext,
     ToolSpec,
+    clear_stream_cancel,
+    provider_replay_payload,
+    register_stream_cancel,
     reasoning_effort_token_budget,
+    to_plain_value,
 )
-from agent_runtime.core.canonical_types import CanonicalItem
+from agent_runtime.core.canonical_types import CanonicalItem, ProviderRaw
 from agent_runtime.core.stream_events import (
     AdapterStreamEvent,
     ProviderDoneEvent,
@@ -63,14 +66,14 @@ class GeminiAdapter(BaseAdapter[dict[str, Any]]):
             _MISSING,
         )
         if tool_config is not _MISSING:
-            request["toolConfig"] = _to_plain_value(tool_config)
+            request["toolConfig"] = to_plain_value(tool_config)
 
         generation_config = _read_any(
             context.provider_config,
             ("generationConfig", "generation_config"),
             _MISSING,
         )
-        next_generation_config = _to_plain_value(generation_config) if generation_config is not _MISSING else {}
+        next_generation_config = to_plain_value(generation_config) if generation_config is not _MISSING else {}
         if not isinstance(next_generation_config, dict):
             next_generation_config = {}
         if "temperature" in context.provider_config:
@@ -103,16 +106,15 @@ class GeminiAdapter(BaseAdapter[dict[str, Any]]):
         request: dict[str, Any],
         context: ProviderRequestContext | None = None,
     ) -> Iterable[AdapterStreamEvent]:
-        del context
-
         output_chunks: list[str] = []
         tool_call_events: list[ToolCallReadyEvent] = []
+        model_parts: list[dict[str, Any]] = []
         finish_reason: str | None = None
         usage: Mapping[str, Any] | None = None
         last_chunk: Any | None = None
         reasoning_active = False
 
-        for chunk in self._iter_provider_stream(request):
+        for chunk in self._iter_provider_stream(request, context):
             last_chunk = chunk
             finish_reason = self._extract_finish_reason(chunk) or finish_reason
             usage = self._extract_usage(chunk) or usage
@@ -126,6 +128,9 @@ class GeminiAdapter(BaseAdapter[dict[str, Any]]):
                 continue
 
             for part in parts:
+                plain_part = _normalize_gemini_part(to_plain_value(part))
+                if plain_part:
+                    _append_stream_part(model_parts, plain_part)
                 text = self._extract_part_text(part)
                 if text:
                     if self._is_thought_part(part):
@@ -153,14 +158,21 @@ class GeminiAdapter(BaseAdapter[dict[str, Any]]):
                 arguments = _coerce_arguments(raw_args_value)
                 raw_arguments = _raw_json_arguments(raw_args_value)
                 call_index = len(tool_call_events)
-                call_id = _stable_call_id(call_index, name, arguments)
+                provider_call_id = str(
+                    _read_any(function_call, ("id",), "") or ""
+                )
+                call_id = provider_call_id or _stable_call_id(
+                    call_index,
+                    name,
+                    arguments,
+                )
                 event = ToolCallReadyEvent(
                     name=name,
                     arguments=arguments,
                     call_id=call_id,
                     raw_arguments=raw_arguments,
                     index=call_index,
-                    provider_raw=function_call,
+                    provider_raw=part,
                 )
                 tool_call_events.append(event)
                 yield event
@@ -173,7 +185,7 @@ class GeminiAdapter(BaseAdapter[dict[str, Any]]):
             finish_reason=finish_reason,
             usage=usage,
             canonical_items=self._done_canonical_items(
-                "".join(output_chunks),
+                model_parts,
                 tool_call_events,
             ),
             provider_raw=last_chunk,
@@ -198,15 +210,20 @@ class GeminiAdapter(BaseAdapter[dict[str, Any]]):
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         contents: list[dict[str, Any]] = []
         metadata: list[dict[str, Any]] = []
-        tool_names_by_call_id: dict[str, str] = {}
+        tool_calls_by_runtime_id: dict[str, tuple[str, str]] = {}
 
         for item, fallback_role in self._iter_context_items(context):
-            role, parts = self._compile_canonical_item(
+            role, parts, starts_new_content = self._compile_canonical_item(
                 item,
                 fallback_role=fallback_role,
                 metadata=metadata,
-                tool_names_by_call_id=tool_names_by_call_id,
+                tool_calls_by_runtime_id=tool_calls_by_runtime_id,
             )
+            if not parts:
+                continue
+            if starts_new_content:
+                contents.append({"role": role, "parts": parts})
+                continue
             for part in parts:
                 self._append_part(contents, role, part)
 
@@ -247,16 +264,41 @@ class GeminiAdapter(BaseAdapter[dict[str, Any]]):
         *,
         fallback_role: str | None,
         metadata: list[dict[str, Any]],
-        tool_names_by_call_id: dict[str, str],
-    ) -> tuple[str, list[dict[str, Any]]]:
+        tool_calls_by_runtime_id: dict[str, tuple[str, str]],
+    ) -> tuple[str, list[dict[str, Any]], bool]:
+        provider_payload = provider_replay_payload(item, "gemini")
+        if isinstance(provider_payload, Mapping):
+            role = str(provider_payload.get("role") or "model")
+            parts = [
+                _normalize_gemini_part(part)
+                for part in _as_list(provider_payload.get("parts"))
+            ]
+            parts = [part for part in parts if part]
+            call_metadata = _as_list(
+                _read_any(_read_any(item, ("metadata",), {}), ("tool_calls",), ())
+            )
+            for call in call_metadata:
+                runtime_call_id = str(_read_any(call, ("call_id",), "") or "")
+                if not runtime_call_id:
+                    continue
+                tool_calls_by_runtime_id[runtime_call_id] = (
+                    str(_read_any(call, ("name",), "") or ""),
+                    str(_read_any(call, ("provider_call_id",), "") or ""),
+                )
+            return role, parts, True
+
         item_type = _read_any(item, ("type",), "message") or "message"
 
         if item_type in _TOOL_CALL_ITEM_TYPES:
             name = str(_read_any(item, ("name",), "") or "")
             arguments = _coerce_arguments(_read_any(item, ("arguments", "args"), {}))
             call_id = str(_read_any(item, ("call_id",), "") or "")
+            provider_call_id = str(
+                _read_any(_read_any(item, ("metadata",), {}), ("provider_call_id",), "")
+                or ""
+            )
             if call_id and name:
-                tool_names_by_call_id[call_id] = name
+                tool_calls_by_runtime_id[call_id] = (name, provider_call_id)
             if call_id:
                 metadata.append(
                     {
@@ -266,13 +308,19 @@ class GeminiAdapter(BaseAdapter[dict[str, Any]]):
                         "call_id": call_id,
                     }
                 )
-            return "model", [{"functionCall": {"name": name, "args": arguments}}]
+            function_call = {"name": name, "args": arguments}
+            if provider_call_id:
+                function_call["id"] = provider_call_id
+            return "model", [{"functionCall": function_call}], False
 
         if item_type in _TOOL_RESULT_ITEM_TYPES:
             call_id = str(_read_any(item, ("call_id",), "") or "")
             name = str(_read_any(item, ("name",), "") or "")
-            if not name and call_id:
-                name = tool_names_by_call_id.get(call_id, "")
+            provider_call_id = ""
+            if call_id and call_id in tool_calls_by_runtime_id:
+                remembered_name, provider_call_id = tool_calls_by_runtime_id[call_id]
+                if not name:
+                    name = remembered_name
             output = _read_any(item, ("output", "response", "content"), {})
             if call_id:
                 metadata.append(
@@ -283,20 +331,19 @@ class GeminiAdapter(BaseAdapter[dict[str, Any]]):
                         "call_id": call_id,
                     }
                 )
-            return "user", [
-                {
-                    "functionResponse": {
-                        "name": name,
-                        "response": _normalize_function_response_payload(output),
-                    }
-                }
-            ]
+            function_response = {
+                "name": name,
+                "response": _normalize_function_response_payload(output),
+            }
+            if provider_call_id:
+                function_response["id"] = provider_call_id
+            return "user", [{"functionResponse": function_response}], False
 
         role = _gemini_role(
             str(_read_any(item, ("role",), fallback_role or "user") or "user")
         )
         content = _read_any(item, ("content", "text"), "")
-        return role, self._content_to_parts(content)
+        return role, self._content_to_parts(content), True
 
     def _content_to_parts(self, content: Any) -> list[dict[str, Any]]:
         if content is None:
@@ -380,7 +427,7 @@ class GeminiAdapter(BaseAdapter[dict[str, Any]]):
                     {
                         "name": tool.name,
                         "description": tool.description,
-                        "parameters": _to_plain_value(tool.parameters),
+                        "parameters": to_plain_value(tool.parameters),
                     }
                 )
                 continue
@@ -403,7 +450,7 @@ class GeminiAdapter(BaseAdapter[dict[str, Any]]):
                 function_declarations.append(declaration)
                 continue
 
-            native_tools.append(_to_plain_value(tool_mapping))
+            native_tools.append(to_plain_value(tool_mapping))
 
         gemini_tools = list(native_tools)
         if function_declarations:
@@ -429,33 +476,34 @@ class GeminiAdapter(BaseAdapter[dict[str, Any]]):
             "description": str(
                 _read_any(declaration, ("description",), "") or ""
             ),
-            "parameters": _to_plain_value(
+            "parameters": to_plain_value(
                 _read_any(declaration, ("parameters",), {})
             ),
         }
 
-    def _iter_provider_stream(self, request: Mapping[str, Any]) -> Iterable[Any]:
+    def _iter_provider_stream(
+        self,
+        request: Mapping[str, Any],
+        context: ProviderRequestContext | None,
+    ) -> Iterable[Any]:
         stream = self._start_provider_stream(request)
-        yielded_chunk = False
 
         if hasattr(stream, "__enter__"):
             with stream as entered_stream:
-                for chunk in entered_stream:
-                    yielded_chunk = True
-                    yield chunk
-            if not yielded_chunk:
-                fallback_response = self._start_provider_generate_content(request)
-                if fallback_response is not None:
-                    yield fallback_response
+                registered = register_stream_cancel(context, entered_stream)
+                try:
+                    yield from entered_stream
+                finally:
+                    if registered:
+                        clear_stream_cancel(context)
             return
 
-        for chunk in stream:
-            yielded_chunk = True
-            yield chunk
-        if not yielded_chunk:
-            fallback_response = self._start_provider_generate_content(request)
-            if fallback_response is not None:
-                yield fallback_response
+        registered = register_stream_cancel(context, stream)
+        try:
+            yield from stream
+        finally:
+            if registered:
+                clear_stream_cancel(context)
 
     def _start_provider_stream(self, request: Mapping[str, Any]) -> Any:
         models = getattr(self.client, "models", None)
@@ -480,25 +528,6 @@ class GeminiAdapter(BaseAdapter[dict[str, Any]]):
             return client_generate_content_stream(**_provider_request_kwargs(request))
 
         raise RuntimeError("GeminiAdapter client does not expose a stream method")
-
-    def _start_provider_generate_content(
-        self,
-        request: Mapping[str, Any],
-    ) -> Any | None:
-        models = getattr(self.client, "models", None)
-        generate_content = getattr(models, "generate_content", None)
-        if callable(generate_content):
-            return generate_content(
-                model=request["model"],
-                contents=request.get("contents", []),
-                config=self._sdk_config_from_request(request),
-            )
-
-        client_generate_content = getattr(self.client, "generate_content", None)
-        if callable(client_generate_content):
-            return client_generate_content(**_provider_request_kwargs(request))
-
-        return None
 
     @staticmethod
     def _sdk_config_from_request(request: Mapping[str, Any]) -> dict[str, Any]:
@@ -590,38 +619,55 @@ class GeminiAdapter(BaseAdapter[dict[str, Any]]):
         usage = _read_any(chunk, ("usageMetadata", "usage_metadata"), None)
         if usage is None:
             return None
-        plain_usage = _to_plain_value(usage)
+        plain_usage = to_plain_value(usage)
         if isinstance(plain_usage, Mapping):
             return dict(plain_usage)
         return None
 
     @staticmethod
     def _done_canonical_items(
-        output_text: str,
+        model_parts: Sequence[Mapping[str, Any]],
         tool_call_events: Sequence[ToolCallReadyEvent],
     ) -> tuple[CanonicalItem, ...]:
-        items: list[CanonicalItem] = []
-        if output_text:
-            items.append(
-                CanonicalItem(
-                    type="message",
-                    role="assistant",
-                    content=output_text,
-                )
-            )
-
+        payload = {
+            "role": "model",
+            "parts": [dict(part) for part in model_parts],
+        }
+        tool_calls: list[dict[str, Any]] = []
         for event in tool_call_events:
-            items.append(
-                CanonicalItem(
-                    type="tool_call",
-                    role="assistant",
-                    name=event.name,
-                    call_id=event.call_id or "",
-                    arguments=dict(event.arguments),
-                )
+            raw_part = _normalize_gemini_part(to_plain_value(event.provider_raw))
+            function_call = _read_any(
+                raw_part,
+                ("functionCall", "function_call"),
+                {},
+            )
+            tool_calls.append(
+                {
+                    "name": event.name,
+                    "call_id": event.call_id or "",
+                    "provider_call_id": str(
+                        _read_any(function_call, ("id",), "") or ""
+                    ),
+                    "arguments": dict(event.arguments),
+                    "raw_arguments": event.raw_arguments or "",
+                }
             )
 
-        return tuple(items)
+        if not payload["parts"]:
+            return ()
+        return (
+            CanonicalItem(
+                type="message",
+                role="assistant",
+                content=payload["parts"],
+                provider_raw=ProviderRaw(
+                    provider_id="gemini",
+                    event_type="model_content",
+                    payload=payload,
+                ),
+                metadata={"tool_calls": tool_calls},
+            ),
+        )
 
 
 def _read_any(value: Any, keys: Sequence[str], default: Any = None) -> Any:
@@ -673,7 +719,7 @@ def _coerce_arguments(value: Any) -> dict[str, Any]:
         return {}
 
     if isinstance(value, Mapping):
-        return dict(_to_plain_value(value))
+        return dict(to_plain_value(value))
 
     return {}
 
@@ -681,12 +727,12 @@ def _coerce_arguments(value: Any) -> dict[str, Any]:
 def _raw_json_arguments(value: Any) -> str:
     if isinstance(value, str):
         return value
-    return json.dumps(_to_plain_value(value), ensure_ascii=False, sort_keys=True)
+    return json.dumps(to_plain_value(value), ensure_ascii=False, sort_keys=True)
 
 
 def _stable_call_id(index: int, name: str, arguments: Mapping[str, Any]) -> str:
     digest_source = json.dumps(
-        {"index": index, "name": name, "arguments": _to_plain_value(arguments)},
+        {"index": index, "name": name, "arguments": to_plain_value(arguments)},
         ensure_ascii=False,
         sort_keys=True,
     )
@@ -724,14 +770,33 @@ def _is_sequence(value: Any) -> bool:
     )
 
 
-def _to_plain_value(value: Any) -> Any:
-    if is_dataclass(value) and not isinstance(value, type):
-        return asdict(value)
-    if isinstance(value, Mapping):
-        return {str(key): _to_plain_value(item) for key, item in value.items()}
-    if _is_sequence(value):
-        return [_to_plain_value(item) for item in value]
-    return value
+def _normalize_gemini_part(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    part = {str(key): to_plain_value(item) for key, item in value.items()}
+    aliases = {
+        "thought_signature": "thoughtSignature",
+        "function_call": "functionCall",
+        "function_response": "functionResponse",
+        "inline_data": "inlineData",
+        "file_data": "fileData",
+        "executable_code": "executableCode",
+        "code_execution_result": "codeExecutionResult",
+    }
+    for source, target in aliases.items():
+        if source in part and target not in part:
+            part[target] = part.pop(source)
+    return part
+
+
+def _append_stream_part(
+    parts: list[dict[str, Any]],
+    part: Mapping[str, Any],
+) -> None:
+    # A thought signature is bound to the exact Part returned by Gemini.
+    # Keep every streamed Part in order; adjacent text/thought Parts must not be
+    # coalesced because that could move a signature onto different content.
+    parts.append(dict(part))
 
 
 def _normalize_function_response_payload(value: Any) -> dict[str, Any]:
@@ -748,15 +813,15 @@ def _normalize_function_response_payload(value: Any) -> dict[str, Any]:
             return {"result": value}
         return _normalize_function_response_payload(parsed)
 
-    plain_value = _to_plain_value(value)
+    plain_value = to_plain_value(value)
     if isinstance(plain_value, Mapping):
-        return {str(key): _to_plain_value(item) for key, item in plain_value.items()}
+        return {str(key): to_plain_value(item) for key, item in plain_value.items()}
 
     return {"result": plain_value}
 
 
 def _json_text(value: Any) -> str:
-    return json.dumps(_to_plain_value(value), ensure_ascii=False, default=str)
+    return json.dumps(to_plain_value(value), ensure_ascii=False, default=str)
 
 
 __all__ = ["GeminiAdapter"]

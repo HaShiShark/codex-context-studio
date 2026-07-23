@@ -25,15 +25,11 @@ def _settings(project_root: Path):
             provider["models"] = [dict(model) for model in DEFAULT_CODEX_PROXY_MODELS]
 
     return Settings(
-        model="gpt-5.4-mini",
         default_reasoning_effort="default",
         context_workbench_model="gpt-5.5",
         context_workbench_provider_id=CODEX_PROXY_PROVIDER_ID,
         project_root=project_root,
-        max_tool_rounds=4,
-        tool_settings=[],
         response_providers=providers,
-        active_provider_id="openai",
     )
 
 

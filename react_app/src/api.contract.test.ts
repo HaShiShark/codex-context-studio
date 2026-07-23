@@ -1,4 +1,13 @@
-import { apiFetch, extractErrorMessage, proxyRealtimeUrl, resetProxyUsageRequest, streamContextChatRequest } from './api';
+import {
+  apiFetch,
+  cancelContextChatRequest,
+  extractErrorMessage,
+  fetchContextWorkbenchSettings,
+  proxyRealtimeUrl,
+  refreshContextWorkbenchModelsRequest,
+  resetProxyUsageRequest,
+  streamContextChatRequest,
+} from './api';
 
 function assertEqual<T>(actual: T, expected: T, message: string): void {
   if (actual !== expected) {
@@ -128,6 +137,62 @@ async function testResetProxyUsageUsesBackendFacade(): Promise<void> {
   }
 }
 
+async function testCancelContextChatTargetsTheActiveRequest(): Promise<void> {
+  const originalFetch = globalThis.fetch;
+  let seenPath = '';
+  let seenBody = '';
+  globalThis.fetch = async (input, init) => {
+    seenPath = String(input);
+    seenBody = String(init?.body || '');
+    return jsonResponse(
+      { cancelled: true, completed: true, request_id: 'request-7', status: 'cancelled' },
+      { status: 200, statusText: 'OK' },
+    );
+  };
+
+  try {
+    const result = await cancelContextChatRequest('session-3', 'request-7');
+    assertEqual(seenPath, '/api/cancel-request', 'context cancellation uses the cancellation endpoint');
+    assertEqual(
+      seenBody,
+      JSON.stringify({ session_id: 'session-3', request_id: 'request-7', mode: 'context' }),
+      'context cancellation targets the exact active request',
+    );
+    assertEqual(result.completed, true, 'context cancellation waits for server completion confirmation');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+async function testWorkbenchSettingsAndModelRefreshUseSeparateGlobalEndpoints(): Promise<void> {
+  const originalFetch = globalThis.fetch;
+  const requests: Array<{ path: string; method: string; body: string }> = [];
+  globalThis.fetch = async (input, init) => {
+    requests.push({
+      path: String(input),
+      method: String(init?.method || 'GET'),
+      body: String(init?.body || ''),
+    });
+    return jsonResponse({ scope: 'global', settings: {}, providers: [] }, { status: 200, statusText: 'OK' });
+  };
+
+  try {
+    await fetchContextWorkbenchSettings();
+    await refreshContextWorkbenchModelsRequest('anthropic');
+    assertEqual(requests[0]?.path, '/api/context-workbench-settings', 'settings load uses the global settings endpoint');
+    assertEqual(requests[0]?.method, 'GET', 'settings load is read-only');
+    assertEqual(
+      requests[1]?.path,
+      '/api/context-workbench-settings/refresh-models',
+      'model refresh has a dedicated global endpoint',
+    );
+    assertEqual(requests[1]?.method, 'POST', 'model refresh uses POST');
+    assertEqual(requests[1]?.body, JSON.stringify({ provider_id: 'anthropic' }), 'model refresh identifies one provider');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
 function testProxyRealtimeUrlUsesRuntimePort(): void {
   const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
   Object.defineProperty(globalThis, 'window', {
@@ -161,6 +226,8 @@ async function main(): Promise<void> {
   await testStreamRequestUsesStructuredErrorMessage();
   await testApiFetchUsesStatusFallbackForNonJsonError();
   await testResetProxyUsageUsesBackendFacade();
+  await testCancelContextChatTargetsTheActiveRequest();
+  await testWorkbenchSettingsAndModelRefreshUseSeparateGlobalEndpoints();
   testProxyRealtimeUrlUsesRuntimePort();
   console.log('ok - api error contract tests passed');
 }

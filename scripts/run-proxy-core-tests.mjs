@@ -10,9 +10,11 @@ const tests = [
   'scripts/test_cursor_delta.py',
   'scripts/test_compact_controller.py',
   'scripts/test_prompt_settings.py',
+  'scripts/test_context_workbench_settings.py',
   'scripts/test_proxy_core.py',
   'scripts/test_context_hook.py',
   'scripts/test_context_review_scheduler.py',
+  'scripts/test_context_request_cancellation.py',
   'scripts/test_workbench_transcript_commit.py',
   'scripts/test_proxy_session_ids.py',
   'scripts/test_agent_runtime_contract.py',
@@ -24,6 +26,7 @@ const tests = [
   'scripts/test_web_restore_disabled.py',
   'scripts/test_web_state_cleanup.py',
   'scripts/test_web_proxy_passthrough_status.py',
+  'scripts/test_web_token_counts.py',
   'scripts/test_clean_runtime_layout.py',
 ];
 

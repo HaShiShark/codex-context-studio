@@ -13,7 +13,13 @@ PromptBlockKind: TypeAlias = Literal["system", "developer", "memory", "summary"]
 # agent_runtime is a lightweight agent adapter layer. Its transcript role is not
 # the lossless proxy TranscriptNode.role contract from backend/transcript_codec.py.
 TranscriptRole: TypeAlias = Literal["user", "assistant"]
-CanonicalItemType: TypeAlias = Literal["message", "tool_call", "tool_result"]
+CanonicalItemType: TypeAlias = Literal[
+    "message",
+    "reasoning",
+    "tool_call",
+    "tool_result",
+    "provider_item",
+]
 CanonicalStatus: TypeAlias = Literal[
     "pending",
     "running",
@@ -25,7 +31,13 @@ CanonicalStatus: TypeAlias = Literal[
 
 @dataclass(slots=True)
 class ProviderRaw:
-    """Opaque provider payload kept out of product-level logic."""
+    """Opaque, request-replayable provider payload.
+
+    ``payload`` is intentionally outside product logic.  Adapters use it only
+    when the next request targets the same provider, preserving fields such as
+    Responses reasoning items, Claude thinking signatures, and Gemini thought
+    signatures that have no safe cross-provider representation.
+    """
 
     provider_id: str = ""
     model: str = ""
@@ -49,7 +61,13 @@ class PromptBlock:
 
 @dataclass(slots=True)
 class CanonicalItem:
-    """Provider-neutral item used by adapters and context workbench."""
+    """Provider-neutral item used to replay one complete model/tool round.
+
+    The generic fields let the runtime execute tools without knowing a provider
+    protocol.  ``provider_raw`` keeps the exact provider-native assistant item
+    so the originating adapter can replay required opaque fields on the next
+    tool round.
+    """
 
     type: CanonicalItemType
     role: TranscriptRole | None = None

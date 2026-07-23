@@ -1,4 +1,5 @@
 import type {
+  ContextWorkbenchProvider,
   ContextWorkbenchChatMessage,
   MessageBlock,
   ProxyUsageBucket,
@@ -22,15 +23,15 @@ export interface ManualWorkbenchMessage {
 
 export type UsageSummaryLike = ProxyUsageBucket | ProxyUsageSummary | null;
 
-export const DEFAULT_WORKBENCH_MODELS = [
-  'gpt-5.6-sol',
-  'gpt-5.6-terra',
-  'gpt-5.6-luna',
-  'gpt-5.5',
-  'gpt-5.4',
-  'gpt-5.4-mini',
-  'gpt-5.2',
-];
+export const DEFAULT_CONTEXT_WORKBENCH_MODEL = 'gpt-5.6-sol';
+
+export function preferredProviderModel(
+  provider: Pick<ContextWorkbenchProvider, 'default_model' | 'models'> | null,
+) {
+  const savedModel = provider?.default_model?.trim() || '';
+  if (savedModel) return savedModel;
+  return provider?.models?.find((model) => model.id?.trim())?.id.trim() || '';
+}
 
 export const WORKBENCH_TABS: Array<{
   id: WorkbenchTab;
@@ -193,7 +194,7 @@ export function buildWorkbenchModelOptions(
   const seen = new Set<string>();
   const options: ResponseProviderModel[] = [];
 
-  function pushModel(model: Partial<ResponseProviderModel> | string) {
+  function pushModel(model: Partial<ResponseProviderModel> | string, source: ResponseProviderModel['source']) {
     const modelId = typeof model === 'string' ? model : (model.id || model.label || '');
     const cleanedId = modelId.trim();
     if (!cleanedId || seen.has(cleanedId)) {
@@ -207,6 +208,7 @@ export function buildWorkbenchModelOptions(
         label: cleanedId,
         group: fallbackProvider,
         provider: fallbackProvider,
+        source,
       });
       return;
     }
@@ -216,12 +218,17 @@ export function buildWorkbenchModelOptions(
       label: (model.label || cleanedId).trim(),
       group: (model.group || fallbackProvider).trim(),
       provider: (model.provider || fallbackProvider).trim(),
+      source,
     });
   }
 
-  models.forEach(pushModel);
-  pushModel(modelDraft);
-  DEFAULT_WORKBENCH_MODELS.forEach(pushModel);
+  models.forEach((model) => pushModel(model, 'provider'));
+  const configuredModel = modelDraft.trim();
+  if (configuredModel && !seen.has(configuredModel)) {
+    pushModel(configuredModel, 'configured');
+    const currentOption = options.pop();
+    if (currentOption) options.unshift(currentOption);
+  }
 
   return options;
 }

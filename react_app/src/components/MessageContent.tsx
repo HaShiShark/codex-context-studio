@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 
 import AdditionalToolsContent from './AdditionalToolsContent';
-import MarkdownRenderer from './MarkdownRenderer';
+import MarkdownRenderer from './LazyMarkdownRenderer';
 import {
   buildAssistantRenderSegments,
   projectActivityBlockTools,

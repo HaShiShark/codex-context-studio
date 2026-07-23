@@ -10,9 +10,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from simple_agent.agent import sanitize_text
-
 from backend import proxy_routes_support
+from backend.text_safety import sanitize_text
 from backend.web_runtime import generate_and_store_context_review, get_codex_proxy_control_json
 from backend.web_state import AppState
 

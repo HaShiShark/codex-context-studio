@@ -4,11 +4,22 @@ import json
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
-from agent_runtime.adapters.base import BaseAdapter, ProviderRequestContext, ToolSpec
-from agent_runtime.core.canonical_types import CanonicalItem
+from agent_runtime.adapters.base import (
+    BaseAdapter,
+    ProviderRequestContext,
+    ToolSpec,
+    clear_stream_cancel,
+    provider_replay_payload,
+    register_stream_cancel,
+    to_plain_value,
+)
+from agent_runtime.core.canonical_types import CanonicalItem, ProviderRaw
 from agent_runtime.core.stream_events import (
     AdapterStreamEvent,
     ProviderDoneEvent,
+    ReasoningDeltaEvent,
+    ReasoningDoneEvent,
+    ReasoningStartEvent,
     TextDeltaEvent,
     ToolCallReadyEvent,
 )
@@ -20,6 +31,7 @@ _CORE_REQUEST_KEYS = {
     "stream",
     "tool_choice",
     "tools",
+    "stream_options",
 }
 
 _MESSAGE_ITEM_TYPES = {"message", None}
@@ -50,6 +62,10 @@ class ChatCompletionsAdapter(BaseAdapter[dict[str, Any]]):
                 "model": context.model,
                 "messages": self._build_messages(context),
                 "stream": True,
+                "stream_options": {
+                    **dict(context.provider_config.get("stream_options") or {}),
+                    "include_usage": True,
+                },
             }
         )
         if tools:
@@ -64,8 +80,6 @@ class ChatCompletionsAdapter(BaseAdapter[dict[str, Any]]):
         request: dict[str, Any],
         context: ProviderRequestContext | None = None,
     ) -> Iterable[AdapterStreamEvent]:
-        del context
-
         output_chunks: list[str] = []
         tool_call_parts: dict[int, dict[str, Any]] = {}
         emitted_tool_call_indexes: set[int] = set()
@@ -73,43 +87,66 @@ class ChatCompletionsAdapter(BaseAdapter[dict[str, Any]]):
         finish_reason: str | None = None
         usage: Mapping[str, Any] | None = None
         last_chunk: Any | None = None
+        assistant_message: dict[str, Any] = {"role": "assistant", "content": ""}
+        reasoning_active = False
 
         stream = self.client.chat.completions.create(**dict(request))
-        for chunk in stream:
-            last_chunk = chunk
-            chunk_usage = _to_mapping(_get_value(chunk, "usage"))
-            if chunk_usage is not None:
-                usage = chunk_usage
+        registered = register_stream_cancel(context, stream)
+        try:
+            for chunk in stream:
+                last_chunk = chunk
+                chunk_usage = _to_mapping(_get_value(chunk, "usage"))
+                if chunk_usage is not None:
+                    usage = {**dict(usage or {}), **dict(chunk_usage)}
 
-            for choice in _as_sequence(_get_value(chunk, "choices")):
-                choice_finish_reason = _get_value(choice, "finish_reason")
-                if choice_finish_reason:
-                    finish_reason = str(choice_finish_reason)
+                for choice in _as_sequence(_get_value(chunk, "choices")):
+                    choice_finish_reason = _get_value(choice, "finish_reason")
+                    if choice_finish_reason:
+                        finish_reason = str(choice_finish_reason)
 
-                delta = _get_value(choice, "delta", {})
-                content = _get_value(delta, "content")
-                if content:
-                    safe_delta = str(content)
-                    output_chunks.append(safe_delta)
-                    yield TextDeltaEvent(delta=safe_delta, provider_raw=chunk)
+                    delta = _get_value(choice, "delta", {})
+                    _accumulate_assistant_delta(assistant_message, delta)
+                    reasoning_delta = _reasoning_delta_text(delta)
+                    if reasoning_delta:
+                        if not reasoning_active:
+                            reasoning_active = True
+                            yield ReasoningStartEvent(provider_raw=chunk)
+                        yield ReasoningDeltaEvent(
+                            delta=reasoning_delta,
+                            provider_raw=chunk,
+                        )
+                    content = _get_value(delta, "content")
+                    if content:
+                        if reasoning_active:
+                            reasoning_active = False
+                            yield ReasoningDoneEvent(provider_raw=chunk)
+                        safe_delta = str(content)
+                        output_chunks.append(safe_delta)
+                        yield TextDeltaEvent(delta=safe_delta, provider_raw=chunk)
 
-                for fallback_index, tool_call_delta in enumerate(
-                    _as_sequence(_get_value(delta, "tool_calls"))
-                ):
-                    self._accumulate_tool_call_delta(
-                        tool_call_parts,
-                        tool_call_delta,
-                        fallback_index,
-                    )
-
-                if choice_finish_reason == "tool_calls":
-                    for event in self._flush_tool_calls(
-                        tool_call_parts,
-                        emitted_tool_call_indexes,
-                        provider_raw=chunk,
+                    for fallback_index, tool_call_delta in enumerate(
+                        _as_sequence(_get_value(delta, "tool_calls"))
                     ):
-                        completed_tool_calls.append(event)
-                        yield event
+                        self._accumulate_tool_call_delta(
+                            tool_call_parts,
+                            tool_call_delta,
+                            fallback_index,
+                        )
+
+                    if choice_finish_reason == "tool_calls":
+                        for event in self._flush_tool_calls(
+                            tool_call_parts,
+                            emitted_tool_call_indexes,
+                            provider_raw=chunk,
+                        ):
+                            completed_tool_calls.append(event)
+                            yield event
+        finally:
+            if registered:
+                clear_stream_cancel(context)
+
+        if reasoning_active:
+            yield ReasoningDoneEvent(provider_raw=last_chunk)
 
         for event in self._flush_tool_calls(
             tool_call_parts,
@@ -124,7 +161,10 @@ class ChatCompletionsAdapter(BaseAdapter[dict[str, Any]]):
             finish_reason=finish_reason,
             usage=usage,
             canonical_items=self._done_canonical_items(
-                output_text="".join(output_chunks),
+                assistant_message=_finalize_assistant_message(
+                    assistant_message,
+                    tool_call_parts,
+                ),
                 tool_calls=completed_tool_calls,
             ),
             provider_raw=last_chunk,
@@ -153,21 +193,10 @@ class ChatCompletionsAdapter(BaseAdapter[dict[str, Any]]):
         self,
         block: Any,
     ) -> dict[str, Any] | None:
-        kind = _get_value(block, "kind")
         text = _get_value(block, "text")
         if text is None:
             return None
-
-        content = str(text)
-        if kind == "system":
-            return {"role": "system", "content": content}
-        if kind == "developer":
-            return {"role": "developer", "content": content}
-        if kind == "memory":
-            return {"role": "developer", "content": f"[Memory]\n{content}"}
-        if kind == "summary":
-            return {"role": "developer", "content": f"[Summary]\n{content}"}
-        return None
+        return {"role": "system", "content": str(text)}
 
     def _append_transcript_record(
         self,
@@ -207,6 +236,11 @@ class ChatCompletionsAdapter(BaseAdapter[dict[str, Any]]):
         messages: list[dict[str, Any]],
         item: Any,
     ) -> None:
+        provider_payload = provider_replay_payload(item, "openai_chat_completions")
+        if isinstance(provider_payload, Mapping):
+            messages.append(dict(provider_payload))
+            return
+
         item_type = _get_value(item, "type")
         role = _get_value(item, "role")
 
@@ -221,7 +255,9 @@ class ChatCompletionsAdapter(BaseAdapter[dict[str, Any]]):
         if item_type not in _MESSAGE_ITEM_TYPES:
             return
 
-        if role not in ("user", "assistant"):
+        if role in ("developer", "system"):
+            role = "system"
+        if role not in ("user", "assistant", "system"):
             return
 
         message: dict[str, Any] = {
@@ -232,6 +268,10 @@ class ChatCompletionsAdapter(BaseAdapter[dict[str, Any]]):
         }
         if role == "assistant":
             tool_calls = _as_sequence(_get_value(item, "tool_calls"))
+            if not tool_calls:
+                tool_calls = _as_sequence(
+                    _get_value(_get_value(item, "metadata", {}), "tool_calls")
+                )
             if tool_calls:
                 message["tool_calls"] = [
                     self._normalize_message_tool_call(tool_call)
@@ -431,25 +471,34 @@ class ChatCompletionsAdapter(BaseAdapter[dict[str, Any]]):
     @staticmethod
     def _done_canonical_items(
         *,
-        output_text: str,
+        assistant_message: Mapping[str, Any],
         tool_calls: Sequence[ToolCallReadyEvent],
     ) -> tuple[CanonicalItem, ...]:
-        canonical_items: list[CanonicalItem] = []
-        if output_text:
-            canonical_items.append(
-                CanonicalItem(type="message", role="assistant", content=output_text)
-            )
-        for tool_call in tool_calls:
-            canonical_items.append(
-                CanonicalItem(
-                    type="tool_call",
-                    name=tool_call.name,
-                    call_id=tool_call.call_id or "",
-                    arguments=dict(tool_call.arguments),
-                    metadata={"raw_arguments": tool_call.raw_arguments or ""},
-                )
-            )
-        return tuple(canonical_items)
+        payload = dict(assistant_message)
+        metadata = {
+            "tool_calls": [
+                {
+                    "name": tool_call.name,
+                    "call_id": tool_call.call_id or "",
+                    "arguments": dict(tool_call.arguments),
+                    "raw_arguments": tool_call.raw_arguments or "",
+                }
+                for tool_call in tool_calls
+            ]
+        }
+        return (
+            CanonicalItem(
+                type="message",
+                role="assistant",
+                content=payload.get("content"),
+                provider_raw=ProviderRaw(
+                    provider_id="openai_chat_completions",
+                    event_type="assistant_message",
+                    payload=payload,
+                ),
+                metadata=metadata,
+            ),
+        )
 
 
 def _get_value(value: Any, key: str, default: Any = None) -> Any:
@@ -475,21 +524,71 @@ def _as_sequence(value: Any) -> Sequence[Any]:
 
 
 def _to_mapping(value: Any) -> Mapping[str, Any] | None:
-    if value is None:
-        return None
-    if isinstance(value, Mapping):
-        return dict(value)
-    if hasattr(value, "model_dump"):
-        dumped = value.model_dump()
-        if isinstance(dumped, Mapping):
-            return dict(dumped)
-    if hasattr(value, "to_dict"):
-        dumped = value.to_dict()
-        if isinstance(dumped, Mapping):
-            return dict(dumped)
-    if hasattr(value, "__dict__"):
-        return dict(value.__dict__)
-    return None
+    plain = to_plain_value(value)
+    return dict(plain) if isinstance(plain, Mapping) else None
+
+
+def _accumulate_assistant_delta(
+    message: dict[str, Any],
+    delta: Any,
+) -> None:
+    plain_delta = _to_mapping(delta)
+    if not plain_delta:
+        return
+
+    for key, value in plain_delta.items():
+        if value is None or key == "tool_calls":
+            continue
+        if key == "role":
+            message["role"] = str(value)
+            continue
+        if isinstance(value, str):
+            message[key] = f"{message.get(key, '')}{value}"
+            continue
+        if isinstance(value, list):
+            message.setdefault(key, [])
+            if isinstance(message[key], list):
+                message[key].extend(value)
+            continue
+        if isinstance(value, Mapping):
+            existing = message.get(key)
+            message[key] = {
+                **(dict(existing) if isinstance(existing, Mapping) else {}),
+                **dict(value),
+            }
+            continue
+        message[key] = value
+
+
+def _finalize_assistant_message(
+    message: Mapping[str, Any],
+    tool_call_parts: Mapping[int, Mapping[str, Any]],
+) -> dict[str, Any]:
+    final_message = dict(message)
+    final_message["role"] = "assistant"
+    if tool_call_parts:
+        final_message["tool_calls"] = [
+            {
+                "id": str(parts.get("id") or ""),
+                "type": "function",
+                "function": {
+                    "name": str(parts.get("name") or ""),
+                    "arguments": "".join(parts.get("arguments") or ()) or "{}",
+                },
+            }
+            for _, parts in sorted(tool_call_parts.items())
+        ]
+    if final_message.get("content") == "" and not tool_call_parts:
+        final_message["content"] = ""
+    return final_message
+
+
+def _reasoning_delta_text(delta: Any) -> str:
+    for key in ("reasoning_content", "reasoning_text", "reasoning"):
+        value = _get_value(delta, key)
+        if isinstance(value, str) and value:
+            return value
+    return ""
 
 
 def _arguments_to_json(arguments: Any) -> str:

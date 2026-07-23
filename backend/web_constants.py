@@ -70,6 +70,65 @@ class RequestCancelledError(RuntimeError):
 
 
 @dataclass(slots=True)
+class ActiveRequestControl:
+    """Owns cancellation and completion for one in-flight session request."""
+
+    request_id: str
+    cancel_event: threading.Event = field(default_factory=threading.Event)
+    completed_event: threading.Event = field(default_factory=threading.Event)
+    _callback_lock: threading.Lock = field(default_factory=threading.Lock)
+    _cancel_callback: Callable[[], None] | None = None
+    _commit_started: bool = False
+
+    def is_cancelled(self) -> bool:
+        return self.cancel_event.is_set()
+
+    def register_cancel_callback(self, callback: Callable[[], None] | None) -> None:
+        invoke_now = False
+        with self._callback_lock:
+            if callback is None:
+                self._cancel_callback = None
+                return
+            if self.cancel_event.is_set() or self.completed_event.is_set():
+                invoke_now = True
+            else:
+                self._cancel_callback = callback
+        if invoke_now:
+            try:
+                callback()
+            except Exception:  # noqa: BLE001 - transport close failures do not undo cancellation
+                pass
+
+    def cancel(self) -> bool:
+        callback: Callable[[], None] | None = None
+        with self._callback_lock:
+            if self._commit_started or self.completed_event.is_set():
+                return False
+            self.cancel_event.set()
+            callback = self._cancel_callback
+            self._cancel_callback = None
+        if callback is not None:
+            try:
+                callback()
+            except Exception:  # noqa: BLE001 - the cancel flag remains authoritative
+                pass
+        return True
+
+    def try_begin_commit(self) -> bool:
+        with self._callback_lock:
+            if self.cancel_event.is_set() or self.completed_event.is_set():
+                return False
+            self._commit_started = True
+            self._cancel_callback = None
+            return True
+
+    def mark_completed(self) -> None:
+        with self._callback_lock:
+            self._cancel_callback = None
+            self.completed_event.set()
+
+
+@dataclass(slots=True)
 class SessionState:
     session_id: str
     title: str
@@ -82,7 +141,7 @@ class SessionState:
     main_turn_updated_at: str = ""
     active_request_mode: str | None = None
     active_request_id: str | None = None
-    active_cancel_event: threading.Event | None = None
+    active_request_control: ActiveRequestControl | None = None
 
 @dataclass(slots=True)
 class ContextWorkbenchToolDefinition:

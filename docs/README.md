@@ -26,6 +26,7 @@
 
 ### 功能
 
+- [上下文模型与工具循环](features/context-workbench/context-model.md)：上下文模型输入、节点工具、单轮草稿、循环提交和异常边界。
 - [节点锁定](features/context-workbench/node-locking.md)：上下文地图锁定语义与主模型/上下文模型互斥。
 - [上下文智能建议](features/context-suggestions/design.md)：自动建议、预览、应用、丢弃和调度器。
 - [智能建议决策](features/context-suggestions/decisions.md)：持久化、取消、进程识别和文案边界。

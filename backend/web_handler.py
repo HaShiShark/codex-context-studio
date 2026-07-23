@@ -12,10 +12,12 @@ from urllib.parse import parse_qs, quote, urlparse
 
 from dotenv import load_dotenv
 
-from simple_agent.agent import ToolEvent, sanitize_text, sanitize_value
 from simple_agent.config import load_settings, save_settings
 
 from backend.context_review_scheduler import ContextReviewIdleScheduler
+from backend.text_safety import sanitize_text, sanitize_value
+from backend.token_count import estimate_token_count
+from backend.web_types import ToolEvent
 from backend.web_constants import (
     ATTACHMENTS_ROUTE,
     CONTEXT_REQUEST_DEBUG_FILE,
@@ -39,18 +41,48 @@ from backend.web_runtime import (
     apply_proxy_context_review,
     build_context_chat_response_payload,
     codex_proxy_session_exists,
-    context_workbench_models_payload,
-    context_workbench_provider_payloads,
-    context_workbench_settings_payload,
+    context_workbench_settings_response,
     discard_proxy_context_review,
     generate_and_store_context_review,
     get_codex_proxy_control_json,
     post_codex_proxy_control_json,
+    refresh_context_workbench_provider_models,
     refresh_session_from_proxy_active_context_if_known,
     run_context_chat_turn,
     safe_set_proxy_context_run_state,
 )
 from backend.web_state import AppState, list_workspace_entries, resolve_attachment_file_path
+
+
+CONTEXT_PROVIDER_UPDATE_FIELDS = {
+    "id",
+    "name",
+    "provider_type",
+    "enabled",
+    "api_base_url",
+    "default_model",
+    "api_key",
+}
+
+
+def context_provider_updates_from_request(raw_providers: object) -> list[dict[str, object]] | None:
+    if not isinstance(raw_providers, list):
+        return None
+    updates: list[dict[str, object]] = []
+    for raw_provider in raw_providers:
+        if not isinstance(raw_provider, dict):
+            continue
+        provider_id = sanitize_text(raw_provider.get("id") or "").strip()
+        if not provider_id:
+            continue
+        update = {
+            key: value
+            for key, value in raw_provider.items()
+            if key in CONTEXT_PROVIDER_UPDATE_FIELDS
+        }
+        update["id"] = provider_id
+        updates.append(update)
+    return updates
 
 
 class StudioHTTPRequestHandler(BaseHTTPRequestHandler):
@@ -148,26 +180,9 @@ class StudioHTTPRequestHandler(BaseHTTPRequestHandler):
             )
         )
 
-    def _handle_context_workbench_settings_get(self, parsed: Any) -> None:
-        query = parse_qs(parsed.query)
-        refresh_models = sanitize_text((query.get("refresh_models") or ["0"])[0]).strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
+    def _handle_context_workbench_settings_get(self, _parsed: Any) -> None:
         latest_settings = load_settings()
-        provider_payloads = context_workbench_provider_payloads(
-            latest_settings,
-            refresh_models=refresh_models,
-        )
-        self._send_json(
-            {
-                "settings": context_workbench_settings_payload(latest_settings),
-                "models": context_workbench_models_payload(latest_settings, provider_payloads),
-                "providers": provider_payloads,
-            }
-        )
+        self._send_json(context_workbench_settings_response(latest_settings))
 
     def _handle_workspace_get(self, _parsed: Any) -> None:
         self._send_json(
@@ -196,6 +211,8 @@ class StudioHTTPRequestHandler(BaseHTTPRequestHandler):
             "/api/codex-local-session-sync": self._handle_codex_local_session_sync_post,
             "/api/context-edit-marker-consume": self._handle_context_edit_marker_consume_post,
             "/api/context-workbench-settings": self._handle_context_workbench_settings_post,
+            "/api/context-workbench-settings/refresh-models": self._handle_context_workbench_models_refresh_post,
+            "/api/token-counts": self._handle_token_counts_post,
             "/api/proxy-session-transcript": self._handle_proxy_session_transcript_post,
             "/api/proxy-session-node-lock": self._handle_proxy_session_node_lock_post,
             "/api/proxy-session-usage-reset": self._handle_proxy_session_usage_reset_post,
@@ -209,6 +226,26 @@ class StudioHTTPRequestHandler(BaseHTTPRequestHandler):
             "/api/context-workbench-history-message-delete": self._handle_context_workbench_history_message_delete_post,
             "/api/context-workbench-history-clear": self._handle_context_workbench_history_clear_post,
         }
+
+    def _handle_token_counts_post(self, payload: dict[str, object]) -> None:
+        raw_items = payload.get("items")
+        if not isinstance(raw_items, list):
+            raise ValueError("items must be a list")
+        items: list[dict[str, object]] = []
+        for raw_item in raw_items[:1024]:
+            if not isinstance(raw_item, dict):
+                continue
+            item_id = sanitize_text(raw_item.get("id") or "").strip()
+            if not item_id:
+                continue
+            items.append(
+                {
+                    "id": item_id,
+                    "tokens": estimate_token_count(raw_item.get("text") or ""),
+                    "tool_tokens": estimate_token_count(raw_item.get("tool_text") or ""),
+                }
+            )
+        self._send_json({"items": items})
 
     def _handle_proxy_sync_session_post(self, payload: dict[str, object]) -> None:
         transcript = payload.get("transcript")
@@ -289,9 +326,7 @@ class StudioHTTPRequestHandler(BaseHTTPRequestHandler):
             context_review_interval_minutes=payload.get("context_review_interval_minutes")
             if type(payload.get("context_review_interval_minutes")) is int
             else None,
-            response_providers=payload.get("response_providers")
-            if isinstance(payload.get("response_providers"), list)
-            else None,
+            response_providers=context_provider_updates_from_request(payload.get("response_providers")),
             context_token_warning_threshold=payload.get("context_token_warning_threshold"),
             context_token_critical_threshold=payload.get("context_token_critical_threshold"),
             codex_system_prompt=payload.get("codex_system_prompt")
@@ -309,18 +344,13 @@ class StudioHTTPRequestHandler(BaseHTTPRequestHandler):
             ui_font_size=payload.get("ui_font_size") if type(payload.get("ui_font_size")) is int else None,
         )
         self.app_state.refresh_settings(updated_settings)
-        should_refresh_models = bool(payload.get("refresh_models"))
-        provider_payloads = context_workbench_provider_payloads(
-            updated_settings,
-            refresh_models=should_refresh_models,
-        )
-        self._send_json(
-            {
-                "settings": context_workbench_settings_payload(updated_settings),
-                "models": context_workbench_models_payload(updated_settings, provider_payloads),
-                "providers": provider_payloads,
-            }
-        )
+        self._send_json(context_workbench_settings_response(updated_settings))
+
+    def _handle_context_workbench_models_refresh_post(self, payload: dict[str, object]) -> None:
+        provider_id = sanitize_text(payload.get("provider_id") or "").strip()
+        updated_settings = refresh_context_workbench_provider_models(load_settings(), provider_id)
+        self.app_state.refresh_settings(updated_settings)
+        self._send_json(context_workbench_settings_response(updated_settings))
 
     def _handle_proxy_session_transcript_post(self, payload: dict[str, object]) -> None:
         session_id = sanitize_text(payload.get("session_id") or "").strip()
@@ -489,8 +519,31 @@ class StudioHTTPRequestHandler(BaseHTTPRequestHandler):
     def _handle_cancel_request_post(self, payload: dict[str, object]) -> None:
         session = self.app_state.get_session(payload.get("session_id"))
         mode = sanitize_text(payload.get("mode") or "context").strip() or "context"
-        cancelled = self.app_state.cancel_session_request(session, mode)
-        self._send_json({"cancelled": cancelled})
+        request_id = sanitize_text(payload.get("request_id") or "").strip()
+        if not request_id:
+            raise ValueError("request_id is required")
+        control = self.app_state.cancel_session_request(session, mode, request_id)
+        if control is None:
+            self._send_json(
+                {
+                    "cancelled": False,
+                    "completed": True,
+                    "request_id": request_id,
+                    "status": "not_running",
+                }
+            )
+            return
+
+        completed = control.completed_event.wait(timeout=15)
+        self._send_json(
+            {
+                "cancelled": True,
+                "completed": completed,
+                "request_id": control.request_id,
+                "status": "cancelled" if completed else "stopping",
+            },
+            status=HTTPStatus.OK if completed else HTTPStatus.ACCEPTED,
+        )
 
     def _handle_context_chat_post(self, payload: dict[str, object]) -> None:
         session = self.app_state.get_session(payload.get("session_id"))
@@ -506,6 +559,14 @@ class StudioHTTPRequestHandler(BaseHTTPRequestHandler):
         )
         request_id = self.app_state.acquire_session_request(session, "context")
         safe_set_proxy_context_run_state(session.session_id, request_id, True)
+
+        def raise_if_cancelled() -> None:
+            if self.app_state.is_session_request_cancelled(session, request_id):
+                raise RequestCancelledError()
+
+        def register_cancel(callback: Callable[[], None] | None) -> None:
+            self.app_state.register_session_request_cancel_callback(session, request_id, callback)
+
         try:
             answer, used_model, draft, tool_events = run_context_chat_turn(
                 self.app_state.settings,
@@ -513,7 +574,12 @@ class StudioHTTPRequestHandler(BaseHTTPRequestHandler):
                 message=message,
                 selected_indexes=selected_indexes,
                 reasoning_effort=reasoning_effort,
+                check_cancelled=raise_if_cancelled,
+                register_cancel=register_cancel,
             )
+            raise_if_cancelled()
+            if not self.app_state.begin_session_request_commit(session, request_id):
+                raise RequestCancelledError()
             self._send_json(
                 build_context_chat_response_payload(
                     self.app_state,
@@ -549,6 +615,9 @@ class StudioHTTPRequestHandler(BaseHTTPRequestHandler):
             if self.app_state.is_session_request_cancelled(session, request_id):
                 raise RequestCancelledError()
 
+        def register_cancel(callback: Callable[[], None] | None) -> None:
+            self.app_state.register_session_request_cancel_callback(session, request_id, callback)
+
         def handle_text_delta(delta: str) -> None:
             raise_if_cancelled()
             safe_delta = sanitize_text(delta)
@@ -575,6 +644,7 @@ class StudioHTTPRequestHandler(BaseHTTPRequestHandler):
             self._write_stream_event({"type": "reset"})
 
         try:
+            self._write_stream_event({"type": "started", "request_id": request_id})
             answer, used_model, draft, tool_events = run_context_chat_turn(
                 self.app_state.settings,
                 session,
@@ -585,8 +655,13 @@ class StudioHTTPRequestHandler(BaseHTTPRequestHandler):
                 on_round_reset=handle_round_reset,
                 on_tool_event=handle_tool_event,
                 check_cancelled=raise_if_cancelled,
+                register_cancel=register_cancel,
             )
             raise_if_cancelled()
+            if draft.has_changes:
+                self._write_stream_event({"type": "finalizing", "stage": "commit", "has_changes": True})
+            if not self.app_state.begin_session_request_commit(session, request_id):
+                raise RequestCancelledError()
             payload_data = build_context_chat_response_payload(
                 self.app_state,
                 session,
@@ -597,8 +672,6 @@ class StudioHTTPRequestHandler(BaseHTTPRequestHandler):
                 tool_events=tool_events,
             )
             payload_data["type"] = "done"
-            if draft.has_changes:
-                self._write_stream_event({"type": "finalizing", "stage": "commit", "has_changes": True})
             self._write_stream_event(sanitize_value(payload_data))
         except (ClientDisconnectedError, RequestCancelledError):
             pass

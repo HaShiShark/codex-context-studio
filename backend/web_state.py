@@ -6,13 +6,14 @@ import os
 import re
 import threading
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from simple_agent.agent import sanitize_text
 from simple_agent.config import Settings
 
 from backend.web_constants import (
+    ActiveRequestControl,
     ATTACHMENTS_DIR,
     ATTACHMENTS_ROUTE,
     HIDDEN_WORKSPACE_ENTRIES,
@@ -31,6 +32,7 @@ from backend.web_context import (
     utc_timestamp,
 )
 from backend.node_locking import normalize_node_locks
+from backend.text_safety import sanitize_text
 
 
 def is_relative_to_path(candidate: Path, root: Path) -> bool:
@@ -95,22 +97,16 @@ class AppState:
 
         with self.lock:
             active_mode = sanitize_text(session.active_request_mode or "").strip()
-            active_cancelled = bool(session.active_cancel_event and session.active_cancel_event.is_set())
             if active_mode and active_mode != safe_mode:
                 raise ValueError("The main Codex request and context workbench request cannot run together.")
             if active_mode == safe_mode:
-                if active_cancelled:
-                    request_id = uuid.uuid4().hex
-                    session.active_request_id = request_id
-                    session.active_cancel_event = threading.Event()
-                    return request_id
                 if safe_mode == "main":
                     raise ValueError("The main Codex request is still running.")
                 raise ValueError("The context workbench request is still running.")
             request_id = uuid.uuid4().hex
             session.active_request_mode = safe_mode
             session.active_request_id = request_id
-            session.active_cancel_event = threading.Event()
+            session.active_request_control = ActiveRequestControl(request_id=request_id)
             return request_id
 
     def release_session_request(self, session: SessionState, mode: str, request_id: str | None = None) -> None:
@@ -118,30 +114,72 @@ class AppState:
         if safe_mode not in {"main", "context"}:
             return
 
+        completed_control: ActiveRequestControl | None = None
         with self.lock:
             if request_id is not None and session.active_request_id != request_id:
                 return
             if session.active_request_mode == safe_mode:
+                completed_control = session.active_request_control
                 session.active_request_mode = None
                 session.active_request_id = None
-                session.active_cancel_event = None
+                session.active_request_control = None
+        if completed_control is not None:
+            completed_control.mark_completed()
 
-    def cancel_session_request(self, session: SessionState, mode: str) -> bool:
+    def cancel_session_request(
+        self,
+        session: SessionState,
+        mode: str,
+        request_id: str = "",
+    ) -> ActiveRequestControl | None:
         safe_mode = sanitize_text(mode).strip()
         if safe_mode not in {"main", "context"}:
             raise ValueError("invalid session request mode")
+        safe_request_id = sanitize_text(request_id).strip()
 
         with self.lock:
-            if session.active_request_mode != safe_mode or session.active_cancel_event is None:
+            if session.active_request_mode != safe_mode:
+                return None
+            if safe_request_id and session.active_request_id != safe_request_id:
+                return None
+            control = session.active_request_control
+        if control is None:
+            return None
+        return control if control.cancel() else None
+
+    def begin_session_request_commit(self, session: SessionState, request_id: str) -> bool:
+        with self.lock:
+            if session.active_request_id != request_id:
                 return False
-            session.active_cancel_event.set()
-            return True
+            control = session.active_request_control
+        return bool(control and control.try_begin_commit())
+
+    def register_session_request_cancel_callback(
+        self,
+        session: SessionState,
+        request_id: str,
+        callback: Callable[[], None] | None,
+    ) -> None:
+        with self.lock:
+            if session.active_request_id != request_id:
+                control = None
+            else:
+                control = session.active_request_control
+        if control is None:
+            if callable(callback):
+                try:
+                    callback()
+                except Exception:  # noqa: BLE001 - stale request cleanup is best effort
+                    pass
+            return
+        control.register_cancel_callback(callback if callable(callback) else None)
 
     def is_session_request_cancelled(self, session: SessionState, request_id: str) -> bool:
         with self.lock:
             if session.active_request_id != request_id:
                 return True
-            return bool(session.active_cancel_event and session.active_cancel_event.is_set())
+            control = session.active_request_control
+        return control is None or control.is_cancelled()
 
     def upsert_proxy_session(
         self,
@@ -205,16 +243,22 @@ class AppState:
                 if is_main_turn_running:
                     safe_turn_request_id = next_main_turn_id or "main-turn-running"
                     if active_mode != "main" or active_request_id != safe_turn_request_id:
+                        previous_control = session.active_request_control
                         session.active_request_mode = "main"
                         session.active_request_id = safe_turn_request_id
-                        session.active_cancel_event = threading.Event()
+                        session.active_request_control = ActiveRequestControl(request_id=safe_turn_request_id)
+                        if previous_control is not None:
+                            previous_control.mark_completed()
                     session.main_turn_id = next_main_turn_id
                     session.main_turn_started_at = next_main_turn_started_at
                     session.main_turn_updated_at = next_main_turn_updated_at
                 elif active_mode == "main":
+                    completed_control = session.active_request_control
                     session.active_request_mode = None
                     session.active_request_id = None
-                    session.active_cancel_event = None
+                    session.active_request_control = None
+                    if completed_control is not None:
+                        completed_control.mark_completed()
                     session.main_turn_id = ""
                     session.main_turn_started_at = ""
                     session.main_turn_updated_at = ""

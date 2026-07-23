@@ -15,6 +15,7 @@ import {
   type TranscriptPatchOp,
 } from './api';
 import ContextMapSidebar from './components/ContextMapSidebar';
+import { enrichConversationTokenCounts } from './conversationTokenCounts';
 import { normalizeSupportedLocale, type UiLocale } from './i18n';
 import type {
   ContextReview,
@@ -236,6 +237,7 @@ export default function WorkbenchWindow() {
   const nodeLockPendingIdsRef = useRef<Set<string>>(new Set());
   const lastRealtimeEventIdRef = useRef(0);
   const realtimeClientIdRef = useRef(`frontend-window-${Math.random().toString(36).slice(2)}`);
+  const tokenEnrichmentIdRef = useRef(0);
 
   const setMessagesIfChanged = useCallback((next: MessageRecord[]) => {
     const sig = conversationSignature(next);
@@ -243,6 +245,23 @@ export default function WorkbenchWindow() {
     messagesSignatureRef.current = sig;
     setMessages(next);
   }, []);
+
+  const setConversationWithTokenCounts = useCallback((conversation: MessageRecord[]) => {
+    setMessagesIfChanged(conversation);
+    const requestId = tokenEnrichmentIdRef.current + 1;
+    tokenEnrichmentIdRef.current = requestId;
+    void enrichConversationTokenCounts(conversation)
+      .then((enriched) => {
+        if (tokenEnrichmentIdRef.current === requestId) setMessagesIfChanged(enriched);
+      })
+      .catch(() => {
+        // Keep the immediate local estimate when the web service is unavailable.
+      });
+  }, [setMessagesIfChanged]);
+
+  const setTranscriptConversation = useCallback((transcript: TranscriptEntry[]) => {
+    setConversationWithTokenCounts(normalizeConversation(transcript));
+  }, [setConversationWithTokenCounts]);
 
   const updateNodeLockPendingIds = useCallback((updater: (previous: Set<string>) => Set<string>) => {
     setNodeLockPendingIds((previous) => {
@@ -315,8 +334,8 @@ export default function WorkbenchWindow() {
     applyProxySessionRuntime(session);
     setProxyUsageSummary(session.usage_summary || null);
     applyPendingContextReview(session.pending_context_review || null);
-    setMessagesIfChanged(normalizeConversation(transcriptRef.current));
-  }, [applyPendingContextReview, applyProxySessionRuntime, setMessagesIfChanged]);
+    setTranscriptConversation(transcriptRef.current);
+  }, [applyPendingContextReview, applyProxySessionRuntime, setTranscriptConversation]);
 
   const loadInit = useCallback(async (opts: { silent?: boolean; targetSessionId?: string } = {}) => {
     const targetSid = opts.targetSessionId?.trim() || currentUrlSessionId();
@@ -356,7 +375,7 @@ export default function WorkbenchWindow() {
         setNodeLockPendingIds(new Set());
         setProxyUsageSummary(null);
         applyPendingContextReview(null);
-        setMessagesIfChanged([]);
+        setConversationWithTokenCounts([]);
         return;
       }
 
@@ -385,7 +404,7 @@ export default function WorkbenchWindow() {
     } finally {
       if (!opts.silent) { visibleLoadInFlightRef.current = false; if (isCurrentLoad()) setLoading(false); }
     }
-  }, [applyPendingContextReview, applyProxySession]);
+  }, [applyPendingContextReview, applyProxySession, setConversationWithTokenCounts]);
 
   useEffect(() => { void loadInit(); }, [loadInit]);
 
@@ -463,7 +482,7 @@ export default function WorkbenchWindow() {
       if (nextVersion && nextVersion <= transcriptVersionRef.current) return;
       if (nextVersion) transcriptVersionRef.current = nextVersion;
       transcriptRef.current = event.transcript || event.session?.transcript || [];
-      setMessagesIfChanged(normalizeConversation(transcriptRef.current));
+      setTranscriptConversation(transcriptRef.current);
       if (event.session) {
         applyProxySessionRuntime(event.session);
         applyPendingContextReview(event.session.pending_context_review || null);
@@ -481,7 +500,7 @@ export default function WorkbenchWindow() {
       }
       transcriptRef.current = applyTranscriptPatch(transcriptRef.current, event.ops || []);
       if (nextVersion) transcriptVersionRef.current = nextVersion;
-      setMessagesIfChanged(normalizeConversation(transcriptRef.current));
+      setTranscriptConversation(transcriptRef.current);
       if (event.session) {
         applyProxySessionRuntime(event.session);
         applyPendingContextReview(event.session.pending_context_review || null);
@@ -493,7 +512,7 @@ export default function WorkbenchWindow() {
     if (event.type === 'usage_update') {
       setProxyUsageSummary(event.usage_summary || null);
     }
-  }, [applyPendingContextReview, applyProxySession, applyProxySessionRuntime, setMessagesIfChanged, uiLocale]);
+  }, [applyPendingContextReview, applyProxySession, applyProxySessionRuntime, setTranscriptConversation, uiLocale]);
 
   useEffect(() => {
     if (!proxySessionId) return undefined;
@@ -566,9 +585,9 @@ export default function WorkbenchWindow() {
       if (rawTranscript) {
         transcriptRef.current = rawTranscript;
       }
-      setMessagesIfChanged(conversation);
+      setConversationWithTokenCounts(conversation);
     },
-    [proxySessionId, setMessagesIfChanged],
+    [proxySessionId, setConversationWithTokenCounts],
   );
 
   const handleContextReviewGenerate = useCallback(async () => {

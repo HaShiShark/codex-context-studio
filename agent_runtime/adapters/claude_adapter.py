@@ -10,8 +10,13 @@ from agent_runtime.adapters.base import (
     BaseAdapter,
     ProviderRequestContext,
     ToolSpec,
+    clear_stream_cancel,
+    provider_replay_payload,
+    register_stream_cancel,
     reasoning_effort_token_budget,
+    to_plain_value,
 )
+from agent_runtime.core.canonical_types import CanonicalItem, ProviderRaw
 from agent_runtime.core.stream_events import (
     AdapterStreamEvent,
     ProviderDoneEvent,
@@ -22,13 +27,6 @@ from agent_runtime.core.stream_events import (
     ToolCallReadyEvent,
 )
 
-
-_PROMPT_BLOCK_LABELS: Mapping[str, str] = {
-    "system": "System",
-    "developer": "Developer",
-    "memory": "Memory",
-    "summary": "Summary",
-}
 
 _TOOL_CALL_ITEM_TYPES = {"tool_call", "function_call"}
 _TOOL_RESULT_ITEM_TYPES = {"tool_result", "function_call_output"}
@@ -66,13 +64,15 @@ class _ThinkingBlockBuffer:
     provider_raw: Any | None = None
 
     def to_block(self) -> dict[str, Any]:
-        block: dict[str, Any] = {"type": self.block_type}
+        raw_block = to_plain_value(self.provider_raw)
+        block: dict[str, Any] = (
+            dict(raw_block) if isinstance(raw_block, Mapping) else {}
+        )
+        block["type"] = self.block_type
         if self.block_type == "thinking":
             block["thinking"] = "".join(self.thinking_chunks)
             if self.signature:
                 block["signature"] = self.signature
-        elif isinstance(self.provider_raw, Mapping):
-            block.update(dict(self.provider_raw))
         return block
 
 
@@ -119,15 +119,23 @@ class ClaudeAdapter(BaseAdapter[dict[str, Any]]):
         request: dict[str, Any],
         context: ProviderRequestContext | None = None,
     ) -> Iterable[AdapterStreamEvent]:
-        del context
-
         stream = self.client.messages.stream(**dict(request))
         if hasattr(stream, "__enter__"):
             with stream as active_stream:
-                yield from self._stream_events(active_stream)
+                registered = register_stream_cancel(context, active_stream)
+                try:
+                    yield from self._stream_events(active_stream)
+                finally:
+                    if registered:
+                        clear_stream_cancel(context)
             return
 
-        yield from self._stream_events(stream)
+        registered = register_stream_cancel(context, stream)
+        try:
+            yield from self._stream_events(stream)
+        finally:
+            if registered:
+                clear_stream_cancel(context)
 
     def _stream_events(self, stream: Iterable[Any]) -> Iterable[AdapterStreamEvent]:
         output_chunks: list[str] = []
@@ -144,7 +152,11 @@ class ClaudeAdapter(BaseAdapter[dict[str, Any]]):
         for event in stream:
             event_type = _get_value(event, "type", "")
 
-            if event_type == "content_block_start":
+            if event_type == "message_start":
+                message = _get_value(event, "message")
+                usage = _merge_usage(usage, _get_value(message, "usage"))
+
+            elif event_type == "content_block_start":
                 index = _event_index(event)
                 content_block = _get_value(event, "content_block")
                 content_block_type = _get_value(content_block, "type")
@@ -152,6 +164,9 @@ class ClaudeAdapter(BaseAdapter[dict[str, Any]]):
                     thinking_buffers[index] = _ThinkingBlockBuffer(
                         index=index,
                         block_type="thinking",
+                        signature=_coerce_text(
+                            _get_value(content_block, "signature", "")
+                        ),
                         provider_raw=content_block,
                     )
                     active_reasoning_indexes.add(index)
@@ -174,7 +189,9 @@ class ClaudeAdapter(BaseAdapter[dict[str, Any]]):
                 elif content_block_type == "text":
                     initial_text = _coerce_text(_get_value(content_block, "text", ""))
                     if initial_text:
+                        output_chunks.append(initial_text)
                         text_blocks.setdefault(index, []).append(initial_text)
+                        yield TextDeltaEvent(delta=initial_text, provider_raw=event)
                 elif content_block_type == "tool_use":
                     tool_buffers[index] = _ToolUseBuffer(
                         index=index,
@@ -241,7 +258,7 @@ class ClaudeAdapter(BaseAdapter[dict[str, Any]]):
                 finish_reason = _coerce_optional_text(
                     _get_value(delta, "stop_reason", finish_reason)
                 )
-                usage = _coerce_optional_mapping(_get_value(event, "usage", usage))
+                usage = _merge_usage(usage, _get_value(event, "usage"))
 
             elif event_type == "message_stop":
                 for tool_event in _remaining_tool_events(
@@ -317,11 +334,9 @@ class ClaudeAdapter(BaseAdapter[dict[str, Any]]):
 def _compile_system_prompt(prompt_blocks: Sequence[Any]) -> str:
     sections: list[str] = []
     for block in prompt_blocks:
-        kind = _coerce_text(_get_value(block, "kind", "system"))
-        label = _PROMPT_BLOCK_LABELS.get(kind, kind.title() or "System")
         text = _coerce_text(_get_value(block, "text", "")).strip()
         if text:
-            sections.append(f"[{label}]\n{text}")
+            sections.append(text)
     return "\n\n".join(sections)
 
 
@@ -354,13 +369,27 @@ def _canonical_items_from_record(record_or_item: Any) -> Iterable[Any]:
 
 
 def _append_canonical_item(messages: list[dict[str, Any]], item: Any) -> None:
+    provider_payload = provider_replay_payload(item, "claude")
+    if isinstance(provider_payload, Mapping):
+        role = _coerce_text(provider_payload.get("role", "assistant"))
+        if role not in {"user", "assistant"}:
+            raise ValueError(f"Claude messages only support user/assistant, got {role!r}")
+        _append_message(
+            messages,
+            role,
+            _content_to_blocks(provider_payload.get("content")),
+        )
+        return
+
     item_type = _coerce_text(_get_value(item, "type"))
 
     if item_type == "message":
         role = _coerce_text(_get_value(item, "role", ""))
+        if role in {"developer", "system"}:
+            role = "user"
         if role not in {"user", "assistant"}:
             raise ValueError(f"Claude messages only support user/assistant, got {role!r}")
-        _append_blocks(messages, role, _content_to_blocks(_get_value(item, "content")))
+        _append_message(messages, role, _content_to_blocks(_get_value(item, "content")))
         return
 
     if item_type in _TOOL_CALL_ITEM_TYPES:
@@ -412,6 +441,15 @@ def _append_blocks(
         return
 
     messages.append({"role": role, "content": blocks})
+
+
+def _append_message(
+    messages: list[dict[str, Any]],
+    role: str,
+    blocks: list[dict[str, Any]],
+) -> None:
+    if blocks:
+        messages.append({"role": role, "content": blocks})
 
 
 def _content_to_blocks(content: Any) -> list[dict[str, Any]]:
@@ -593,7 +631,7 @@ def _canonical_assistant_items(
     thinking_buffers: Mapping[int, _ThinkingBlockBuffer],
     tool_buffers: Mapping[int, _ToolUseBuffer],
     output_text: str,
-) -> list[dict[str, Any]]:
+) -> list[CanonicalItem]:
     blocks: list[dict[str, Any]] = []
     indexes = sorted({*text_blocks, *thinking_buffers, *tool_buffers})
     for index in indexes:
@@ -622,7 +660,29 @@ def _canonical_assistant_items(
     if not blocks:
         return []
 
-    return [{"type": "message", "role": "assistant", "content": blocks}]
+    tool_calls = [
+        {
+            "call_id": buffer.call_id,
+            "name": buffer.name,
+            "arguments": _parse_tool_arguments(buffer.raw_arguments),
+            "raw_arguments": buffer.raw_arguments,
+        }
+        for _, buffer in sorted(tool_buffers.items())
+    ]
+    payload = {"role": "assistant", "content": blocks}
+    return [
+        CanonicalItem(
+            type="message",
+            role="assistant",
+            content=blocks,
+            provider_raw=ProviderRaw(
+                provider_id="claude",
+                event_type="assistant_message",
+                payload=payload,
+            ),
+            metadata={"tool_calls": tool_calls},
+        )
+    ]
 
 
 def _parse_tool_arguments(raw_arguments: str) -> Mapping[str, Any]:
@@ -683,6 +743,18 @@ def _coerce_optional_mapping(value: Any) -> Mapping[str, Any] | None:
     if isinstance(value, Mapping):
         return dict(value)
     return None
+
+
+def _merge_usage(
+    current: Mapping[str, Any] | None,
+    value: Any,
+) -> Mapping[str, Any] | None:
+    next_usage = _coerce_optional_mapping(to_plain_value(value))
+    if next_usage is None:
+        return current
+    return {**dict(current or {}), **dict(next_usage)}
+
+
 
 
 __all__ = ["ClaudeAdapter"]

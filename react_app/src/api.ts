@@ -91,16 +91,16 @@ export function fetchInit(options: { sessionId?: string; includeConversation?: b
 }
 
 export type ContextWorkbenchSettingsPayload = Partial<ContextWorkbenchSettingsResponse['settings']> & {
-  refresh_models?: boolean;
-  response_providers?: Array<Partial<ContextWorkbenchSettingsResponse['providers'][number]> & {
+  response_providers?: Array<Partial<Pick<
+    ContextWorkbenchSettingsResponse['providers'][number],
+    'id' | 'name' | 'provider_type' | 'enabled' | 'api_base_url' | 'default_model'
+  >> & {
     api_key?: string;
-    clear_api_key?: boolean;
   }>;
 };
 
-export function fetchContextWorkbenchSettings(options: { refreshModels?: boolean } = {}): Promise<ContextWorkbenchSettingsResponse> {
-  const query = options.refreshModels ? '?refresh_models=1' : '';
-  return apiFetch<ContextWorkbenchSettingsResponse>(`/api/context-workbench-settings${query}`);
+export function fetchContextWorkbenchSettings(): Promise<ContextWorkbenchSettingsResponse> {
+  return apiFetch<ContextWorkbenchSettingsResponse>('/api/context-workbench-settings');
 }
 
 export function saveContextWorkbenchSettingsRequest(
@@ -109,6 +109,36 @@ export function saveContextWorkbenchSettingsRequest(
   return apiFetch<ContextWorkbenchSettingsResponse>('/api/context-workbench-settings', {
     method: 'POST',
     body: JSON.stringify(payload),
+  });
+}
+
+export function refreshContextWorkbenchModelsRequest(
+  providerId: string,
+): Promise<ContextWorkbenchSettingsResponse> {
+  return apiFetch<ContextWorkbenchSettingsResponse>('/api/context-workbench-settings/refresh-models', {
+    method: 'POST',
+    body: JSON.stringify({ provider_id: providerId }),
+  });
+}
+
+export interface TokenCountRequestItem {
+  id: string;
+  text: string;
+  tool_text: string;
+}
+
+export interface TokenCountResponseItem {
+  id: string;
+  tokens: number;
+  tool_tokens: number;
+}
+
+export function fetchTokenCountsRequest(
+  items: TokenCountRequestItem[],
+): Promise<{ items: TokenCountResponseItem[] }> {
+  return apiFetch('/api/token-counts', {
+    method: 'POST',
+    body: JSON.stringify({ items }),
   });
 }
 
@@ -283,6 +313,27 @@ export function syncProxySessionRequest(payload: {
 }
 
 // ── workbench chat ────────────────────────────────────────────────────────────
+
+export interface CancelContextChatResponse {
+  cancelled: boolean;
+  completed: boolean;
+  request_id: string;
+  status: 'cancelled' | 'stopping' | 'not_running' | string;
+}
+
+export function cancelContextChatRequest(
+  sessionId: string,
+  requestId: string,
+): Promise<CancelContextChatResponse> {
+  return apiFetch('/api/cancel-request', {
+    method: 'POST',
+    body: JSON.stringify({
+      session_id: sessionId,
+      request_id: requestId,
+      mode: 'context',
+    }),
+  });
+}
 
 export async function streamContextChatRequest(
   payload: { session_id: string; message: string; selected_node_indexes?: number[]; reasoning_effort?: string },

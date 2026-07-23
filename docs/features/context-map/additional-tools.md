@@ -68,7 +68,7 @@
 - 展开 collaboration 命名空间后，共有 9 个可直接调用的工具。
 - `exec.description` 中明确声明了 16 个工具。
 - 总计明确列出了 25 个可调用工具。
-- 按项目当前 tokenizer 计算，原始 provider item 约为 5,737 个 token。
+- 按 Python 后端统一 tokenizer 计算，原始 provider item 约为 5,737 个 token。前端初次渲染可使用轻量估算，`POST /api/token-counts` 返回后按 transcript node id 无刷新校正。
 
 实际运行时的工具数量可能更多，因为 exec 契约明确允许省略延迟加载的嵌套工具，并通过 `ALL_TOOLS` 在运行时发现它们。
 

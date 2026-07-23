@@ -14,6 +14,7 @@
 8. 主 Codex turn 运行时，上下文模型不能发起。
 9. 上下文模型运行时，普通主 Codex 请求会在 proxy 层等待，直到上下文模型结束。
 10. “主 Codex turn 运行中”表示整轮 agent turn 仍在进行中，不等同于某一个 `/v1/responses` stream 是否仍在运行。
+11. 用户停止手动上下文模型时，Web 后端必须主动关闭当前 provider 流、丢弃本轮内存 draft，并在释放 context-run 状态后才确认“已停止”。前端断开自身响应流不等于取消成功。
 
 ## 2. 当前实现事实
 
@@ -29,6 +30,7 @@
 - 后端 snapshot、draft 和工具都使用同一套锁语义：locked 节点保留在 draft 里，但不暴露给上下文模型工具。
 - context workbench commit 前会检查 `node_lock_revision`，发现锁状态已变化就拒绝 commit，要求用户重试。
 - main-turn 运行态由 Codex lifecycle hook 和 turn-ended notify 维护，不靠 timeout 猜测。
+- 手动上下文模型流会先返回服务端 `request_id`；`POST /api/cancel-request` 使用 session 和 request id 精确取消本轮，请求完成和 context-run 释放后才返回完成确认。
 
 ## 3. 锁数据模型
 
@@ -165,6 +167,23 @@ is_node_locked(node):
 3. `ctx/context` 控制命令不标记 main turn running。
 4. main-turn 运行态不持久化，服务重启后不会误认为主 turn 仍在运行。
 
+`POST /api/cancel-request`
+
+```json
+{
+  "session_id": "session id",
+  "request_id": "manual context request id",
+  "mode": "context"
+}
+```
+
+行为：
+
+1. 只取消 session、mode 和 request id 都匹配的活动请求。
+2. 设置取消状态，并调用 adapter 注册的当前 provider stream `close/cancel` 能力，中断阻塞读取。
+3. 被取消的工具循环不会进入 transcript/history commit。
+4. 请求 worker 退出、代理 context-run 释放后，接口才返回 `completed:true`；等待确认期间前端显示“正在停止”。
+
 ## 7. 关键竞态处理
 
 ### 用户在 context 模型运行中改锁
@@ -213,6 +232,8 @@ is_node_locked(node):
 10. context running 时 node-lock API 返回 409。
 11. context running 时主请求等待；context end 后继续。
 12. internal context request 不等待自己。
+13. 手动停止会主动关闭阻塞中的 provider 流，且完成确认发生在 context-run 释放之后。
+14. 已取消的手动 draft 不写入 transcript 或工作台历史。
 
 ## 9. 维护检查点
 
@@ -225,3 +246,4 @@ is_node_locked(node):
 - context model 运行时是否仍禁止改锁？
 - 普通主请求是否仍在 `begin_request` 前等待 context idle？
 - main-turn 状态是否仍来自 Codex lifecycle 信号，而不是 stream 状态或 timeout？
+- 手动停止是否仍以服务端完成确认而不是前端 AbortController 作为“已停止”的事实来源？

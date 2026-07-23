@@ -199,11 +199,28 @@ def test_compact_prompt_uses_configured_manual_and_auto_defaults() -> None:
         assert is_local_compact_prompt_text("custom auto compact") is True
 
 
-def test_context_workbench_defaults_to_codex_55() -> None:
+def test_context_workbench_defaults_to_codex_56_sol() -> None:
     with isolated_settings():
         settings = config_module.load_settings()
         assert settings.context_workbench_provider_id == config_module.DEFAULT_CONTEXT_WORKBENCH_PROVIDER_ID
-        assert settings.context_workbench_model == config_module.DEFAULT_CONTEXT_WORKBENCH_MODEL
+        assert config_module.DEFAULT_CONTEXT_WORKBENCH_MODEL == "gpt-5.6-sol"
+        assert settings.context_workbench_model == "gpt-5.6-sol"
+
+
+def test_context_workbench_model_selection_persists_across_other_settings_updates() -> None:
+    with isolated_settings():
+        config_module.save_settings(
+            context_workbench_provider_id=config_module.CODEX_PROXY_PROVIDER_ID,
+            context_workbench_model="gpt-5.5",
+        )
+        settings = config_module.load_settings()
+        assert settings.context_workbench_provider_id == config_module.CODEX_PROXY_PROVIDER_ID
+        assert settings.context_workbench_model == "gpt-5.5"
+
+        config_module.save_settings(theme_mode="dark")
+        settings = config_module.load_settings()
+        assert settings.context_workbench_provider_id == config_module.CODEX_PROXY_PROVIDER_ID
+        assert settings.context_workbench_model == "gpt-5.5"
 
 
 def test_context_review_trigger_settings_persist() -> None:
@@ -226,6 +243,21 @@ def test_context_review_trigger_settings_persist() -> None:
         assert settings.context_workbench_model == config_module.DEFAULT_CONTEXT_WORKBENCH_MODEL
 
 
+def test_ui_font_size_uses_the_same_10_to_32_range_as_the_workbench() -> None:
+    with isolated_settings():
+        config_module.save_settings(ui_font_size=10)
+        assert config_module.load_settings().ui_font_size == 10
+
+        config_module.save_settings(ui_font_size=32)
+        assert config_module.load_settings().ui_font_size == 32
+
+        config_module.save_settings(ui_font_size=9)
+        assert config_module.load_settings().ui_font_size == 10
+
+        config_module.save_settings(ui_font_size=33)
+        assert config_module.load_settings().ui_font_size == 32
+
+
 def main() -> None:
     tests = [
         test_first_codex_instructions_updates_default_and_current_on_next_proxy_start,
@@ -236,8 +268,10 @@ def main() -> None:
         test_codex_system_prompt_override_replaces_only_lite_base_developer,
         test_codex_system_prompt_override_does_not_synthesize_missing_prompt_fields,
         test_compact_prompt_uses_configured_manual_and_auto_defaults,
-        test_context_workbench_defaults_to_codex_55,
+        test_context_workbench_defaults_to_codex_56_sol,
+        test_context_workbench_model_selection_persists_across_other_settings_updates,
         test_context_review_trigger_settings_persist,
+        test_ui_font_size_uses_the_same_10_to_32_range_as_the_workbench,
     ]
     for test in tests:
         test()

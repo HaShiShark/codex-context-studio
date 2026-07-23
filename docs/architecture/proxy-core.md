@@ -478,7 +478,7 @@ transcript_editor.py             # 节点级编辑防错和批量操作，可后
 
 `proxy_fastapi.py` 保留 HTTP、SSE、鉴权转发、ctx fallback、WebSocket 推送等外壳逻辑；核心的 transcript/cursor/compact 状态转换应尽量委托给上面的纯模块。
 
-`agent_runtime/` 不属于本设计的 proxy transcript 主链路底座。它里面的 `TranscriptRecord` / `TranscriptRole` 是给轻量 agent adapter 和 `simple_agent` 使用的聊天历史契约，当前只表达 `user` / `assistant`；不能把它当成 proxy core 的 lossless transcript contract。proxy 主链路必须继续以 `backend/transcript_codec.py` 的 `TranscriptNode` / provider items 为准，保留 `system`、`developer`、`context`、`subagent`、`compaction` 以及未知 provider item。
+`agent_runtime/adapters/` 只负责将当前上下文模型请求映射到不同 provider；不再维护第二套 agent core、工具注册表或聊天历史契约。proxy 主链路唯一的无损 transcript contract 是 `backend/transcript_codec.py` 的 `TranscriptNode` / provider items，必须保留 `system`、`developer`、`context`、`subagent`、`compaction` 以及未知 provider item。
 
 ## 12. 检查清单
 

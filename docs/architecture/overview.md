@@ -155,6 +155,7 @@ flowchart TB
         STORE["proxy_store.py\nsession 状态、持久化、锁和轮次闸门"]
         FASTAPI["proxy_fastapi.py\nHTTP、SSE、上游鉴权、实时事件"]
         WEB["web_runtime.py / web_context.py\n上下文模型快照、工具、提交"]
+        TOKENS["token_count.py\n统一的精确 token 计数"]
         REACT["React 工作台\n上下文地图、锁、手动上下文模型"]
     end
 
@@ -165,6 +166,7 @@ flowchart TB
     PC --> STORE
     STORE --> FASTAPI
     WEB --> FASTAPI
+    TOKENS --> WEB
     REACT --> WEB
 ```
 

@@ -229,5 +229,8 @@ export function getContextWeightSource(message: MessageRecord) {
 }
 
 export function getContextTokenCount(message: MessageRecord) {
-  return countTokens(getContextWeightSource(message)) + getContextImageTokenEstimate(message);
+  const textTokens = Number.isFinite(message.tokenEstimate)
+    ? Number(message.tokenEstimate)
+    : countTokens(getContextWeightSource(message));
+  return textTokens + getContextImageTokenEstimate(message);
 }

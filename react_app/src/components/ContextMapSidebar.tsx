@@ -8,7 +8,6 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from 'react';
 
-import './ContextMapSidebar.polish.css';
 import ContextWorkbench from './ContextWorkbench';
 import ContextMapNodeList from './ContextMapNodeList';
 import ContextMinimap from './ContextMinimap';

@@ -335,6 +335,43 @@ def test_session_reset_route_is_removed() -> None:
     assert response.status_code in {HTTPStatus.NOT_FOUND, HTTPStatus.METHOD_NOT_ALLOWED}
 
 
+def test_custom_provider_usage_route_records_normalized_session_usage() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        original_store = proxy_fastapi.STORE
+        try:
+            proxy_fastapi.STORE = new_store(temp_dir)
+            with TestClient(proxy_fastapi.app) as client:
+                response = client.post(
+                    f"/api/proxy/sessions/{SESSION_ID}/usage",
+                    json={
+                        "kind": "context_workbench",
+                        "model": "claude-test",
+                        "provider_id": "anthropic-custom",
+                        "provider_type": "claude",
+                        "usage": {
+                            "input_tokens": 10,
+                            "cache_creation_input_tokens": 20,
+                            "cache_read_input_tokens": 5,
+                            "output_tokens": 7,
+                        },
+                    },
+                )
+
+            assert response.status_code == HTTPStatus.OK
+            payload = response.json()
+            assert payload["recorded"] is True
+            assert payload["summary"]["request_count"] == 1
+            assert payload["summary"]["input_tokens"] == 35
+            assert payload["summary"]["cached_input_tokens"] == 5
+            assert payload["summary"]["output_tokens"] == 7
+
+            event = proxy_fastapi.STORE.sessions[SESSION_ID].usage_events[0]
+            assert event["provider_id"] == "anthropic-custom"
+            assert event["provider_type"] == "claude"
+        finally:
+            proxy_fastapi.STORE = original_store
+
+
 def test_transcript_replace_does_not_accept_legacy_record_payload() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         store = new_store(temp_dir)
@@ -896,6 +933,7 @@ def main() -> None:
         test_persistence_writes_proxy_session_folder_layout,
         test_transcript_replace_route_updates_proxy_state,
         test_session_reset_route_is_removed,
+        test_custom_provider_usage_route_records_normalized_session_usage,
         test_transcript_replace_does_not_accept_legacy_record_payload,
         test_restart_restores_transcript_and_cursor_for_next_diff,
         test_control_intercept_fallback_keeps_control_turn_in_context,

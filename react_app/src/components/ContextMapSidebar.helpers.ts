@@ -182,7 +182,9 @@ export function buildMessageStats(
   return messages.map((message, index) => {
     const meta = nodeMeta[index];
     const tokens = getContextTokenCount(message);
-    const toolTokens = countTokens(getContextToolWeightSource(message));
+    const toolTokens = Number.isFinite(message.toolTokenEstimate)
+      ? Number(message.toolTokenEstimate)
+      : countTokens(getContextToolWeightSource(message));
     const roleName = message.role === 'subagent'
       ? ['subagent', subagentAuthorFromMessage(message)].filter(Boolean).join(' ')
       : contextNodeRoleName(message.role);

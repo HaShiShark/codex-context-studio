@@ -10,16 +10,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-try:
-    import tiktoken
-except ImportError:
-    tiktoken = None
-
-_TOKEN_ENCODING: Any | None = None
-_TOKEN_ENCODING_LOAD_FAILED = False
-
-from simple_agent.agent import SimpleAgent, ToolEvent, sanitize_text
-from simple_agent.codex_tool_registry import ToolExecution
 
 from backend.web_constants import (
     ATTACHMENTS_DIR,
@@ -42,6 +32,10 @@ from backend.web_constants import (
     STATE_FILE,
     STATE_DIR,
 )
+from backend.provider_items import provider_message
+from backend.text_safety import sanitize_text
+from backend.token_count import estimate_token_count
+from backend.web_types import ToolEvent, ToolExecution
 from backend.transcript_codec import (
     input_items_to_transcript as core_input_items_to_transcript,
     transcript_to_input_items as core_transcript_to_input_items,
@@ -191,7 +185,7 @@ def flush_assistant_text_buffer(
         return
 
     provider_items.append(
-        SimpleAgent._message(
+        provider_message(
             "assistant",
             "".join(text_buffer),
         )
@@ -225,7 +219,7 @@ def build_provider_items_for_record(
     safe_role = sanitize_text(role).strip()
     if safe_role in {"system", "developer", "user"}:
         return [
-            SimpleAgent._message(
+            provider_message(
                 safe_role,
                 sanitize_text(text),
                 attachments=attachment_inputs_from_records(attachments) if safe_role == "user" else None,
@@ -289,7 +283,7 @@ def build_provider_items_for_record(
 
     if not provider_items:
         provider_items.append(
-            SimpleAgent._message(
+            provider_message(
                 "assistant",
                 sanitize_text(text),
             )
@@ -297,7 +291,7 @@ def build_provider_items_for_record(
     elif provider_items[-1].get("type") != "message":
         fallback_text = sanitize_text(text or "")
         provider_items.append(
-            SimpleAgent._message(
+            provider_message(
                 "assistant",
                 fallback_text,
             )
@@ -305,7 +299,7 @@ def build_provider_items_for_record(
     elif saw_tool:
         last_item_content = provider_items[-1].get("content")
         if not sanitize_text(last_item_content or "").strip():
-            provider_items[-1] = SimpleAgent._message(
+            provider_items[-1] = provider_message(
                 "assistant",
                 sanitize_text(text or ""),
             )
@@ -714,62 +708,6 @@ def collapsed_context_map_preview(text: str, limit: int = 72) -> str:
 
 def utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-
-def get_token_encoding() -> Any | None:
-    global _TOKEN_ENCODING, _TOKEN_ENCODING_LOAD_FAILED
-
-    if _TOKEN_ENCODING is not None:
-        return _TOKEN_ENCODING
-    if _TOKEN_ENCODING_LOAD_FAILED or tiktoken is None:
-        return None
-
-    try:
-        _TOKEN_ENCODING = tiktoken.get_encoding("cl100k_base")
-    except Exception:
-        _TOKEN_ENCODING_LOAD_FAILED = True
-        return None
-
-    return _TOKEN_ENCODING
-
-@dataclass(slots=True)
-class _TokenCacheEntry:
-    value: int
-
-_TOKEN_CACHE: dict[int, _TokenCacheEntry] = {}
-_TOKEN_CACHE_MAX = 4096
-
-def _token_cache_key(text: str) -> int:
-    return hash(text)
-
-def estimate_token_count(text: str) -> int:
-    safe_text = sanitize_text(text)
-    if not safe_text.strip():
-        return 0
-
-    cache_key = _token_cache_key(safe_text)
-    cached = _TOKEN_CACHE.get(cache_key)
-    if cached is not None:
-        return cached.value
-
-    encoding = get_token_encoding()
-    if encoding is not None:
-        try:
-            result = len(encoding.encode(safe_text))
-        except Exception:
-            result = _estimate_token_count_fallback(safe_text)
-    else:
-        result = _estimate_token_count_fallback(safe_text)
-
-    if len(_TOKEN_CACHE) >= _TOKEN_CACHE_MAX:
-        _TOKEN_CACHE.clear()
-    _TOKEN_CACHE[cache_key] = _TokenCacheEntry(result)
-    return result
-
-def _estimate_token_count_fallback(text: str) -> int:
-    compact = text.strip()
-    ascii_tokens = re.findall(r"[A-Za-z0-9_]+", compact)
-    non_ascii_chars = [char for char in compact if not char.isspace() and not char.isascii()]
-    return max(1, len(ascii_tokens) + len(non_ascii_chars))
 
 def load_context_edit_markers() -> dict[str, dict[str, object]]:
     try:
@@ -2347,7 +2285,7 @@ class ContextWorkbenchToolRegistry:
                         {
                             "review_rationale": {
                                 "type": "string",
-                                "description": "User-facing proposal rationale: why this consolidation is useful, why it should not affect the current task, what important information remains, and any material risk. Use proposal language. Never mention node numbers, token counts, tools, or draft mechanics.",
+                                "description": "User-facing proposal rationale: why this consolidation is useful, how it relates to the current task, what important information remains, and any material risk. Prefer readable labeled points when helpful, but adapt the structure to the actual proposal instead of filling a rigid template. Use proposal language. Never mention node numbers, token counts, tools, or draft mechanics.",
                             }
                         }
                         if self.review_mode
