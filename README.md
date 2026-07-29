@@ -50,6 +50,10 @@ This project lets you see Codex's context consumption, what's retained after com
 
 > Chat with a dedicated secondary model to analyze, edit, compress, and manage the main Codex's context. You can plug in a cheap secondary model.
 
+### 💡 Automatic Context Maintenance — Stay Focused Without Losing Memory
+
+> Automatically maintain Codex's context by compressing completed or unrelated history while preserving key decisions, constraints, current task state, and useful working memory. Codex stays focused without losing important context.
+
 ### 📈 Usage Panel — How Much Did This Session Cost?
 
 > View token consumption, cache hit rate, and estimated cost across your Codex session.
@@ -73,6 +77,12 @@ This project lets you see Codex's context consumption, what's retained after com
 ### Context Compression Result
 
 ![Context compression result](docs/assets/screenshots/eng/2.png)
+
+### Automatic Context Maintenance
+
+![Automatic context maintenance](docs/assets/screenshots/eng/context-maintenance.png)
+
+![Automatically maintained context](docs/assets/screenshots/eng/context-maintenance-result.png)
 
 ### Prompt Replacement
 
@@ -199,7 +209,7 @@ Compression is not a frequent event. After compression, it only recalculates onc
 <details>
 <summary><strong>Why not just rely on auto-compaction?</strong></summary>
 
-Compatible with native compression. The project also helps replace compression prompts — we've built more precise, targeted compression features.
+Native compaction remains compatible. Studio also automatically keeps context centered on the current task: it compresses completed or unrelated history while retaining key decisions, constraints, and unfinished work, so Codex can handle long conversations without losing essential memory or carrying stale context.
 
 </details>
 

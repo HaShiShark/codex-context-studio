@@ -53,6 +53,10 @@
 
 >可以和专门的副模型来一起分析编辑压缩管理主codex的上下文，你可以接入便宜的副模型
 
+### 💡 自动上下文整理 — 不失忆，同时保持上下文干净
+
+> 自动维护 Codex 的上下文，压缩已完成或与当前任务无关的内容，保留关键决策、约束、当前任务状态和仍有价值的信息，让 Codex 不失忆，同时始终保持上下文干净、聚焦。
+
 ### 📈 Usage 面板 — 这轮对话花了多少钱
 
 > 查看codex中token消耗情况，缓存命中率，成本。
@@ -76,6 +80,12 @@
 ### 上下文压缩效果
 
 ![上下文压缩效果](docs/assets/screenshots/cn/2.png)
+
+### 自动上下文整理
+
+![自动上下文整理](docs/assets/screenshots/cn/context-maintenance.png)
+
+![自动整理后的上下文](docs/assets/screenshots/cn/context-maintenance-result.png)
 
 ### 提示词替换
 
@@ -199,7 +209,7 @@ npm run package:win
 <details>
 <summary><strong>为什么不直接依赖自动压缩？</strong></summary>
 
-兼容原有压缩，项目还能帮助替换压缩词，我们做了更精确的针对压缩功能。
+原生压缩仍然兼容。Studio 还会围绕当前任务自动整理上下文，压缩已完成或无关的历史内容，同时保留关键决策、约束和未完成工作，让 Codex 在长对话中不失忆，也不必携带陈旧、混乱的上下文。
 
 </details>
 
