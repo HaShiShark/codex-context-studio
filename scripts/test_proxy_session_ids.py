@@ -125,6 +125,7 @@ def test_codex_passthrough_request_classification() -> None:
 
 def test_codex_existing_thread_ids_scans_active_and_archived_rollouts() -> None:
     active_thread_id = "019f1c86-0574-73a0-8f5e-b40cb6184de9"
+    compressed_thread_id = "019f1c86-0574-73a0-8f5e-b40cb6184dea"
     archived_thread_id = "019f1c7c-a3ed-7b52-9258-e9f577da3d55"
 
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -134,16 +135,17 @@ def test_codex_existing_thread_ids_scans_active_and_archived_rollouts() -> None:
         active_path.mkdir(parents=True)
         archived_path.mkdir(parents=True)
         (active_path / f"rollout-2026-07-01T00-00-00-{active_thread_id}.jsonl").write_text("", encoding="utf-8")
+        (active_path / f"rollout-2026-07-01T00-00-01-{compressed_thread_id}.jsonl.zst").write_bytes(b"compressed")
         (archived_path / f"rollout-2026-06-30T00-00-00-{archived_thread_id}.jsonl").write_text("", encoding="utf-8")
 
         thread_ids, scan_info = codex_existing_thread_ids(codex_home)
-        assert thread_ids == {active_thread_id, archived_thread_id}
-        assert scan_info["scanned_files"] == 2
+        assert thread_ids == {active_thread_id, compressed_thread_id, archived_thread_id}
+        assert scan_info["scanned_files"] == 3
         assert scan_info["unreadable_files"] == 0
 
         active_ids, active_scan_info = codex_active_thread_ids(codex_home)
-        assert active_ids == {active_thread_id}
-        assert active_scan_info["scanned_files"] == 1
+        assert active_ids == {active_thread_id, compressed_thread_id}
+        assert active_scan_info["scanned_files"] == 2
 
 
 def main() -> None:

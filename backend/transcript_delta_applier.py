@@ -10,7 +10,10 @@ from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from .codex_input_cursor import fingerprint_provider_item, provider_items_equal
+from .codex_input_cursor import (
+    fingerprint_provider_item,
+    provider_items_match_for_reconciliation,
+)
 
 
 @dataclass(frozen=True)
@@ -49,7 +52,7 @@ class TranscriptDeltaApplier:
                 )
 
             node_index, item_index, provider_item = tail
-            if not provider_items_equal(provider_item, expected_item):
+            if not provider_items_match_for_reconciliation(provider_item, expected_item):
                 return PopResult(
                     requested=requested,
                     removed=removed,

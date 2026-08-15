@@ -25,6 +25,7 @@ _SIMPLE_RESPONSE_ITEM_FIELDS: dict[str, tuple[str, ...]] = {
         "name",
         "namespace",
         "arguments",
+        "encrypted_function_args",
         "call_id",
         _INTERNAL_METADATA_KEY,
     ),
@@ -319,7 +320,10 @@ def normalize_provider_item(value: Any) -> Any:
 def fingerprint_provider_item(item: Any) -> str:
     """Hash a provider item without suppressing protocol fields."""
 
-    normalized = normalize_provider_item(item)
+    return _fingerprint_normalized_provider_item(normalize_provider_item(item))
+
+
+def _fingerprint_normalized_provider_item(normalized: Any) -> str:
     payload = json.dumps(
         normalized,
         ensure_ascii=False,
@@ -329,10 +333,34 @@ def fingerprint_provider_item(item: Any) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def fingerprint_provider_item_for_reconciliation(item: Any) -> str:
+    """Hash model-visible item content for replay/tail reconciliation.
+
+    Codex can add, remove, or refresh top-level passthrough metadata while
+    replaying persisted items.  That metadata must remain part of the strict
+    cursor fingerprint so the next request replaces stale stored metadata, but
+    it must not make an otherwise unchanged transcript tail look user-edited.
+    Nested fields with the same name remain semantic and are preserved here.
+    """
+
+    normalized = normalize_provider_item(item)
+    if isinstance(normalized, dict):
+        normalized.pop(_INTERNAL_METADATA_KEY, None)
+    return _fingerprint_normalized_provider_item(normalized)
+
+
 def provider_items_equal(left: Any, right: Any) -> bool:
     """Compare two provider items by exact normalized fingerprint."""
 
     return fingerprint_provider_item(left) == fingerprint_provider_item(right)
+
+
+def provider_items_match_for_reconciliation(left: Any, right: Any) -> bool:
+    """Compare replayed items while ignoring only top-level passthrough metadata."""
+
+    left_fingerprint = fingerprint_provider_item_for_reconciliation(left)
+    right_fingerprint = fingerprint_provider_item_for_reconciliation(right)
+    return left_fingerprint == right_fingerprint
 
 
 def longest_common_prefix_len(cursor: Sequence[Any], new_input: Sequence[Any]) -> int:

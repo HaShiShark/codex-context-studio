@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
 from backend.codex_input_cursor import (  # noqa: E402
     compute_diff,
     fingerprint_provider_item,
+    provider_items_match_for_reconciliation,
     response_item_to_request_item,
 )
 from backend.transcript_delta_applier import TranscriptDeltaApplier  # noqa: E402
@@ -365,6 +366,57 @@ def test_response_item_projection_omits_internal_metadata_when_request_path_does
     }
 
 
+def test_function_call_projection_preserves_plaintext_arguments_marker() -> None:
+    raw_response_call = {
+        "id": "fc-dynamic",
+        "type": "function_call",
+        "name": "spawn_agent",
+        "namespace": "collaboration",
+        "arguments": '{"message":"hello","task_name":"worker"}',
+        "encrypted_function_args": [],
+        "call_id": "call-1",
+    }
+
+    projected = response_item_to_request_item(raw_response_call)
+
+    assert projected == {
+        "type": "function_call",
+        "name": "spawn_agent",
+        "namespace": "collaboration",
+        "arguments": '{"message":"hello","task_name":"worker"}',
+        "encrypted_function_args": [],
+        "call_id": "call-1",
+    }
+
+
+def test_reconciliation_ignores_only_top_level_passthrough_metadata() -> None:
+    stored_item = {
+        "type": "function_call_output",
+        "call_id": "call-1",
+        "output": {
+            "value": "done",
+            "internal_chat_message_metadata_passthrough": {"nested": "stable"},
+        },
+        "internal_chat_message_metadata_passthrough": {"turn_id": "turn-old"},
+    }
+    replayed_item = {
+        **stored_item,
+        "internal_chat_message_metadata_passthrough": {"turn_id": "turn-new"},
+    }
+    changed_nested_metadata = {
+        **replayed_item,
+        "output": {
+            "value": "done",
+            "internal_chat_message_metadata_passthrough": {"nested": "changed"},
+        },
+    }
+
+    assert fingerprint_provider_item(stored_item) != fingerprint_provider_item(replayed_item)
+    assert compute_diff([stored_item], [replayed_item]).prefix_len == 0
+    assert provider_items_match_for_reconciliation(stored_item, replayed_item)
+    assert not provider_items_match_for_reconciliation(stored_item, changed_nested_metadata)
+
+
 def test_message_phase_difference_is_not_suppressed() -> None:
     cursor_message = {
         "type": "message",
@@ -594,6 +646,8 @@ def main() -> None:
         test_response_item_projection_matches_next_request_shape,
         test_response_item_projection_adds_codex_turn_metadata,
         test_response_item_projection_omits_internal_metadata_when_request_path_does,
+        test_function_call_projection_preserves_plaintext_arguments_marker,
+        test_reconciliation_ignores_only_top_level_passthrough_metadata,
         test_message_phase_difference_is_not_suppressed,
         test_reasoning_empty_content_matches_next_request_shape,
         test_reasoning_null_content_is_preserved_for_request_shape,

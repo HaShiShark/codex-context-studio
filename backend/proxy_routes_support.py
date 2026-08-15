@@ -748,7 +748,14 @@ def _codex_thread_ids_in_roots(home: Path, roots: list[Path]) -> tuple[set[str] 
     unreadable_files = 0
     for root in existing_roots:
         try:
-            rollout_paths = root.rglob("*.jsonl")
+            # Codex keeps older rollouts as zstd-compressed `.jsonl.zst` files.
+            # The thread UUID is encoded in the filename, so scanning these
+            # paths does not require decoding their contents.
+            rollout_paths = (
+                path
+                for pattern in ("*.jsonl", "*.jsonl.zst")
+                for path in root.rglob(pattern)
+            )
             for path in rollout_paths:
                 if not path.is_file():
                     continue

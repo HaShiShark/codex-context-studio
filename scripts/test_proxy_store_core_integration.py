@@ -427,6 +427,51 @@ def test_restart_restores_transcript_and_cursor_for_next_diff() -> None:
         assert reloaded.sessions[SESSION_ID].proxy_state.codex_input_cursor == [user, assistant, next_user]
 
 
+def test_restart_reconciles_top_level_passthrough_metadata_drift() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        store = new_store(temp_dir)
+        stored_call = {
+            "type": "function_call",
+            "name": "lookup",
+            "arguments": '{"q":"alpha"}',
+            "call_id": "call-1",
+            "internal_chat_message_metadata_passthrough": {"turn_id": "turn-stored"},
+        }
+        session, _forwarded = store.begin_request(
+            SESSION_ID,
+            {"input": [copy.deepcopy(stored_call)]},
+            {"x-codex-session-id": SESSION_ID},
+        )
+
+        transcript_path = store._session_dir(session) / "transcript.json"
+        transcript_payload = json.loads(transcript_path.read_text(encoding="utf-8"))
+        replayed_call = copy.deepcopy(stored_call)
+        replayed_call["internal_chat_message_metadata_passthrough"] = {"turn_id": "turn-replayed"}
+        transcript_payload["nodes"][0]["items"][0]["providerItem"] = copy.deepcopy(replayed_call)
+        transcript_path.write_text(
+            json.dumps(transcript_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        reloaded = new_store(temp_dir)
+        output = {
+            "type": "function_call_output",
+            "call_id": "call-1",
+            "output": "done",
+        }
+        next_input = [copy.deepcopy(replayed_call), copy.deepcopy(output)]
+        reloaded_session, forwarded = reloaded.begin_request(
+            SESSION_ID,
+            {"input": copy.deepcopy(next_input)},
+            {"x-codex-session-id": SESSION_ID},
+        )
+
+        assert forwarded["input"] == next_input
+        assert proxy_items(reloaded_session) == next_input
+        assert reloaded_session.proxy_state.codex_input_cursor == next_input
+        assert reloaded_session.proxy_state.tail_conflict is False
+
+
 def test_control_intercept_fallback_keeps_control_turn_in_context() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         store = new_store(temp_dir)
@@ -936,6 +981,7 @@ def main() -> None:
         test_custom_provider_usage_route_records_normalized_session_usage,
         test_transcript_replace_does_not_accept_legacy_record_payload,
         test_restart_restores_transcript_and_cursor_for_next_diff,
+        test_restart_reconciles_top_level_passthrough_metadata_drift,
         test_control_intercept_fallback_keeps_control_turn_in_context,
         test_compact_request_is_handled_by_proxy_core_state,
         test_compact_failure_rolls_back_transcript_and_cursor,

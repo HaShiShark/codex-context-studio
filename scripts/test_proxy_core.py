@@ -152,6 +152,39 @@ def test_response_completed_stores_next_request_shape_in_cursor() -> None:
     assert state.codex_input_cursor == [user, next_request_message]
 
 
+def test_response_completed_preserves_plaintext_collaboration_marker() -> None:
+    state = ProxyState()
+    user = message("user", "delegate this")
+    raw_response_call = {
+        "id": "fc-dynamic",
+        "type": "function_call",
+        "name": "spawn_agent",
+        "namespace": "collaboration",
+        "arguments": '{"message":"inspect","task_name":"worker"}',
+        "encrypted_function_args": [],
+        "call_id": "call-1",
+    }
+    projected_call = {
+        key: copy.deepcopy(value)
+        for key, value in raw_response_call.items()
+        if key != "id"
+    }
+    output = function_output("spawned")
+    handle_request(state, {"input": [copy.deepcopy(user)]})
+
+    handle_response_completed(state, [copy.deepcopy(raw_response_call)])
+
+    assert transcript_items(state) == [user, projected_call]
+    assert state.codex_input_cursor == [user, projected_call]
+
+    next_input = [copy.deepcopy(user), copy.deepcopy(projected_call), copy.deepcopy(output)]
+    forwarded = handle_request(state, {"input": next_input})
+
+    assert forwarded["input"] == next_input
+    assert transcript_items(state) == next_input
+    assert state.tail_conflict is False
+
+
 def test_response_completed_preserves_ids_after_id_bearing_request() -> None:
     state = ProxyState()
     user = message("user", "hello", item_id="user-stable")
@@ -735,6 +768,7 @@ def main() -> None:
         test_same_request_retry_is_idempotent,
         test_response_completed_appends_assistant_to_cursor_and_transcript,
         test_response_completed_stores_next_request_shape_in_cursor,
+        test_response_completed_preserves_plaintext_collaboration_marker,
         test_response_completed_preserves_ids_after_id_bearing_request,
         test_tool_continuation_pops_old_tail_and_appends_new_tail,
         test_pop_conflict_keeps_existing_tail_and_still_appends,

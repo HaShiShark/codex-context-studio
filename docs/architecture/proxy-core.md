@@ -151,9 +151,14 @@ fingerprint 用于判断两个 provider item 是否是同一个语义 item。
 
 - `fingerprint_provider_item` 不再全局排除 `id`。当前代码按规范化后的 provider item 精确 hash，保留协议字段和嵌套 `id`。
 - 只有在“响应 item 投影为下一轮 request item”的已知边界上，`response_item_to_request_item(..., include_id=False)` 才会默认去掉顶层动态 response item `id`。
+- `function_call.encrypted_function_args` 属于下一轮 request item 的协议字段，包括作为明文协作消息标记的空数组 `[]`，响应投影不得丢弃。
 - 嵌套 `id` 必须保留。工具 schema 里可能有语义字段叫 `id`，例如 `parameters.properties.id`，全局删除会破坏请求体。
 - 保留语义字段：`type`、`role`、`content`、`call_id`、`name`、`arguments`、`output`、`encrypted_content`、`internal_chat_message_metadata_passthrough` 等。
 - 对 dict/list 做稳定 JSON 序列化后 hash。
+
+Cursor diff 继续使用上述严格 fingerprint。这样 Codex 在下一次请求中新增、移除或刷新顶层 `internal_chat_message_metadata_passthrough` 时，代理会吸收真实的新 provider item，而不是继续转发 transcript 中的旧 metadata。
+
+只有保守 pop 的尾部 reconciliation 使用更窄的模型可见比较：忽略 provider item **顶层**的 `internal_chat_message_metadata_passthrough`，但保留所有嵌套同名字段。Codex 在恢复或重放时可能刷新这层 passthrough metadata；它不应让语义相同的旧尾部被误判为用户编辑。严格 diff 仍会触发旧尾部替换，因此最终 transcript、cursor 和 forwarded input 都采用新请求里的完整 metadata。
 
 待验证点：reasoning 的 `encrypted_content` 在 Codex 跨轮重放时是否 byte-identical。没有真实日志前，不要擅自把它从 fingerprint 中移除，也不要重新引入“全局删 id”的旧规则。
 
