@@ -1816,6 +1816,9 @@ def validate_context_provider_items(provider_items: list[dict[str, Any]]) -> Non
                 raise ValueError(f"tool call item #{index + 1} is missing call_id")
             calls_by_id.setdefault(call_id, []).append((index, item_type))
         elif item_type in CODEX_TOOL_OUTPUT_ITEM_TYPES:
+            # Native notifications are named outputs without a preceding call.
+            if item_type == "function_call_output" and not item.get("call_id") and str(item.get("name") or "").strip():
+                continue
             if not call_id:
                 raise ValueError(f"tool output item #{index + 1} is missing call_id")
             outputs_by_id.setdefault(call_id, []).append((index, item_type))

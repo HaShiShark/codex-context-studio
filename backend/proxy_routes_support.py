@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import codecs
 import gzip
 import hashlib
 import http.client
@@ -16,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from codex_context import is_context_control_command_text
+from simple_agent.codex_models import CODEX_MODEL_IDS
 
 try:
     from .codex_input_cursor import fingerprint_provider_item
@@ -892,16 +894,7 @@ def fallback_models_response_body() -> bytes:
         item.strip()
         for item in configured.split(",")
         if item.strip()
-    ] or [
-        "gpt-5.6-sol",
-        "gpt-5.6-terra",
-        "gpt-5.6-luna",
-        "gpt-5.5",
-        "gpt-5.4",
-        "gpt-5.4-mini",
-        "gpt-5.3-codex",
-        "gpt-5.2",
-    ]
+    ] or list(CODEX_MODEL_IDS)
     payload = {
         "object": "list",
         "data": [
@@ -915,6 +908,26 @@ def fallback_models_response_body() -> bytes:
         ],
     }
     return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+
+class ResponseSSEDecoder:
+    """Decode UTF-8 and SSE line endings across arbitrary network chunks."""
+
+    def __init__(self) -> None:
+        self.decoder = codecs.getincrementaldecoder("utf-8-sig")(errors="replace")
+        self.buffer = ""
+        self.pending_cr = False
+
+    def feed(self, chunk: bytes, response_items: list[dict[str, Any]],
+             text_parts: list[str], completed_responses: list[dict[str, Any]], *, final: bool = False) -> None:
+        text = self.decoder.decode(chunk, final=final)
+        if self.pending_cr:
+            text = "\r" + text
+        self.pending_cr = not final and text.endswith("\r")
+        if self.pending_cr:
+            text = text[:-1]
+        self.buffer += text.replace("\r\n", "\n").replace("\r", "\n")
+        self.buffer = parse_sse_buffer(self.buffer, response_items, text_parts, completed_responses)
 
 
 def parse_sse_buffer(

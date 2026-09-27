@@ -200,23 +200,23 @@ def usage_mapping(record: dict[str, Any], *keys: str) -> dict[str, Any]:
     return {}
 
 
-GPT56_SOL_INPUT_USD_PER_MILLION = 5.0
-GPT56_SOL_CACHED_INPUT_USD_PER_MILLION = 0.5
-GPT56_SOL_OUTPUT_USD_PER_MILLION = 30.0
-GPT56_SOL_LONG_CONTEXT_THRESHOLD = 272_000
+GPT6_SOL_INPUT_USD_PER_MILLION = 2.0
+GPT6_SOL_CACHED_INPUT_USD_PER_MILLION = 0.2
+GPT6_SOL_OUTPUT_USD_PER_MILLION = 10.0
+GPT6_SOL_LONG_CONTEXT_THRESHOLD = 272_000
 
 
-def estimate_gpt56_sol_cost_usd(input_tokens: int, cached_input_tokens: int, output_tokens: int) -> float:
+def estimate_gpt6_sol_cost_usd(input_tokens: int, cached_input_tokens: int, output_tokens: int) -> float:
     safe_input_tokens = max(0, input_tokens)
     cached_tokens = min(max(0, cached_input_tokens), safe_input_tokens)
     non_cached_tokens = max(0, safe_input_tokens - cached_tokens)
-    long_context = safe_input_tokens > GPT56_SOL_LONG_CONTEXT_THRESHOLD
+    long_context = safe_input_tokens > GPT6_SOL_LONG_CONTEXT_THRESHOLD
     input_multiplier = 2.0 if long_context else 1.0
     output_multiplier = 1.5 if long_context else 1.0
     return (
-        (non_cached_tokens * GPT56_SOL_INPUT_USD_PER_MILLION * input_multiplier)
-        + (cached_tokens * GPT56_SOL_CACHED_INPUT_USD_PER_MILLION * input_multiplier)
-        + (max(0, output_tokens) * GPT56_SOL_OUTPUT_USD_PER_MILLION * output_multiplier)
+        (non_cached_tokens * GPT6_SOL_INPUT_USD_PER_MILLION * input_multiplier)
+        + (cached_tokens * GPT6_SOL_CACHED_INPUT_USD_PER_MILLION * input_multiplier)
+        + (max(0, output_tokens) * GPT6_SOL_OUTPUT_USD_PER_MILLION * output_multiplier)
     ) / 1_000_000
 
 
@@ -402,7 +402,7 @@ def normalize_usage_payload(
         }
     )
     bucket["non_cached_input_tokens"] = max(0, bucket["input_tokens"] - bucket["cached_input_tokens"])
-    bucket["known_cost_usd"] = estimate_gpt56_sol_cost_usd(
+    bucket["known_cost_usd"] = estimate_gpt6_sol_cost_usd(
         bucket["input_tokens"],
         bucket["cached_input_tokens"],
         bucket["output_tokens"],
@@ -447,7 +447,7 @@ def add_usage_to_bucket(bucket: dict[str, Any], usage: dict[str, Any], created_a
         "total_tokens",
     ):
         bucket[key] = usage_int(bucket.get(key)) + usage_int(usage.get(key))
-    bucket["known_cost_usd"] += estimate_gpt56_sol_cost_usd(
+    bucket["known_cost_usd"] += estimate_gpt6_sol_cost_usd(
         usage_int(usage.get("input_tokens")),
         usage_int(usage.get("cached_input_tokens")),
         usage_int(usage.get("output_tokens")),
@@ -540,6 +540,7 @@ class ProxySession:
     updated_at: str = field(default_factory=utc_timestamp)
     payloads_loaded: bool = True
     inflight_before_request: ProxyState | None = None
+    inflight_request_id: str = ""
 
     def visible_transcript(self) -> list[dict[str, Any]]:
         return self.transcript
@@ -833,8 +834,11 @@ class ProxyStore:
         body: dict[str, Any],
         headers: dict[str, str],
         *,
+        request_id: str,
         effective_body: dict[str, Any] | None = None,
     ) -> tuple[ProxySession, dict[str, Any]]:
+        if not request_id:
+            raise ValueError("request_id is required")
         with self.lock:
             session = self.sessions.get(session_id)
             if session is None:
@@ -856,25 +860,15 @@ class ProxyStore:
             if current_codex_session_headers:
                 session.last_codex_session_headers = current_codex_session_headers
 
-            session.inflight_before_request = ProxyState(
-                transcript=copy.deepcopy(session.proxy_state.transcript),
-                codex_input_cursor=copy.deepcopy(session.proxy_state.codex_input_cursor),
-                tail_conflict=session.proxy_state.tail_conflict,
-                compact_pending=session.proxy_state.compact_pending,
-                compact_kind=session.proxy_state.compact_kind,
-                compact_error=session.proxy_state.compact_error,
-            )
-            draft_state = ProxyState(
-                transcript=copy.deepcopy(session.proxy_state.transcript),
-                codex_input_cursor=copy.deepcopy(session.proxy_state.codex_input_cursor),
-                tail_conflict=session.proxy_state.tail_conflict,
-                compact_pending=session.proxy_state.compact_pending,
-                compact_kind=session.proxy_state.compact_kind,
-                compact_error=session.proxy_state.compact_error,
-            )
+            base_state = session.proxy_state
+            if base_state.compact_pending and session.inflight_before_request is not None:
+                base_state = session.inflight_before_request
+            draft_state = copy.deepcopy(base_state)
             request_body = effective_body if effective_body is not None else body
             forwarded_body = proxy_core_handle_request(draft_state, request_body)
+            session.inflight_before_request = copy.deepcopy(base_state)
             session.proxy_state = draft_state
+            session.inflight_request_id = request_id
             _sync_session_from_proxy_state(session)
             if session.proxy_state.transcript != previous_transcript:
                 session.transcript_version += 1
@@ -956,25 +950,20 @@ class ProxyStore:
             self.save(session.id)
             return session
 
-    def complete_response(self, session_id: str, items: list[dict[str, Any]], text: str) -> None:
+    def complete_response(
+        self, session_id: str, items: list[dict[str, Any]], text: str, *, request_id: str,
+    ) -> bool:
         with self.lock:
             session = self.sessions.get(session_id)
-            if session is None:
-                return
+            if not request_id or session is None or session.inflight_request_id != request_id:
+                return False
             if not session.payloads_loaded:
                 self._ensure_session_payloads_loaded(session)
             else:
                 _ensure_session_proxy_state(session)
             response_items = items or ([{"type": "message", "role": "assistant", "content": text}] if text else [])
             previous_transcript = copy.deepcopy(session.proxy_state.transcript)
-            draft_state = ProxyState(
-                transcript=copy.deepcopy(session.proxy_state.transcript),
-                codex_input_cursor=copy.deepcopy(session.proxy_state.codex_input_cursor),
-                tail_conflict=session.proxy_state.tail_conflict,
-                compact_pending=session.proxy_state.compact_pending,
-                compact_kind=session.proxy_state.compact_kind,
-                compact_error=session.proxy_state.compact_error,
-            )
+            draft_state = copy.deepcopy(session.proxy_state)
             result = proxy_core_handle_response_completed(draft_state, response_items, text)
             session.proxy_state = draft_state
             _sync_session_from_proxy_state(session)
@@ -990,19 +979,24 @@ class ProxyStore:
             session.payloads_loaded = True
             session.updated_at = utc_timestamp()
             session.inflight_before_request = None
+            session.inflight_request_id = ""
             self.save(session.id)
+            return True
 
-    def fail_response(self, session_id: str, message: str) -> None:
+    def fail_response(
+        self, session_id: str, message: str, *, request_id: str, cancelled: bool = False,
+    ) -> bool:
         with self.lock:
             session = self.sessions.get(session_id)
-            if session is None:
-                return
+            if not request_id or session is None or session.inflight_request_id != request_id:
+                return False
             self._ensure_session_payloads_loaded(session)
             previous_transcript = copy.deepcopy(session.proxy_state.transcript)
             if session.proxy_state.compact_pending and session.inflight_before_request is not None:
                 session.proxy_state = session.inflight_before_request
-                session.inflight_before_request = None
-            session.status = "error"
+            session.inflight_before_request = None
+            session.inflight_request_id = ""
+            session.status = "mirror" if cancelled else "error"
             session.last_error = message
             session.proxy_state.compact_pending = False
             session.proxy_state.compact_kind = ""
@@ -1012,6 +1006,7 @@ class ProxyStore:
                 session.transcript_version += 1
             session.updated_at = utc_timestamp()
             self.save(session.id)
+            return True
 
     def record_usage(
         self,

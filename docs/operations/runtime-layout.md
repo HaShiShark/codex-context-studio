@@ -92,6 +92,8 @@ codex ctx desktop on dev
 
 ## 运行来源约束
 
+三个启动入口通过 `scripts/codex-provider-config.ps1` 和 `scripts/codex_provider_config.py` 共用原 provider 的 TOML 解析与配置投影。保留原请求头、查询参数、模型目录和重试/超时等设置；Studio 的 provider 名称、代理地址、Responses 协议、现有登录模式和关闭 WebSocket 的选择仍由启动入口管理。配置解析使用 Python 3.11+，安装版使用内置运行时。原生独立搜索能力按原 provider 能力继承。
+
 - development 强制使用源码 Python、Vite 前端和当前仓库代码。
 - production 强制使用安装包内置 Python、已构建前端和 EXE；如果 EXE 不存在会直接报错，不回退到源码。
 - 两套共享 `shared/` 数据和同一份 Codex 配置。按设计应先执行当前 profile 的 `off`，再启用另一套。

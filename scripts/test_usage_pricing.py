@@ -10,18 +10,18 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from backend.proxy_store import (  # noqa: E402
-    estimate_gpt56_sol_cost_usd,
+    estimate_gpt6_sol_cost_usd,
     normalize_usage_payload,
     ProxyStore,
 )
 
 
-def test_gpt56_sol_reference_price() -> None:
-    assert estimate_gpt56_sol_cost_usd(200_000, 0, 0) == 1.0
-    assert estimate_gpt56_sol_cost_usd(200_000, 200_000, 0) == 0.1
-    assert estimate_gpt56_sol_cost_usd(0, 0, 1_000_000) == 30.0
-    assert estimate_gpt56_sol_cost_usd(272_000, 0, 100_000) == 4.36
-    assert estimate_gpt56_sol_cost_usd(300_000, 100_000, 100_000) == 6.6
+def test_gpt6_sol_reference_price() -> None:
+    assert estimate_gpt6_sol_cost_usd(200_000, 0, 0) == 0.4
+    assert estimate_gpt6_sol_cost_usd(200_000, 200_000, 0) == 0.04
+    assert estimate_gpt6_sol_cost_usd(0, 0, 1_000_000) == 10.0
+    assert estimate_gpt6_sol_cost_usd(272_000, 0, 100_000) == 1.544
+    assert estimate_gpt6_sol_cost_usd(300_000, 100_000, 100_000) == 2.34
 
 
 def test_openai_responses_usage_normalization() -> None:
@@ -42,7 +42,7 @@ def test_openai_responses_usage_normalization() -> None:
     assert usage["output_tokens"] == 40
     assert usage["reasoning_tokens"] == 10
     assert usage["total_tokens"] == 160
-    assert usage["known_cost_usd"] == estimate_gpt56_sol_cost_usd(120, 20, 40)
+    assert usage["known_cost_usd"] == estimate_gpt6_sol_cost_usd(120, 20, 40)
 
 
 def test_chat_completions_usage_normalization() -> None:
@@ -129,7 +129,7 @@ def test_provider_usage_recorder_persists_provider_identity_and_raw_usage() -> N
         assert summary["request_count"] == 1
         assert summary["input_tokens"] == 100
         assert summary["output_tokens"] == 25
-        assert summary["known_cost_usd"] == estimate_gpt56_sol_cost_usd(100, 30, 25)
+        assert summary["known_cost_usd"] == estimate_gpt6_sol_cost_usd(100, 30, 25)
 
         event = store.sessions["session-1"].usage_events[0]
         assert event["provider_id"] == "google-custom"
@@ -139,7 +139,7 @@ def test_provider_usage_recorder_persists_provider_identity_and_raw_usage() -> N
 
 def main() -> None:
     tests = [
-        test_gpt56_sol_reference_price,
+        test_gpt6_sol_reference_price,
         test_openai_responses_usage_normalization,
         test_chat_completions_usage_normalization,
         test_claude_usage_combines_all_input_classes,
@@ -148,7 +148,7 @@ def main() -> None:
     ]
     for test in tests:
         test()
-    print(f"ok - {len(tests)} provider usage and GPT-5.6 Sol pricing tests passed")
+    print(f"ok - {len(tests)} provider usage and GPT-6 Sol pricing tests passed")
 
 
 if __name__ == "__main__":

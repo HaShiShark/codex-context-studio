@@ -1007,8 +1007,8 @@ export default function ContextWorkbench({
               <div className="workbench-panel-desc">
                 {uiText(
                   uiLocaleDraft,
-                  'Historical token usage reported by every model provider used in this session. Costs use the GPT-5.6 Sol reference price.',
-                  '这个会话中各模型 Provider 返回的真实 Token 用量；费用统一按 GPT-5.6 Sol 参考价估算。',
+                  'Historical token usage reported by every model provider used in this session. Costs use the GPT-6 Sol reference price.',
+                  '这个会话中各模型 Provider 返回的真实 Token 用量；费用统一按 GPT-6 Sol 参考价估算。',
                 )}
               </div>
               <div className="workbench-setting-control-row usage-actions-row">

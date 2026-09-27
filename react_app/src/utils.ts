@@ -193,6 +193,10 @@ function imageContentText(value: ProviderItemRecord): string {
       : '';
   const imageUrl = rawUrl.trim();
 
+  if (!imageUrl && typeof value.file_id === 'string' && value.file_id.trim()) {
+    return `[image] ${value.file_id.trim()}`;
+  }
+
   if (!imageUrl || isInlineImageDataUrl(imageUrl)) {
     return '[image]';
   }

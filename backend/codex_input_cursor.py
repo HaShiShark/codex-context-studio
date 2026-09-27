@@ -29,7 +29,7 @@ _SIMPLE_RESPONSE_ITEM_FIELDS: dict[str, tuple[str, ...]] = {
         "call_id",
         _INTERNAL_METADATA_KEY,
     ),
-    "function_call_output": ("type", "call_id", "output", _INTERNAL_METADATA_KEY),
+    "function_call_output": ("type", "call_id", "name", "namespace", "output", _INTERNAL_METADATA_KEY),
     "custom_tool_call": (
         "type",
         "status",
@@ -229,7 +229,7 @@ def _canonical_message_content(content: Any) -> Any:
         if part_type in {"input_text", "output_text"}:
             canonical.append(_pick(part, "type", "text", include_id=False))
         elif part_type == "input_image":
-            canonical.append(_pick(part, "type", "image_url", "detail", include_id=False))
+            canonical.append(_pick(part, "type", "image_url", "file_id", "detail", include_id=False))
         else:
             canonical.append(normalize_provider_item(part))
     return canonical

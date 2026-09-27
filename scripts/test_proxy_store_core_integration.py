@@ -112,6 +112,7 @@ def test_begin_request_and_complete_response_use_proxy_state() -> None:
             SESSION_ID,
             copy.deepcopy(body),
             {"x-codex-session-id": SESSION_ID},
+            request_id="test-request",
         )
 
         assert forwarded["input"] == body["input"]
@@ -123,7 +124,7 @@ def test_begin_request_and_complete_response_use_proxy_state() -> None:
         assert session.request_log[-1]["kind"] == "proxy_core_request"
 
         assistant = message("assistant", "hi")
-        store.complete_response(SESSION_ID, [assistant], "hi")
+        store.complete_response(SESSION_ID, [assistant], "hi", request_id="test-request")
 
         session = store.sessions[SESSION_ID]
         assert proxy_items(session) == [*body["input"], assistant]
@@ -153,6 +154,7 @@ def test_lite_prompt_override_enters_transcript_and_cursor_without_changing_raw_
             raw_body,
             {"x-codex-session-id": SESSION_ID},
             effective_body=effective_body,
+            request_id="test-request",
         )
 
         assert "instructions" not in forwarded
@@ -187,6 +189,7 @@ def test_legacy_override_status_no_longer_drives_main_request_path() -> None:
             SESSION_ID,
             copy.deepcopy(body),
             {"x-codex-session-id": SESSION_ID},
+            request_id="test-request",
         )
 
         assert forwarded["input"] == body["input"]
@@ -207,6 +210,7 @@ def test_replace_transcript_updates_proxy_state_without_legacy_payload_fields() 
             SESSION_ID,
             {"input": copy.deepcopy(original_input)},
             {"x-codex-session-id": SESSION_ID},
+            request_id="test-request",
         )
         replacement_input = [
             message("developer", "new instructions"),
@@ -230,6 +234,7 @@ def test_replace_transcript_updates_proxy_state_without_legacy_payload_fields() 
             SESSION_ID,
             {"input": copy.deepcopy(next_input)},
             {"x-codex-session-id": SESSION_ID},
+            request_id="test-request",
         )
 
         assert forwarded["input"] == [*replacement_input, message("user", "next turn")]
@@ -246,6 +251,7 @@ def test_workbench_edit_keeps_cursor_and_tail_conflict_preserves_edit() -> None:
             SESSION_ID,
             {"input": [copy.deepcopy(user), copy.deepcopy(assistant)]},
             {"x-codex-session-id": SESSION_ID},
+            request_id="test-request",
         )
 
         edited_assistant = message("assistant", "edited assistant")
@@ -261,6 +267,7 @@ def test_workbench_edit_keeps_cursor_and_tail_conflict_preserves_edit() -> None:
             SESSION_ID,
             {"input": [copy.deepcopy(user), copy.deepcopy(next_user)]},
             {"x-codex-session-id": SESSION_ID},
+            request_id="test-request",
         )
 
         assert store.sessions[SESSION_ID].proxy_state.tail_conflict is True
@@ -275,6 +282,7 @@ def test_persistence_writes_proxy_session_folder_layout() -> None:
             SESSION_ID,
             {"input": [message("user", "persist me")]},
             {"x-codex-session-id": SESSION_ID},
+            request_id="test-request",
         )
         session = store.sessions[SESSION_ID]
         session_dir = store._session_dir(session)
@@ -406,8 +414,9 @@ def test_restart_restores_transcript_and_cursor_for_next_diff() -> None:
             SESSION_ID,
             {"input": [copy.deepcopy(user)]},
             {"x-codex-session-id": SESSION_ID},
+            request_id="test-request",
         )
-        store.complete_response(SESSION_ID, [copy.deepcopy(assistant)], "hi")
+        store.complete_response(SESSION_ID, [copy.deepcopy(assistant)], "hi", request_id="test-request")
 
         reloaded = new_store(temp_dir)
         assert SESSION_ID in reloaded.sessions
@@ -420,6 +429,7 @@ def test_restart_restores_transcript_and_cursor_for_next_diff() -> None:
             SESSION_ID,
             {"input": [copy.deepcopy(user), copy.deepcopy(assistant), copy.deepcopy(next_user)]},
             {"x-codex-session-id": SESSION_ID},
+            request_id="test-request",
         )
 
         assert forwarded["input"] == [user, assistant, next_user]
@@ -441,6 +451,7 @@ def test_restart_reconciles_top_level_passthrough_metadata_drift() -> None:
             SESSION_ID,
             {"input": [copy.deepcopy(stored_call)]},
             {"x-codex-session-id": SESSION_ID},
+            request_id="test-request",
         )
 
         transcript_path = store._session_dir(session) / "transcript.json"
@@ -464,6 +475,7 @@ def test_restart_reconciles_top_level_passthrough_metadata_drift() -> None:
             SESSION_ID,
             {"input": copy.deepcopy(next_input)},
             {"x-codex-session-id": SESSION_ID},
+            request_id="test-request",
         )
 
         assert forwarded["input"] == next_input
@@ -480,6 +492,7 @@ def test_control_intercept_fallback_keeps_control_turn_in_context() -> None:
             SESSION_ID,
             {"input": [copy.deepcopy(first_user)]},
             {"x-codex-session-id": SESSION_ID},
+            request_id="test-request",
         )
 
         control_user = message("user", "ctx")
@@ -503,6 +516,7 @@ def test_control_intercept_fallback_keeps_control_turn_in_context() -> None:
             SESSION_ID,
             {"input": copy.deepcopy(next_input)},
             {"x-codex-session-id": SESSION_ID},
+            request_id="test-request",
         )
 
         assert forwarded["input"] == next_input
@@ -531,6 +545,7 @@ def test_compact_request_is_handled_by_proxy_core_state() -> None:
             SESSION_ID,
             copy.deepcopy(body),
             {"x-codex-session-id": SESSION_ID},
+            request_id="test-request",
         )
 
         assert session.status == "compacting"
@@ -545,6 +560,7 @@ def test_compact_request_is_handled_by_proxy_core_state() -> None:
             SESSION_ID,
             [message("assistant", "compact summary")],
             "fallback text should not be used",
+            request_id="test-request",
         )
 
         session = store.sessions[SESSION_ID]
@@ -570,6 +586,7 @@ def test_compact_failure_rolls_back_transcript_and_cursor() -> None:
             SESSION_ID,
             {"input": copy.deepcopy(original_items)},
             {"x-codex-session-id": SESSION_ID},
+            request_id="test-request",
         )
         before_transcript = copy.deepcopy(store.sessions[SESSION_ID].proxy_state.transcript)
         before_cursor = copy.deepcopy(store.sessions[SESSION_ID].proxy_state.codex_input_cursor)
@@ -584,9 +601,10 @@ def test_compact_failure_rolls_back_transcript_and_cursor() -> None:
                 "input": [*copy.deepcopy(original_items), message("user", compact_prompt)],
             },
             {"x-codex-session-id": SESSION_ID},
+            request_id="test-request",
         )
 
-        store.fail_response(SESSION_ID, "upstream failed")
+        store.fail_response(SESSION_ID, "upstream failed", request_id="test-request")
         session = store.sessions[SESSION_ID]
         assert session.proxy_state.transcript == before_transcript
         assert session.proxy_state.codex_input_cursor == before_cursor
@@ -606,6 +624,7 @@ def test_prune_sessions_missing_from_codex_deletes_only_missing_proxy_sessions()
                 session_id,
                 {"input": [message("user", session_id)]},
                 {"x-codex-session-id": session_id},
+                request_id="test-request",
             )
 
         delete_dir = store.storage.session_dir(delete_id)
@@ -641,8 +660,9 @@ def test_node_locks_persist_and_cleanup_with_transcript() -> None:
             SESSION_ID,
             {"input": copy.deepcopy(initial_input)},
             {"x-codex-session-id": SESSION_ID},
+            request_id="test-request",
         )
-        store.complete_response(SESSION_ID, [message("assistant", "done")], "done")
+        store.complete_response(SESSION_ID, [message("assistant", "done")], "done", request_id="test-request")
 
         session = store.sessions[SESSION_ID]
         user_node_id = str(session.proxy_state.transcript[1]["id"])
@@ -678,6 +698,7 @@ def test_node_locks_store_only_default_overrides() -> None:
             SESSION_ID,
             {"input": copy.deepcopy(initial_input)},
             {"x-codex-session-id": SESSION_ID},
+            request_id="test-request",
         )
 
         session = store.sessions[SESSION_ID]
@@ -712,6 +733,7 @@ def test_node_lock_allows_main_running_but_rejects_context_runs() -> None:
             SESSION_ID,
             {"input": [message("user", "hello")]},
             {"x-codex-session-id": SESSION_ID},
+            request_id="test-request",
         )
         user_node_id = str(store.sessions[SESSION_ID].proxy_state.transcript[0]["id"])
 
@@ -719,7 +741,7 @@ def test_node_lock_allows_main_running_but_rejects_context_runs() -> None:
         assert payload["node_locks"] == {user_node_id: True}
         assert payload["node_lock_revision"] == 1
 
-        store.complete_response(SESSION_ID, [message("assistant", "done")], "done")
+        store.complete_response(SESSION_ID, [message("assistant", "done")], "done", request_id="test-request")
         store.set_context_run_state(SESSION_ID, "ctx-1", True)
         assert store.wait_context_idle(SESSION_ID, timeout_seconds=0.01) is False
 
@@ -748,6 +770,7 @@ def test_pending_context_review_metadata_and_apply_replace_transcript() -> None:
             SESSION_ID,
             {"input": copy.deepcopy(original_input)},
             {"x-codex-session-id": SESSION_ID},
+            request_id="test-request",
         )
         base_version = store.sessions[SESSION_ID].transcript_version
         proposed_input = [
@@ -781,6 +804,7 @@ def test_pending_context_review_stale_apply_clears_review() -> None:
             SESSION_ID,
             {"input": copy.deepcopy(original_input)},
             {"x-codex-session-id": SESSION_ID},
+            request_id="test-request",
         )
         store.replace_transcript(SESSION_ID, input_items_to_transcript([message("user", "new live text")]))
         base_version = store.sessions[SESSION_ID].transcript_version
@@ -808,6 +832,7 @@ def test_pending_context_review_survives_restart_until_same_session_requests() -
             SESSION_ID,
             {"input": [message("user", "hello")]},
             {"x-codex-session-id": SESSION_ID},
+            request_id="test-request",
         )
         session = store.sessions[SESSION_ID]
         first_request_at = session.last_proxy_request_at
@@ -830,6 +855,7 @@ def test_pending_context_review_survives_restart_until_same_session_requests() -
             SESSION_ID,
             {"input": [message("user", "hello"), message("user", "continue")]},
             {"x-codex-session-id": SESSION_ID},
+            request_id="test-request",
         )
         continued = reloaded.get_session(SESSION_ID) or {}
         assert continued["pending_context_review"] is None
@@ -843,6 +869,7 @@ def test_legacy_review_copy_is_not_restored() -> None:
             SESSION_ID,
             {"input": [message("user", "hello")]},
             {"x-codex-session-id": SESSION_ID},
+            request_id="test-request",
         )
         session = store.sessions[SESSION_ID]
         store.set_pending_context_review(
@@ -870,6 +897,7 @@ def test_late_review_is_rejected_after_main_turn_cancellation() -> None:
             SESSION_ID,
             {"input": [message("user", "hello")]},
             {"x-codex-session-id": SESSION_ID},
+            request_id="test-request",
         )
         session = store.sessions[SESSION_ID]
         review = review_payload(
@@ -896,6 +924,7 @@ def test_pending_context_review_is_cleared_when_main_turn_starts() -> None:
             SESSION_ID,
             {"input": [message("user", "hello")]},
             {"x-codex-session-id": SESSION_ID},
+            request_id="test-request",
         )
         base_version = store.sessions[SESSION_ID].transcript_version
         store.set_pending_context_review(
@@ -917,6 +946,7 @@ def test_persisted_running_status_is_not_treated_as_live_request() -> None:
             SESSION_ID,
             {"input": [message("user", "hello")]},
             {"x-codex-session-id": SESSION_ID},
+            request_id="test-request",
         )
         live_payload = store.get_session(SESSION_ID) or {}
         assert live_payload["status"] == "running"
@@ -939,8 +969,9 @@ def test_main_turn_state_survives_request_boundaries_but_not_restart() -> None:
             SESSION_ID,
             {"input": [message("user", "hello")]},
             {"x-codex-session-id": SESSION_ID},
+            request_id="test-request",
         )
-        store.complete_response(SESSION_ID, [message("assistant", "done")], "done")
+        store.complete_response(SESSION_ID, [message("assistant", "done")], "done", request_id="test-request")
         after_request_payload = store.get_session(SESSION_ID) or {}
         assert after_request_payload["status"] == "mirror"
         assert after_request_payload["is_running"] is False

@@ -7,6 +7,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "codex-provider-config.ps1")
 
 $projectRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $defaultHome = Join-Path $env:USERPROFILE ".codex-context-studio"
@@ -427,7 +428,7 @@ function Get-CodexUpstreamInfo {
     throw "Codex config file not found."
   }
 
-  $content = Get-Content -Raw -Path $configPath -ErrorAction Stop
+  $content = Get-Content -Raw -Path $configPath -Encoding UTF8 -ErrorAction Stop
 
   $escapedTopBegin = [regex]::Escape($topBeginManaged)
   $escapedTopEnd = [regex]::Escape($topEndManaged)
@@ -442,54 +443,15 @@ function Get-CodexUpstreamInfo {
     throw "Codex config file is empty."
   }
 
-  $modelProvider = "openai"
-  $mpMatch = [regex]::Match($content, '^\s*model_provider\s*=\s*"([^"]+)"', [System.Text.RegularExpressions.RegexOptions]::Multiline)
-  if ($mpMatch.Success) {
-    $modelProvider = $mpMatch.Groups[1].Value
-  }
-
-  $openaiBaseUrl = ""
-  $obuMatch = [regex]::Match($content, '^\s*openai_base_url\s*=\s*"([^"]+)"', [System.Text.RegularExpressions.RegexOptions]::Multiline)
-  if ($obuMatch.Success) {
-    $openaiBaseUrl = $obuMatch.Groups[1].Value
-  }
-
-  $effectiveBaseUrl = ""
-  $providerName = ""
-  $providerApiKey = ""
-  $providerEnvKey = ""
-  $providerBearerToken = ""
-
-  if ($openaiBaseUrl) {
-    $effectiveBaseUrl = $openaiBaseUrl
-  }
-
-  if (-not [string]::Equals($modelProvider, "openai", [System.StringComparison]::Ordinal)) {
-    $escapedId = [regex]::Escape($modelProvider)
-    $sectionPattern = "\[model_providers\.$escapedId\][\s\S]*?(?=\[\s*model_providers\.|\z)"
-    $sectionMatch = [regex]::Match($content, $sectionPattern)
-    if (-not $sectionMatch.Success) {
-      Write-Host "[codex-context-studio] model_provider '$modelProvider' has no [model_providers.$modelProvider] section." -ForegroundColor Red
-      throw "Provider section [model_providers.$modelProvider] not found."
-    }
-
-    $sectionText = $sectionMatch.Value
-    if ($sectionText -match 'base_url\s*=\s*"([^"]+)"') {
-      $effectiveBaseUrl = $Matches[1]
-    }
-    if ($sectionText -match 'name\s*=\s*"([^"]*)"') {
-      $providerName = $Matches[1]
-    }
-    if ($sectionText -match 'api_key\s*=\s*"([^"]+)"') {
-      $providerApiKey = $Matches[1]
-    }
-    if ($sectionText -match 'env_key\s*=\s*"([^"]+)"') {
-      $providerEnvKey = $Matches[1]
-    }
-    if ($sectionText -match 'experimental_bearer_token\s*=\s*"([^"]+)"') {
-      $providerBearerToken = $Matches[1]
-    }
-  }
+  $providerConfig = Read-CodexProviderConfig -ConfigText $content
+  $modelProvider = [string] $providerConfig.provider_id
+  $providerName = [string] $providerConfig.provider_name
+  $effectiveBaseUrl = [string] $providerConfig.base_url
+  $providerApiKey = [string] $providerConfig.api_key
+  $providerEnvKey = [string] $providerConfig.env_key
+  $providerBearerToken = [string] $providerConfig.bearer_token
+  $providerWireApi = [string] $providerConfig.wire_api
+  $providerRequiresAuth = [string] $providerConfig.requires_openai_auth
 
   if (-not $effectiveBaseUrl) {
     $effectiveBaseUrl = "https://api.openai.com/v1"
@@ -594,6 +556,8 @@ function Get-CodexUpstreamInfo {
   }
 
   return @{
+    provider_cli_options = @($providerConfig.provider_cli_options)
+    provider_options = @($providerConfig.provider_options)
     kind = $upstreamKind
     effective_base_url = $effectiveBaseUrl
     api_key = $effectiveApiKey
@@ -625,6 +589,8 @@ function Get-CodexContextStudioCodexArgs {
     "-c", "model_provider=$providerId",
     "-c", $notifyConfig
   )
+
+  $configArgs += @(Get-CodexProviderOptionArgs -UpstreamInfo $UpstreamInfo -ProviderId $providerId)
 
   if ($UpstreamInfo -and $UpstreamInfo.kind -eq "third_party") {
     $configArgs += @("-c", "model_context_window=200000")

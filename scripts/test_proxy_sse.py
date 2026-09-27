@@ -188,7 +188,7 @@ class FakeStore:
     def session_usage(self, session_id: str) -> dict[str, Any] | None:
         return {"summary": {}}
 
-    def complete_response(self, session_id: str, items: list[dict[str, Any]], text: str) -> None:
+    def complete_response(self, session_id: str, items: list[dict[str, Any]], text: str, *, request_id: str) -> bool:
         self.events.append("complete_response")
         self.session["status"] = "mirror"
         self.session["is_running"] = False
@@ -196,11 +196,13 @@ class FakeStore:
         self.session["transcript_version"] = 1
         self.session["compact_pending"] = False
         self.session["compact_kind"] = ""
+        return True
 
-    def fail_response(self, session_id: str, message: str) -> None:
+    def fail_response(self, session_id: str, message: str, *, request_id: str, cancelled: bool = False) -> bool:
         self.events.append("fail_response")
         self.session["status"] = "error"
         self.session["last_error"] = message
+        return True
 
     def list_sessions(self) -> dict[str, Any]:
         return {"active_session_id": self.session["id"], "sessions": [self.session]}
@@ -235,6 +237,7 @@ async def run_fastapi_completed_stream_order_test() -> None:
             client=FakeAsyncClient(events),  # type: ignore[arg-type]
             upstream_response=FakeAsyncUpstreamResponse([completed], events),  # type: ignore[arg-type]
             session_id="session-stream-order",
+            request_id="test-request",
             capture_proxy_session=True,
             is_internal_context=False,
             forwarded_body={"model": "gpt-test"},

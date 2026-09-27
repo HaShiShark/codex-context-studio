@@ -483,6 +483,10 @@ transcript_editor.py             # 节点级编辑防错和批量操作，可后
 
 `proxy_fastapi.py` 保留 HTTP、SSE、鉴权转发、ctx fallback、WebSocket 推送等外壳逻辑；核心的 transcript/cursor/compact 状态转换应尽量委托给上面的纯模块。
 
+非上下文改写的 provider HTTP 接口由 `provider_transport.py` 原样转发，不进入 transcript/cursor 主路径。`/v1/responses`、模型列表和主动禁用的远端 compact 保留专用路由。
+
+每次主请求在路由层生成独立请求 ID。Store 只有在请求 ID 仍属于当前 in-flight 请求时才接收完成、失败和取消结果；事务草稿与检查点完整复制 ProxyState。取消压缩恢复检查点，取消普通请求保留已收到的输入。请求收尾不替代主轮次锁和上下文模型锁的既有生命周期。
+
 `agent_runtime/adapters/` 只负责将当前上下文模型请求映射到不同 provider；不再维护第二套 agent core、工具注册表或聊天历史契约。proxy 主链路唯一的无损 transcript contract 是 `backend/transcript_codec.py` 的 `TranscriptNode` / provider items，必须保留 `system`、`developer`、`context`、`subagent`、`compaction` 以及未知 provider item。
 
 ## 12. 检查清单

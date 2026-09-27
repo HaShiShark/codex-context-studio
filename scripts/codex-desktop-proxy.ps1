@@ -4,6 +4,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "codex-provider-config.ps1")
 
 $projectRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $codexHome = Join-Path $env:USERPROFILE ".codex"
@@ -271,70 +272,22 @@ function Test-CodexUpstreamInfo {
     throw "Codex config file not found."
   }
 
-  $content = Get-Content -Raw -Path $ConfigPath -ErrorAction Stop
+  $content = Get-Content -Raw -Path $ConfigPath -Encoding UTF8 -ErrorAction Stop
   if (-not $content.Trim()) {
     Write-Host "[codex-context-studio] Codex config is empty: $ConfigPath" -ForegroundColor Red
     Write-Host "[codex-context-studio] Please run 'codex' first to login (codex login) or configure a third-party API provider." -ForegroundColor Red
     throw "Codex config file is empty."
   }
 
-  $modelProvider = "openai"
-  $mpMatch = [regex]::Match($content, '^\s*model_provider\s*=\s*"([^"]+)"', [System.Text.RegularExpressions.RegexOptions]::Multiline)
-  if ($mpMatch.Success) {
-    $modelProvider = $mpMatch.Groups[1].Value
-  }
-
-  $openaiBaseUrl = ""
-  $obuMatch = [regex]::Match($content, '^\s*openai_base_url\s*=\s*"([^"]+)"', [System.Text.RegularExpressions.RegexOptions]::Multiline)
-  if ($obuMatch.Success) {
-    $openaiBaseUrl = $obuMatch.Groups[1].Value
-  }
-
-  $effectiveBaseUrl = ""
-  $providerName = ""
-  $providerApiKey = ""
-  $providerEnvKey = ""
-  $providerBearerToken = ""
-  $providerWireApi = ""
-  $providerRequiresAuth = ""
-
-  if ($openaiBaseUrl) {
-    $effectiveBaseUrl = $openaiBaseUrl
-  }
-
-  if (-not [string]::Equals($modelProvider, "openai", [System.StringComparison]::Ordinal)) {
-    $escapedId = [regex]::Escape($modelProvider)
-    $sectionPattern = "\[model_providers\.$escapedId\][\s\S]*?(?=\[\s*model_providers\.|\z)"
-    $sectionMatch = [regex]::Match($content, $sectionPattern)
-    if (-not $sectionMatch.Success) {
-      Write-Host "[codex-context-studio] model_provider '$modelProvider' has no [model_providers.$modelProvider] section." -ForegroundColor Red
-      Write-Host "[codex-context-studio] Please configure [model_providers.$modelProvider] in your config or switch to a valid provider." -ForegroundColor Red
-      throw "Provider section [model_providers.$modelProvider] not found."
-    }
-
-    $sectionText = $sectionMatch.Value
-    if ($sectionText -match 'base_url\s*=\s*"([^"]+)"') {
-      $effectiveBaseUrl = $Matches[1]
-    }
-    if ($sectionText -match 'name\s*=\s*"([^"]*)"') {
-      $providerName = $Matches[1]
-    }
-    if ($sectionText -match 'api_key\s*=\s*"([^"]+)"') {
-      $providerApiKey = $Matches[1]
-    }
-    if ($sectionText -match 'env_key\s*=\s*"([^"]+)"') {
-      $providerEnvKey = $Matches[1]
-    }
-    if ($sectionText -match 'experimental_bearer_token\s*=\s*"([^"]+)"') {
-      $providerBearerToken = $Matches[1]
-    }
-    if ($sectionText -match 'wire_api\s*=\s*"([^"]+)"') {
-      $providerWireApi = $Matches[1]
-    }
-    if ($sectionText -match 'requires_openai_auth\s*=\s*(true|false)') {
-      $providerRequiresAuth = $Matches[1]
-    }
-  }
+  $providerConfig = Read-CodexProviderConfig -ConfigText $content
+  $modelProvider = [string] $providerConfig.provider_id
+  $providerName = [string] $providerConfig.provider_name
+  $effectiveBaseUrl = [string] $providerConfig.base_url
+  $providerApiKey = [string] $providerConfig.api_key
+  $providerEnvKey = [string] $providerConfig.env_key
+  $providerBearerToken = [string] $providerConfig.bearer_token
+  $providerWireApi = [string] $providerConfig.wire_api
+  $providerRequiresAuth = [string] $providerConfig.requires_openai_auth
 
   if (-not $effectiveBaseUrl) {
     $effectiveBaseUrl = "https://api.openai.com/v1"
@@ -439,6 +392,8 @@ function Test-CodexUpstreamInfo {
   }
 
   return @{
+    provider_cli_options = @($providerConfig.provider_cli_options)
+    provider_options = @($providerConfig.provider_options)
     kind = $upstreamKind
     effective_base_url = $effectiveBaseUrl
     api_key = $effectiveApiKey
@@ -464,16 +419,12 @@ function Set-DesktopConfigEnabled {
 
   $hadConfig = Test-Path $configPath
   $text = if ($hadConfig) {
-    Repair-ProjectTables -Text (Get-Content -Raw -Path $configPath)
+    Repair-ProjectTables -Text (Get-Content -Raw -Path $configPath -Encoding UTF8)
   } else {
     ""
   }
 
-  $originalProvider = ""
-  $mpMatch = [regex]::Match($text, '^\s*model_provider\s*=\s*"([^"]+)"', [System.Text.RegularExpressions.RegexOptions]::Multiline)
-  if ($mpMatch.Success) {
-    $originalProvider = $mpMatch.Groups[1].Value
-  }
+  $originalProvider = [string] $UpstreamInfo.provider_id
 
   $existingState = Read-DesktopState
   if ($originalProvider -eq $providerId) {
@@ -486,7 +437,7 @@ function Set-DesktopConfigEnabled {
   $originalNotifyArgs = Normalize-OriginalNotifyArgs -NotifyArgs (ConvertFrom-TomlInlineStringArray -Text $text -Key "notify")
 
   $text = Remove-DesktopManagedConfig -Text $text -RemoveContextWindow:(-not $RequiresOpenAiAuth)
-  $text = $text -replace '(?m)^\s*model_provider\s*=\s*"[^"]*"\s*\r?\n?', ''
+  $text = $text -replace '(?m)^\s*model_provider\s*=[^\r\n]*\r?\n?', ''
 
   $commandShims = Write-DesktopCommandShims
   $hookPath = ([string] $commandShims.hook_cmd).Replace("\", "/")
@@ -499,7 +450,7 @@ function Set-DesktopConfigEnabled {
     if ($text -match '(?m)^\[features\]') {
       $text = $text -replace '(?m)(^\[features\]\r?\n)', "`$1hooks = true`r`n"
     } else {
-      $text = "[features]`r`nhooks = true`r`n`r`n" + $text
+      $text = $text.TrimEnd() + "`r`n`r`n[features]`r`nhooks = true`r`n"
     }
   }
 
@@ -509,6 +460,7 @@ function Set-DesktopConfigEnabled {
     $contextWindowLine = "model_context_window = 200000`r`n"
   }
 
+  $providerOptions = @($UpstreamInfo.provider_options) -join "`r`n"
   $providerBlock = @"
 [model_providers.$providerId]
 name = "Codex Context Studio"
@@ -516,6 +468,7 @@ base_url = "http://${loopbackHost}:$proxyPort/v1"
 requires_openai_auth = $requiresAuth
 wire_api = "responses"
 supports_websockets = false
+$providerOptions
 "@
 
   $hookBlock = @"
@@ -567,7 +520,7 @@ function Restore-DesktopConfig {
     return
   }
 
-  $text = Repair-ProjectTables -Text (Get-Content -Raw -Path $configPath)
+  $text = Repair-ProjectTables -Text (Get-Content -Raw -Path $configPath -Encoding UTF8)
   $currentNotifyArgs = Normalize-OriginalNotifyArgs -NotifyArgs (ConvertFrom-TomlInlineStringArray -Text $text -Key "notify")
   $originalNotifyArgs = @()
   if ($state.PSObject.Properties.Name -contains "original_notify_args") {

@@ -20,6 +20,8 @@ const tests = [
   'scripts/test_agent_runtime_contract.py',
   'scripts/test_proxy_models.py',
   'scripts/test_proxy_sse.py',
+  'scripts/test_native_workflow_compatibility.py',
+  'scripts/test_provider_config.py',
   'scripts/test_usage_pricing.py',
   'scripts/test_proxy_store_core_integration.py',
   'scripts/test_proxy_remote_compact_disabled.py',

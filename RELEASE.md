@@ -1,4 +1,18 @@
-# Codex Context Studio 发布说明
+# Codex Context Studio v1.1.4
+
+## 本次更新
+
+- 增加图片等原生接口的统一转发；修正代理擅自请求压缩响应导致原生客户端可能无法解码的问题。
+- 完整继承原服务的配置，修复流式中文和表情跨分块时的记录问题。
+- 修复取消、重试和迟到响应的状态收尾，保留主副模型互斥锁与上下文核心算法。
+- 跟进原生命名工具结果、图片文件引用和 GPT-6 模型候选；修正本地压缩后的文本保留范围。
+- 用量面板统一按 GPT-6 Sol 参考价格估算，保留原始 Token 计数和历史记录。
+- 发布流程改用当前 Windows 打包入口，安装包内置 Python，无需用户另装运行环境。
+
+图片转发和压缩协商缺陷已通过隔离回归测试；此前反馈的真实图片生成失败仍待用户复测。本版本不宣称所有原生能力已完成端到端验证。
+
+详细记录见 `docs/audits/` 中的兼容性修复、图片解码复查及参考价格更新说明。
+
 
 这是给官方 Codex 使用的本地代理和上下文窗口，不是 Codex 的替代品。
 
@@ -17,14 +31,14 @@ npm run package:win
 生成的安装包在：
 
 ```text
-release/Codex Context Studio Setup 1.1.3.exe
+release/Codex Context Studio Setup 1.1.4.exe
 ```
 
 安装包会带上 Electron 前端、React 构建产物、`backend/web_server.py`、`backend/proxy_fastapi.py` 以及打包后的 Python exe。用户不需要自己安装 Node 或 Python。
 
 ## 用户怎么用
 
-用户安装 `Codex Context Studio Setup 1.1.3.exe` 后，安装器会自动安装 `codex ctx proxy ...` 控制命令，但不会默认打开代理。
+用户安装 `Codex Context Studio Setup 1.1.4.exe` 后，安装器会自动安装 `codex ctx proxy ...` 控制命令，但不会默认打开代理。
 
 安装完成后，重新打开一个终端，然后使用：
 
@@ -103,7 +117,7 @@ codex ctx desktop status
 把下面这个文件上传到 GitHub Releases、网盘或下载页即可：
 
 ```text
-release/Codex Context Studio Setup 1.1.3.exe
+release/Codex Context Studio Setup 1.1.4.exe
 ```
 
 安装器文件名必须以 `Codex Context Studio` 开头，其他名称不要发布。

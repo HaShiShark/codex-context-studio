@@ -39,7 +39,9 @@ export interface ProviderFunctionCallItem {
 
 export interface ProviderFunctionCallOutputItem {
   type: 'function_call_output';
-  call_id: string;
+  call_id?: string;
+  name?: string;
+  namespace?: string;
   output: unknown;
 }
 

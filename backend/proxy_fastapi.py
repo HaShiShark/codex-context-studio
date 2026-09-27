@@ -16,6 +16,7 @@ from typing import Any
 
 import httpx
 import uvicorn
+from anyio import CancelScope
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -24,6 +25,7 @@ try:
     from . import proxy_routes_support as route_support
     from .codex_request_protocol import apply_base_instructions_override, find_base_instructions
     from .proxy_store import STORE
+    from .provider_transport import end_to_end_headers, response_header_pairs, stream_provider_response
     from .realtime_events import (
         compact_update,
         error_event,
@@ -42,6 +44,7 @@ except ImportError:
     from backend import proxy_routes_support as route_support
     from backend.codex_request_protocol import apply_base_instructions_override, find_base_instructions
     from backend.proxy_store import STORE
+    from backend.provider_transport import end_to_end_headers, response_header_pairs, stream_provider_response
     from backend.realtime_events import (
         compact_update,
         error_event,
@@ -278,11 +281,25 @@ async def _context_control_stream(body: dict[str, Any], opened: bool, error: str
     yield b"data: [DONE]\n\n"
 
 
+async def _cancel_pending_response(session_id: str, request_id: str) -> None:
+    before_version = _session_version(session_id)
+    before_transcript = _session_transcript(session_id)
+    was_compacting = _session_is_compacting(session_id)
+    if STORE.fail_response(session_id, "", request_id=request_id, cancelled=True):
+        await _publish_session_change(
+            session_id, reason="response_cancelled", before_version=before_version,
+            before_transcript=before_transcript,
+            compact_phase="cancelled" if was_compacting else "",
+            transcript_mode="full" if was_compacting else "none",
+        )
+
+
 async def _stream_upstream_response(
     *,
     client: httpx.AsyncClient,
     upstream_response: httpx.Response,
     session_id: str,
+    request_id: str,
     capture_proxy_session: bool,
     is_internal_context: bool,
     forwarded_body: dict[str, Any],
@@ -291,7 +308,7 @@ async def _stream_upstream_response(
     response_items: list[dict[str, Any]] = []
     text_parts: list[str] = []
     completed_responses: list[dict[str, Any]] = []
-    buffer = ""
+    decoder = route_support.ResponseSSEDecoder()
     error_preview = bytearray()
     error_chunks: list[bytes] = []
     response_finalized = False
@@ -317,8 +334,10 @@ async def _stream_upstream_response(
             before_version = _session_version(session_id)
             before_transcript = _session_transcript(session_id)
             was_compacting = _session_is_compacting(session_id)
-            STORE.complete_response(session_id, response_items, "".join(text_parts))
+            applied = STORE.complete_response(session_id, response_items, "".join(text_parts), request_id=request_id)
             response_finalized = True
+            if not applied:
+                return
             await _publish_session_change(
                 session_id,
                 reason="response_completed",
@@ -337,8 +356,10 @@ async def _stream_upstream_response(
         before_version = _session_version(session_id)
         before_transcript = _session_transcript(session_id)
         was_compacting = _session_is_compacting(session_id)
-        STORE.fail_response(session_id, message)
+        applied = STORE.fail_response(session_id, message, request_id=request_id)
         response_finalized = True
+        if not applied:
+            return
         await _publish_session_change(
             session_id,
             reason="response_failed",
@@ -356,10 +377,12 @@ async def _stream_upstream_response(
                     error_preview.extend(chunk[: 4000 - len(error_preview)])
                 error_chunks.append(chunk)
                 continue
-            buffer += chunk.decode("utf-8", errors="ignore")
-            buffer = route_support.parse_sse_buffer(buffer, response_items, text_parts, completed_responses)
+            decoder.feed(chunk, response_items, text_parts, completed_responses)
             await finalize_completed_response()
             yield chunk
+
+        decoder.feed(b"", response_items, text_parts, completed_responses, final=True)
+        await finalize_completed_response()
 
         if upstream_response.status_code >= 400:
             preview = error_preview.decode("utf-8", errors="replace")
@@ -376,8 +399,11 @@ async def _stream_upstream_response(
         await fail_pending_response(str(exc))
         raise
     finally:
-        await upstream_response.aclose()
-        await client.aclose()
+        with CancelScope(shield=True):
+            if capture_proxy_session and not response_finalized:
+                await _cancel_pending_response(session_id, request_id)
+            await upstream_response.aclose()
+            await client.aclose()
 
 
 def _initialize_runtime() -> None:
@@ -738,6 +764,7 @@ async def models(request: Request) -> Response:
 
 @app.post("/v1/responses")
 async def responses(request: Request) -> Response:
+    request_id = uuid.uuid4().hex
     try:
         body = await _read_json_body(request)
     except json.JSONDecodeError:
@@ -800,123 +827,139 @@ async def responses(request: Request) -> Response:
             status_code=int(HTTPStatus.SERVICE_UNAVAILABLE),
         )
 
-    if is_internal_context:
-        headers_for_upstream = route_support.merge_codex_session_headers(
-            headers,
-            STORE.codex_session_headers(session_id),
-            session_id=session_id,
-        )
-        forwarded_body = copy.deepcopy(body)
-    elif capture_proxy_session:
-        headers_for_upstream = headers
-        before_version = _session_version(session_id)
-        before_transcript = _session_transcript(session_id)
-        effective_body = await asyncio.to_thread(_apply_codex_system_prompt_override, body)
-        session, forwarded_body = STORE.begin_request(
-            session_id,
-            body,
-            headers,
-            effective_body=effective_body,
-        )
-        await _publish_session_change(
-            session_id,
-            reason="begin_request",
-            before_version=before_version,
-            before_transcript=before_transcript,
-            compact_phase="pending" if session.status == "compacting" else "",
-            transcript_mode="none" if session.status == "compacting" else "patch",
-        )
-    else:
-        headers_for_upstream = headers
-        forwarded_body = copy.deepcopy(body)
-
-    upstream_base_url = route_support.upstream_base_url_for_request(headers_for_upstream)
-    upstream_url = _upstream_url(upstream_base_url, "responses")
-    effective_headers = route_support.apply_cached_upstream_auth(headers_for_upstream)
-    effective_lowered = {key.lower(): value for key, value in effective_headers.items()}
-    auth_kind = "chatgpt" if effective_lowered.get("chatgpt-account-id") else "api-key-or-bearer"
-    route_support.proxy_log(
-        f"request session={session_id} auth={auth_kind} "
-        f"internal={is_internal_context} title_generation={is_title_generation} "
-        f"passthrough={passthrough_reason or '-'} capture={capture_proxy_session} upstream={upstream_url}"
-    )
-
-    payload = json.dumps(forwarded_body, ensure_ascii=False).encode("utf-8")
-    upstream_headers = route_support.upstream_headers_for_request(headers_for_upstream, accept="text/event-stream")
-    capture_path = await asyncio.to_thread(
-        route_support.write_request_capture,
-        session_id=session_id,
-        original_body=body,
-        forwarded_body=forwarded_body,
-        incoming_headers=headers,
-        upstream_headers=upstream_headers,
-        upstream_url=upstream_url,
-        capture_proxy_session=capture_proxy_session,
-        is_internal_context=is_internal_context,
-        is_title_generation=is_title_generation,
-        passthrough_reason=passthrough_reason or "",
-    )
-    if capture_path:
-        original_summary = route_support.input_id_summary(body)
-        forwarded_summary = route_support.input_id_summary(forwarded_body)
-        route_support.proxy_log(
-            f"request capture session={session_id} path={capture_path} "
-            f"original_ids={original_summary.get('top_level_id_count')} "
-            f"forwarded_ids={forwarded_summary.get('top_level_id_count')} "
-            f"last_user={original_summary.get('last_user_text')!r}"
-        )
-    route_support.proxy_log(
-        f"upstream headers session={session_id} "
-        f"{json.dumps(route_support.safe_headers_for_log(upstream_headers), ensure_ascii=False, sort_keys=True)}"
-    )
-
-    client = httpx.AsyncClient(timeout=httpx.Timeout(connect=30.0, read=None, write=60.0, pool=60.0))
+    handed_off = False
+    client: httpx.AsyncClient | None = None
     try:
-        upstream_request = client.build_request(
-            "POST",
-            upstream_url,
-            content=payload,
-            headers=upstream_headers,
-        )
-        upstream_response = await client.send(upstream_request, stream=True)
-    except Exception as exc:
-        await client.aclose()
-        route_support.proxy_log(f"request error session={session_id} error={type(exc).__name__}: {exc}")
-        if capture_proxy_session:
+        if is_internal_context:
+            headers_for_upstream = route_support.merge_codex_session_headers(
+                headers,
+                STORE.codex_session_headers(session_id),
+                session_id=session_id,
+            )
+            forwarded_body = copy.deepcopy(body)
+        elif capture_proxy_session:
+            headers_for_upstream = headers
             before_version = _session_version(session_id)
             before_transcript = _session_transcript(session_id)
-            was_compacting = _session_is_compacting(session_id)
-            STORE.fail_response(session_id, str(exc))
+            effective_body = await asyncio.to_thread(_apply_codex_system_prompt_override, body)
+            session, forwarded_body = STORE.begin_request(
+                session_id,
+                body,
+                headers,
+                request_id=request_id,
+                effective_body=effective_body,
+            )
             await _publish_session_change(
                 session_id,
-                reason="response_failed",
+                reason="begin_request",
                 before_version=before_version,
                 before_transcript=before_transcript,
-                compact_phase="failed" if was_compacting else "",
-                transcript_mode="full" if was_compacting else "none",
+                compact_phase="pending" if session.status == "compacting" else "",
+                transcript_mode="none" if session.status == "compacting" else "patch",
             )
-            await HUB.publish(error_event(session_id, str(exc)))
-        return _json_error(str(exc), HTTPStatus.BAD_GATEWAY)
+        else:
+            headers_for_upstream = headers
+            forwarded_body = copy.deepcopy(body)
 
-    route_support.proxy_log(
-        f"upstream status session={session_id} "
-        f"status={upstream_response.status_code} reason={upstream_response.reason_phrase}"
-    )
-    response_headers, media_type = _response_headers(upstream_response.headers)
-    return StreamingResponse(
-        _stream_upstream_response(
-            client=client,
-            upstream_response=upstream_response,
+        upstream_base_url = route_support.upstream_base_url_for_request(headers_for_upstream)
+        upstream_url = _upstream_url(upstream_base_url, "responses")
+        if request.url.query:
+            upstream_url += f"?{request.url.query}"
+        effective_headers = route_support.apply_cached_upstream_auth(headers_for_upstream)
+        effective_lowered = {key.lower(): value for key, value in effective_headers.items()}
+        auth_kind = "chatgpt" if effective_lowered.get("chatgpt-account-id") else "api-key-or-bearer"
+        route_support.proxy_log(
+            f"request session={session_id} auth={auth_kind} "
+            f"internal={is_internal_context} title_generation={is_title_generation} "
+            f"passthrough={passthrough_reason or '-'} capture={capture_proxy_session} upstream={upstream_url}"
+        )
+
+        payload = json.dumps(forwarded_body, ensure_ascii=False).encode("utf-8")
+        upstream_headers = route_support.upstream_headers_for_request(headers_for_upstream, accept="text/event-stream")
+        capture_path = await asyncio.to_thread(
+            route_support.write_request_capture,
             session_id=session_id,
+            original_body=body,
+            forwarded_body=forwarded_body,
+            incoming_headers=headers,
+            upstream_headers=upstream_headers,
+            upstream_url=upstream_url,
             capture_proxy_session=capture_proxy_session,
             is_internal_context=is_internal_context,
-            forwarded_body=forwarded_body,
-            original_body=body,
-        ),
-        status_code=upstream_response.status_code,
-        headers=response_headers,
-        media_type=media_type or "text/event-stream",
-    )
+            is_title_generation=is_title_generation,
+            passthrough_reason=passthrough_reason or "",
+        )
+        if capture_path:
+            original_summary = route_support.input_id_summary(body)
+            forwarded_summary = route_support.input_id_summary(forwarded_body)
+            route_support.proxy_log(
+                f"request capture session={session_id} path={capture_path} "
+                f"original_ids={original_summary.get('top_level_id_count')} "
+                f"forwarded_ids={forwarded_summary.get('top_level_id_count')} "
+                f"last_user={original_summary.get('last_user_text')!r}"
+            )
+        route_support.proxy_log(
+            f"upstream headers session={session_id} "
+            f"{json.dumps(route_support.safe_headers_for_log(upstream_headers), ensure_ascii=False, sort_keys=True)}"
+        )
+
+        client = httpx.AsyncClient(timeout=httpx.Timeout(connect=30.0, read=None, write=60.0, pool=60.0))
+        try:
+            upstream_request = client.build_request(
+                "POST",
+                upstream_url,
+                content=payload,
+                headers=upstream_headers,
+            )
+            upstream_response = await client.send(upstream_request, stream=True)
+        except Exception as exc:
+            await client.aclose()
+            route_support.proxy_log(f"request error session={session_id} error={type(exc).__name__}: {exc}")
+            if capture_proxy_session:
+                before_version = _session_version(session_id)
+                before_transcript = _session_transcript(session_id)
+                was_compacting = _session_is_compacting(session_id)
+                if STORE.fail_response(session_id, str(exc), request_id=request_id):
+                    await _publish_session_change(
+                        session_id,
+                        reason="response_failed",
+                        before_version=before_version,
+                        before_transcript=before_transcript,
+                        compact_phase="failed" if was_compacting else "",
+                        transcript_mode="full" if was_compacting else "none",
+                    )
+                    await HUB.publish(error_event(session_id, str(exc)))
+            return _json_error(str(exc), HTTPStatus.BAD_GATEWAY)
+
+        route_support.proxy_log(
+            f"upstream status session={session_id} "
+            f"status={upstream_response.status_code} reason={upstream_response.reason_phrase}"
+        )
+        response_headers, media_type = _response_headers(upstream_response.headers)
+        response = StreamingResponse(
+            _stream_upstream_response(
+                client=client,
+                upstream_response=upstream_response,
+                session_id=session_id,
+                request_id=request_id,
+                capture_proxy_session=capture_proxy_session,
+                is_internal_context=is_internal_context,
+                forwarded_body=forwarded_body,
+                original_body=body,
+            ),
+            status_code=upstream_response.status_code,
+            headers=response_headers,
+            media_type=media_type or "text/event-stream",
+        )
+        handed_off = True
+        return response
+    finally:
+        if not handed_off:
+            with CancelScope(shield=True):
+                if capture_proxy_session:
+                    await _cancel_pending_response(session_id, request_id)
+                if client is not None:
+                    await client.aclose()
 
 
 @app.post("/v1/responses/compact")
@@ -931,6 +974,41 @@ async def compact_disabled() -> Response:
         },
         status_code=int(HTTPStatus.GONE),
     )
+
+
+@app.api_route("/v1/{provider_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
+async def provider_passthrough(request: Request, provider_path: str) -> Response:
+    # Specific Responses/compact/models routes above retain their own contracts.
+    headers = _headers_dict(request)
+    route_support.remember_upstream_auth(headers)
+    upstream_headers = end_to_end_headers(route_support.apply_cached_upstream_auth(headers), request=True)
+    upstream_url = _upstream_url(route_support.upstream_base_url_for_request(headers), provider_path)
+    if request.url.query:
+        upstream_url += f"?{request.url.query}"
+    client = httpx.AsyncClient(timeout=httpx.Timeout(connect=30.0, read=None, write=60.0, pool=60.0))
+    try:
+        upstream_request = client.build_request(
+            request.method, upstream_url, headers=upstream_headers, content=request.stream(),
+        )
+        upstream_response = await client.send(upstream_request, stream=True)
+    except BaseException as exc:
+        with CancelScope(shield=True):
+            await client.aclose()
+        if not isinstance(exc, Exception):
+            raise
+        return _json_error(str(exc), HTTPStatus.BAD_GATEWAY)
+    route_support.proxy_log(
+        f"native endpoint={provider_path} status={upstream_response.status_code} "
+        f"accept_encoding={upstream_headers.get('accept-encoding', '')!r} "
+        f"content_type={upstream_response.headers.get('content-type', '')!r} "
+        f"content_encoding={upstream_response.headers.get('content-encoding', '')!r}"
+    )
+    response = StreamingResponse(
+        stream_provider_response(client, upstream_response),
+        status_code=upstream_response.status_code,
+    )
+    response.raw_headers = response_header_pairs(upstream_response.headers)
+    return response
 
 
 def _snapshot_payload(session_id: str) -> dict[str, Any]:

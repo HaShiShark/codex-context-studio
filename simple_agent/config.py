@@ -9,6 +9,8 @@ from urllib.parse import urlparse, urlunparse
 
 from dotenv import load_dotenv
 
+from simple_agent.codex_models import CODEX_MODEL_IDS
+
 
 MODULE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = MODULE_DIR.parent
@@ -34,14 +36,9 @@ CODEX_PROXY_BASE_URL = (
     f"http://{os.getenv('CODEX_CONTEXT_STUDIO_PROXY_HOST', os.getenv('CODEX_CONTEXT_STUDIO_HOST', 'localhost'))}:"
     f"{os.getenv('CODEX_CONTEXT_STUDIO_PROXY_PORT', '8787')}/v1"
 )
-DEFAULT_CODEX_PROXY_MODELS: tuple[dict[str, str], ...] = (
-    {"id": "gpt-5.6-sol", "label": "gpt-5.6-sol", "group": "Codex", "provider": "Codex"},
-    {"id": "gpt-5.6-terra", "label": "gpt-5.6-terra", "group": "Codex", "provider": "Codex"},
-    {"id": "gpt-5.6-luna", "label": "gpt-5.6-luna", "group": "Codex", "provider": "Codex"},
-    {"id": "gpt-5.5", "label": "gpt-5.5", "group": "Codex", "provider": "Codex"},
-    {"id": "gpt-5.4-mini", "label": "gpt-5.4-mini", "group": "Codex", "provider": "Codex"},
-    {"id": "gpt-5.4", "label": "gpt-5.4", "group": "Codex", "provider": "Codex"},
-    {"id": "gpt-5.2", "label": "gpt-5.2", "group": "Codex", "provider": "Codex"},
+DEFAULT_CODEX_PROXY_MODELS: tuple[dict[str, str], ...] = tuple(
+    {"id": model_id, "label": model_id, "group": "Codex", "provider": "Codex"}
+    for model_id in CODEX_MODEL_IDS
 )
 DEFAULT_CONTEXT_WORKBENCH_PROVIDER_ID = CODEX_PROXY_PROVIDER_ID
 DEFAULT_CONTEXT_WORKBENCH_MODEL = "gpt-5.6-sol"

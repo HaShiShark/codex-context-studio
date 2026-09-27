@@ -415,7 +415,7 @@ def collect_user_message_items(
     for item in transcript_to_input_items(transcript):
         if not _is_user_message(item):
             continue
-        text = read_message_text(item)
+        text = retained_user_text(item)
         if not text:
             continue
         if is_local_compact_summary_text(text) or is_local_compact_prompt_text(text):
@@ -649,20 +649,45 @@ def _select_user_items_by_token_budget(
     for item in reversed(user_items):
         if remaining_tokens <= 0:
             break
-        text = read_message_text(item)
+        text = retained_user_text(item)
         tokens = local_compact_approx_token_count(text)
-        if tokens <= remaining_tokens:
-            selected_reversed.append(copy.deepcopy(dict(item)))
-            remaining_tokens -= tokens
-            continue
-
-        truncated_text = truncate_text_to_approx_tokens(text, remaining_tokens)
-        if truncated_text:
-            selected_reversed.append(message_item_with_text(item, truncated_text))
-        break
+        retained = copy.deepcopy(dict(item))
+        content = item.get("content")
+        text_only = isinstance(content, str) or (
+            isinstance(content, list)
+            and all(isinstance(part, Mapping) and part.get("type") == "input_text" for part in content)
+        )
+        retained.pop("phase", None)
+        if tokens > remaining_tokens or not text_only:
+            retained_text = truncate_text_to_approx_tokens(text, remaining_tokens)
+            retained["content"] = (
+                retained_text if isinstance(content, str)
+                else [{"type": "input_text", "text": retained_text}]
+            )
+            retained.pop("text", None)
+            metadata = retained.get("internal_chat_message_metadata_passthrough")
+            if isinstance(metadata, dict) and "content_item_kinds" in metadata:
+                metadata["content_item_kinds"] = ["user.text"]
+        selected_reversed.append(retained)
+        if tokens > remaining_tokens:
+            break
+        remaining_tokens -= tokens
 
     selected_reversed.reverse()
     return selected_reversed
+
+
+def retained_user_text(item: Mapping[str, Any]) -> str:
+    """Text retained after compact; media payloads are not user text."""
+    content = item.get("content", item.get("text", ""))
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            str(part.get("text") or "") for part in content
+            if isinstance(part, Mapping) and part.get("type") in {"input_text", "output_text"}
+        )
+    return ""
 
 
 def _first_present_text(item: Mapping[str, Any]) -> str:
